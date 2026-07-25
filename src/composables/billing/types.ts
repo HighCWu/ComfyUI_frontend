@@ -66,8 +66,17 @@ export interface BillingActions {
    * dollar-based /customers/credit endpoint.
    * Pass-through by design: the caller owns the completed/pending follow-up
    * (balance refresh or billing-op polling), so this does not refresh.
+   *
+   * `idempotencyKey` enables server-side dedup: a network timeout where the
+   * POST actually reached the server but the response was lost would otherwise
+   * double-charge on retry. Caller should reuse the same key for retries of
+   * the same intent and mint a fresh key for a new purchase intent. Legacy
+   * adapter ignores the key (no server dedup at that endpoint).
    */
-  topup: (amountCents: number) => Promise<CreateTopupResponse | void>
+  topup: (
+    amountCents: number,
+    idempotencyKey?: string
+  ) => Promise<CreateTopupResponse | void>
   fetchPlans: () => Promise<void>
   /**
    * Ensures billing is initialized and subscription is active.

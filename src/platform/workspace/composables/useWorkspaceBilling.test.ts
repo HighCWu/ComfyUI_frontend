@@ -622,7 +622,7 @@ describe('useWorkspaceBilling', () => {
       const billing = setupBilling()
       const result = await billing.topup(500)
 
-      expect(mockWorkspaceApi.createTopup).toHaveBeenCalledWith(500)
+      expect(mockWorkspaceApi.createTopup).toHaveBeenCalledWith(500, undefined)
       expect(result).toBe(topupResponse)
       expect(mockWorkspaceApi.getBillingStatus).not.toHaveBeenCalled()
       expect(mockWorkspaceApi.getBillingBalance).not.toHaveBeenCalled()
@@ -706,7 +706,7 @@ describe('useWorkspaceBilling', () => {
       const billing = setupBilling()
       const result = await billing.topup(500)
 
-      expect(mockWorkspaceApi.createTopup).toHaveBeenCalledWith(500)
+      expect(mockWorkspaceApi.createTopup).toHaveBeenCalledWith(500, undefined)
       expect(result).toBe(topupResponse)
       expect(mockWorkspaceApi.getBillingStatus).not.toHaveBeenCalled()
       expect(mockWorkspaceApi.getBillingBalance).not.toHaveBeenCalled()

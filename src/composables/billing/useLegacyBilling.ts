@@ -177,8 +177,13 @@ export function useLegacyBilling(): BillingState & BillingActions {
     await legacySubscribe()
   }
 
-  async function topup(amountCents: number): Promise<void> {
+  async function topup(
+    amountCents: number,
+    _idempotencyKey?: string
+  ): Promise<void> {
     // Facade standardizes on cents; legacy /customers/credit takes dollars.
+    // Idempotency key is accepted but ignored — the legacy endpoint has no
+    // dedup support. Caller still benefits from the loading-flag UX guard.
     await authActions.purchaseCredits(amountCents / 100)
   }
 

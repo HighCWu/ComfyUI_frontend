@@ -191,6 +191,11 @@ const selectedPreset = ref<number | null>(50)
 const payAmount = ref(50)
 const showCeilingWarning = ref(false)
 const loading = ref(false)
+// Per-dialog idempotency key — regenerating only on dialog remount means
+// network retries within the same intent reuse the key, so the server can
+// dedup a POST that reached /billing/topup but whose response was lost.
+// Fresh mount (next time the user opens the dialog) mints a new intent.
+const idempotencyKey = crypto.randomUUID()
 
 // Computed
 const pricingUrl = computed(() =>
@@ -256,7 +261,7 @@ async function handleBuy() {
     telemetry?.trackApiCreditTopupButtonPurchaseClicked(payAmount.value)
 
     const amountCents = payAmount.value * 100
-    const response = await topup(amountCents)
+    const response = await topup(amountCents, idempotencyKey)
     if (!response) return
 
     if (response.status === 'completed') {
