@@ -80,6 +80,37 @@ export class AuthStoreError extends Error {
   }
 }
 
+// Cookie-session token cache for better-auth users (no Firebase dependency).
+// Populated lazily by getCookieSessionToken on first getAuthHeader() miss
+// after Firebase, workspace, and API-key paths all return null. Cached for
+// the JWT TTL (1h) so the cost is one POST /api/auth/token per hour, not
+// per request. Self-healing: on expiry the next miss re-fetches; on cookie
+// expiry the fetch returns 401 and the cache clears → user re-logs in.
+let cachedCookieToken: { token: string; expiresAt: number } | null = null
+
+const getCookieSessionToken = async (): Promise<string | null> => {
+  if (cachedCookieToken && cachedCookieToken.expiresAt > Date.now()) {
+    return cachedCookieToken.token
+  }
+  try {
+    const res = await fetch('/api/auth/token', {
+      method: 'POST',
+      credentials: 'include'
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as { token?: string; expires_at?: string }
+    if (!data.token || !data.expires_at) return null
+    // 1-minute buffer so the cached token never outlives the server-side exp.
+    cachedCookieToken = {
+      token: data.token,
+      expiresAt: new Date(data.expires_at).getTime() - 60_000
+    }
+    return cachedCookieToken.token
+  } catch {
+    return null
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const { flags } = useFeatureFlags()
 
@@ -247,7 +278,20 @@ export const useAuthStore = defineStore('auth', () => {
       }
     }
 
-    return useApiKeyAuthStore().getAuthHeader()
+    const apiKeyHeader = useApiKeyAuthStore().getAuthHeader()
+    if (apiKeyHeader) return apiKeyHeader
+
+    // Cookie-session fallback for better-auth users (no Firebase user, no
+    // API key). POST /api/auth/token exchanges the better-auth cookie for
+    // a session JWT, which then authenticates every subsequent request
+    // including the requireBearer-gated upload endpoint. Cached for the
+    // 1h TTL — see getCookieSessionToken above.
+    const cookieToken = await getCookieSessionToken()
+    if (cookieToken) {
+      return { Authorization: `Bearer ${cookieToken}` }
+    }
+
+    return null
   }
 
   /**
