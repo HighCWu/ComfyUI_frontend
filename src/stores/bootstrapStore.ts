@@ -37,9 +37,8 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
 
   async function startStoreBootstrap() {
     if (isCloud) {
-      const { isInitialized, isAuthenticated } = storeToRefs(useAuthStore())
+      const { isInitialized } = storeToRefs(useAuthStore())
       await until(isInitialized).toBe(true)
-      await until(isAuthenticated).toBe(true)
     }
 
     const userStore = useUserStore()
