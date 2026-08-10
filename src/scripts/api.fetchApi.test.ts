@@ -8,6 +8,7 @@ vi.stubGlobal('fetch', vi.fn())
 describe('api.fetchApi', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    window.name = ''
 
     // Reset api state
     api.user = 'test-user'
@@ -164,6 +165,20 @@ describe('api.fetchApi', () => {
 
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/test/route'),
+        expect.any(Object)
+      )
+    })
+
+    it('scopes API URLs to the current workspace iframe session', async () => {
+      window.name = 'eds_instance-one'
+      const mockFetch = vi
+        .mocked(global.fetch)
+        .mockResolvedValue(new Response())
+
+      await api.fetchApi('/object_info')
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/object_info?client_id=eds_instance-one'),
         expect.any(Object)
       )
     })

@@ -6,6 +6,7 @@ import { trimEnd } from 'es-toolkit'
 import { ref } from 'vue'
 
 import defaultClientFeatureFlags from '@/config/clientFeatureFlags.json' with { type: 'json' }
+import { appendEditorSession } from '@/scripts/editorSessionUrl'
 import {
   fetchWithUnifiedRemint,
   shouldRemintCloudRequest
@@ -394,12 +395,14 @@ export class ComfyApi extends EventTarget {
   }
 
   internalURL(route: string): string {
-    return this.api_base + '/internal' + route
+    return appendEditorSession(this.api_base + '/internal' + route, window.name)
   }
 
   apiURL(route: string): string {
-    if (route.startsWith('/api')) return this.api_base + route
-    return this.api_base + '/api' + route
+    const url = route.startsWith('/api')
+      ? this.api_base + route
+      : this.api_base + '/api' + route
+    return appendEditorSession(url, window.name)
   }
 
   fileURL(route: string): string {
