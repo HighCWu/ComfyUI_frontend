@@ -33,6 +33,7 @@ import { clearAllV2Storage } from '../base/storageIO'
 import { migrateV1toV2 } from '../migration/migrateV1toV2'
 import { useWorkflowDraftStoreV2 } from '../stores/workflowDraftStoreV2'
 import { useWorkflowTabState } from './useWorkflowTabState'
+import { useEditorLaunchWorkflow } from './useEditorLaunchWorkflow'
 import { useSharedWorkflowUrlLoader } from '@/platform/workflow/sharing/composables/useSharedWorkflowUrlLoader'
 import { useTemplateUrlLoader } from '@/platform/workflow/templates/composables/useTemplateUrlLoader'
 import { api } from '@/scripts/api'
@@ -47,6 +48,7 @@ export function useWorkflowPersistenceV2() {
   const router = useRouter()
   const sharedWorkflowUrlLoader = useSharedWorkflowUrlLoader()
   const templateUrlLoader = useTemplateUrlLoader()
+  const editorLaunchWorkflow = useEditorLaunchWorkflow()
   const TEMPLATE_NAMESPACE = PRESERVED_QUERY_NAMESPACES.TEMPLATE
   const SHARE_NAMESPACE = PRESERVED_QUERY_NAMESPACES.SHARE
   const draftStore = useWorkflowDraftStoreV2()
@@ -199,6 +201,7 @@ export function useWorkflowPersistenceV2() {
   }
 
   const initializeWorkflow = async () => {
+    if (await editorLaunchWorkflow.loadEditorLaunchWorkflow()) return
     if (!workflowPersistenceEnabled.value) {
       await loadDefaultWorkflow()
       return
