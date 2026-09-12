@@ -2182,6 +2182,8 @@
   },
   "toastMessages": {
     "nothingToQueue": "Nothing to queue",
+    "poolCapacityPreparing": "Preparing GPU capacity",
+    "poolCapacityPreparingDetail": "Retrying automatically. Close this message to cancel.",
     "pleaseSelectOutputNodes": "Please select output nodes",
     "failedToQueue": "Failed to queue",
     "failedToSaveDraft": "Failed to save workflow draft",

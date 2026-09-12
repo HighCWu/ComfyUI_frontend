@@ -21,10 +21,14 @@ import {
 } from '@/composables/usePaste'
 import { getWorkflowDataFromFile } from '@/scripts/metadata/parser'
 import { useMissingModelStore } from '@/platform/missingModel/missingModelStore'
-import { api } from '@/scripts/api'
+import {
+  api,
+  POOL_CAPACITY_PREPARING_CODE,
+  PromptExecutionError
+} from '@/scripts/api'
 import { useExecutionErrorStore } from '@/stores/executionErrorStore'
 import { useExecutionStore } from '@/stores/executionStore'
-import type { NodeError } from '@/schemas/apiSchema'
+import type { NodeError, PromptResponse } from '@/schemas/apiSchema'
 import type { ComfyNodeDef } from '@/schemas/nodeDefSchema'
 import {
   createTestRootGraph,
@@ -32,6 +36,8 @@ import {
   createTestSubgraphNode
 } from '@/lib/litegraph/src/subgraph/__fixtures__/subgraphHelpers'
 import { useWidgetValueStore } from '@/stores/widgetValueStore'
+
+type PromptCapacityRetryModule = typeof import('./promptCapacityRetry')
 
 const {
   mockApiKeyAuthStore,
@@ -41,7 +47,8 @@ const {
   mockExtensionService,
   mockNodeOutputStore,
   mockWorkspaceWorkflow,
-  mockRefreshMissingModelPipeline
+  mockRefreshMissingModelPipeline,
+  mockIsWorkspaceEditorIframe
 } = vi.hoisted(() => ({
   mockApiKeyAuthStore: {
     getApiKey: vi.fn()
@@ -67,7 +74,8 @@ const {
   mockWorkspaceWorkflow: {
     activeWorkflow: null as ComfyWorkflow | null
   },
-  mockRefreshMissingModelPipeline: vi.fn()
+  mockRefreshMissingModelPipeline: vi.fn(),
+  mockIsWorkspaceEditorIframe: vi.fn(() => false)
 }))
 
 vi.mock('@/utils/litegraphUtil', () => ({
@@ -127,6 +135,16 @@ vi.mock('@/platform/missingModel/missingModelPipeline', () => ({
   runMissingModelPipeline: vi.fn()
 }))
 
+vi.mock('./promptCapacityRetry', async () => {
+  const actual = await vi.importActual<PromptCapacityRetryModule>(
+    './promptCapacityRetry'
+  )
+  return {
+    ...actual,
+    isWorkspaceEditorIframe: mockIsWorkspaceEditorIframe
+  }
+})
+
 function createMockNode(options: { [K in keyof LGraphNode]?: any } = {}) {
   return {
     id: 1,
@@ -168,6 +186,19 @@ function createWorkflowGraphData(): ComfyWorkflowJSON {
   }
 }
 
+function createPoolCapacityError(): PromptExecutionError {
+  return new PromptExecutionError(
+    {
+      error: {
+        type: 'conflict',
+        message: 'capacity is preparing',
+        details: { code: POOL_CAPACITY_PREPARING_CODE }
+      }
+    } as unknown as PromptResponse,
+    409
+  )
+}
+
 describe('ComfyApp', () => {
   let app: ComfyApp
   let mockCanvas: LGraphCanvas
@@ -183,6 +214,7 @@ describe('ComfyApp', () => {
     mockAuthStore.getAuthToken.mockResolvedValue(undefined)
     mockExtensionService.invokeExtensions.mockReturnValue([])
     mockExtensionService.invokeExtensionsAsync.mockResolvedValue(undefined)
+    mockIsWorkspaceEditorIframe.mockReturnValue(false)
     mockSettingStore.get.mockImplementation((key: string) =>
       key === 'Comfy.RightSidePanel.ShowErrorsTab' ? true : undefined
     )
@@ -241,6 +273,108 @@ describe('ComfyApp', () => {
         'workflows/review.json'
       )
       expect(mockCanvas.draw).toHaveBeenCalledWith(true, true)
+    })
+
+    it('retries capacity preparation with the captured prompt in an editor iframe', async () => {
+      vi.useFakeTimers()
+      try {
+        mockIsWorkspaceEditorIframe.mockReturnValue(true)
+        const graph = new LGraph()
+        const workflow = new ComfyWorkflow({
+          path: 'workflows/retry.json',
+          modified: 0,
+          size: 0
+        })
+        const promptOutput: ComfyApiWorkflow = {
+          '1': {
+            class_type: 'PreviewAny',
+            inputs: {},
+            _meta: { title: 'PreviewAny' }
+          }
+        }
+        Reflect.set(app, 'rootGraphInternal', graph)
+        mockWorkspaceWorkflow.activeWorkflow = workflow
+        const graphToPrompt = vi.spyOn(app, 'graphToPrompt').mockResolvedValue({
+          output: promptOutput,
+          workflow: createWorkflowGraphData()
+        })
+        vi.spyOn(api, 'dispatchCustomEvent').mockImplementation(() => true)
+        vi.spyOn(api, 'queuePrompt')
+          .mockRejectedValueOnce(createPoolCapacityError())
+          .mockResolvedValueOnce({ prompt_id: 'job-1', error: '' })
+
+        const queuePromise = app.queuePrompt(0)
+        for (let index = 0; index < 5; index += 1) {
+          await Promise.resolve()
+        }
+
+        expect(api.queuePrompt).toHaveBeenCalledTimes(1)
+        expect(mockToastStore.add).toHaveBeenCalledWith(
+          expect.objectContaining({
+            summary: 'Preparing GPU capacity'
+          })
+        )
+
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expect(queuePromise).resolves.toBe(true)
+
+        expect(api.queuePrompt).toHaveBeenCalledTimes(2)
+        expect(graphToPrompt).toHaveBeenCalledTimes(1)
+        expect(mockToastStore.remove).toHaveBeenCalledWith(
+          mockToastStore.add.mock.calls[0][0]
+        )
+        expect(api.authToken).toBeUndefined()
+        expect(api.apiKey).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('cancels a later batch retry with the one queue-level controller', async () => {
+      vi.useFakeTimers()
+      try {
+        mockIsWorkspaceEditorIframe.mockReturnValue(true)
+        const graph = new LGraph()
+        Reflect.set(app, 'rootGraphInternal', graph)
+        mockWorkspaceWorkflow.activeWorkflow = new ComfyWorkflow({
+          path: 'workflows/batch-retry.json',
+          modified: 0,
+          size: 0
+        })
+        vi.spyOn(app, 'graphToPrompt').mockResolvedValue({
+          output: {
+            '1': {
+              class_type: 'PreviewAny',
+              inputs: {},
+              _meta: { title: 'PreviewAny' }
+            }
+          },
+          workflow: createWorkflowGraphData()
+        })
+        vi.spyOn(api, 'dispatchCustomEvent').mockImplementation(() => true)
+        vi.spyOn(api, 'queuePrompt')
+          .mockResolvedValueOnce({ prompt_id: 'job-1', error: '' })
+          .mockRejectedValueOnce(createPoolCapacityError())
+
+        const queuePromise = app.queuePrompt(0, 2)
+        for (let index = 0; index < 7; index += 1) {
+          await Promise.resolve()
+        }
+
+        expect(api.queuePrompt).toHaveBeenCalledTimes(2)
+        const retryToast = mockToastStore.add.mock.calls[0]?.[0] as
+          | { onClose?: () => void }
+          | undefined
+        retryToast?.onClose?.()
+
+        await expect(queuePromise).resolves.toBe(false)
+        expect(api.queuePrompt).toHaveBeenCalledTimes(2)
+        expect(mockToastStore.remove).toHaveBeenCalledWith(retryToast)
+        expect(api.authToken).toBeUndefined()
+        expect(api.apiKey).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

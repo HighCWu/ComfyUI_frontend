@@ -319,6 +319,34 @@ export class PromptExecutionError extends Error {
   }
 }
 
+/**
+ * Returns true only for the transient workspace-pool capacity response.
+ *
+ * The backend puts the retry code in the structured error details. Keep this
+ * check deliberately narrow: authentication, billing, validation, and other
+ * conflict responses must remain terminal prompt errors.
+ */
+export const POOL_CAPACITY_PREPARING_CODE = 'pool_capacity_preparing'
+
+export const isPoolCapacityPreparingError = (
+  error: unknown
+): error is PromptExecutionError => {
+  if (!(error instanceof PromptExecutionError)) return false
+  if (error.status !== 409) return false
+
+  const responseError = error.response.error
+  if (!responseError || typeof responseError !== 'object') return false
+
+  const details: unknown = responseError.details
+  return (
+    typeof details === 'object' &&
+    details !== null &&
+    !Array.isArray(details) &&
+    'code' in details &&
+    details.code === POOL_CAPACITY_PREPARING_CODE
+  )
+}
+
 export class ComfyApi extends EventTarget {
   private _registered = new Set()
   /**

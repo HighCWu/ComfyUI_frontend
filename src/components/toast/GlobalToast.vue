@@ -1,5 +1,5 @@
 <template>
-  <Toast />
+  <Toast @close="handleToastClose" />
   <Toast group="billing-operation" position="top-right">
     <template #message="slotProps">
       <div class="flex items-center gap-2">
@@ -13,6 +13,7 @@
 <script setup lang="ts">
 import Toast from 'primevue/toast'
 import { useToast } from 'primevue/usetoast'
+import type { ToastMessageOptions } from 'primevue/toast'
 import { nextTick, watch } from 'vue'
 
 import { useSettingStore } from '@/platform/settings/settingStore'
@@ -21,6 +22,18 @@ import { useToastStore } from '@/platform/updates/common/toastStore'
 const toast = useToast()
 const toastStore = useToastStore()
 const settingStore = useSettingStore()
+
+type CloseAwareToastMessage = ToastMessageOptions & {
+  onClose?: () => void
+}
+
+function handleToastClose(
+  event: ToastMessageOptions | { message: ToastMessageOptions }
+) {
+  const message = 'message' in event ? event.message : event
+  const closeAwareMessage = message as CloseAwareToastMessage
+  closeAwareMessage.onClose?.()
+}
 
 watch(
   () => toastStore.messagesToAdd,

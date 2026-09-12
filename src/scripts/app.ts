@@ -142,6 +142,11 @@ import { type ComfyApi, PromptExecutionError, api } from './api'
 import { defaultGraph } from './defaultGraph'
 import { importA1111 } from './pnginfo'
 import { applyPromotedWidgetControl } from './promotedWidgetControl'
+import {
+  isWorkspaceEditorIframe,
+  PromptCapacityRetryCancelledError,
+  retryPromptWhenCapacityPreparing
+} from './promptCapacityRetry'
 import { $el, ComfyUI } from './ui'
 import { ComfyAppMenu } from './ui/menu/index'
 import { clone } from './utils'
@@ -235,6 +240,8 @@ export class ComfyApp {
    * If the queue is currently being processed
    */
   private processingQueue: boolean = false
+  private poolCapacityRetryController: AbortController | null = null
+  private poolCapacityRetryToast: ToastMessageOptions | null = null
 
   /**
    * Content Clipboard
@@ -1610,11 +1617,34 @@ export class ComfyApp {
     })
   }
 
+  private showPoolCapacityRetryToast(controller: AbortController): void {
+    if (this.poolCapacityRetryController) return
+
+    const toast: ToastMessageOptions & { onClose: () => void } = {
+      severity: 'info',
+      summary: t('toastMessages.poolCapacityPreparing'),
+      detail: t('toastMessages.poolCapacityPreparingDetail'),
+      onClose: () => controller.abort()
+    }
+    this.poolCapacityRetryController = controller
+    this.poolCapacityRetryToast = toast
+    useToastStore().add(toast)
+  }
+
+  private clearPoolCapacityRetryToast(): void {
+    const toast = this.poolCapacityRetryToast
+    this.poolCapacityRetryController = null
+    this.poolCapacityRetryToast = null
+    if (toast) useToastStore().remove(toast)
+  }
+
   async queuePrompt(
     number: number,
     batchCount: number = 1,
     queueNodeIds?: NodeExecutionId[]
   ): Promise<boolean> {
+    if (this.poolCapacityRetryController) return false
+
     const requestId = this.nextQueueRequestId++
     this.queueItems.push({ number, batchCount, queueNodeIds, requestId })
     api.dispatchCustomEvent('promptQueueing', {
@@ -1635,6 +1665,9 @@ export class ComfyApp {
     // Get auth token for backend nodes - uses workspace token if enabled, otherwise Firebase token
     const comfyOrgAuthToken = await useAuthStore().getAuthToken()
     const comfyOrgApiKey = useApiKeyAuthStore().getApiKey()
+    const capacityRetryController = new AbortController()
+    let stopQueueProcessing = false
+    let promptQueueFailed = false
 
     try {
       while (this.queueItems.length) {
@@ -1667,12 +1700,19 @@ export class ComfyApp {
           try {
             api.authToken = comfyOrgAuthToken
             api.apiKey = comfyOrgApiKey ?? undefined
-            const res = await api.queuePrompt(number, p, {
-              partialExecutionTargets: queueNodeIds,
-              previewMethod
-            })
-            delete api.authToken
-            delete api.apiKey
+            const res = await retryPromptWhenCapacityPreparing(
+              () =>
+                api.queuePrompt(number, p, {
+                  partialExecutionTargets: queueNodeIds,
+                  previewMethod
+                }),
+              {
+                enabled: isWorkspaceEditorIframe(),
+                signal: capacityRetryController.signal,
+                onRetry: () =>
+                  this.showPoolCapacityRetryToast(capacityRetryController)
+              }
+            )
             const nodeErrors = res.node_errors
             const hasNodeErrors =
               nodeErrors && Object.keys(nodeErrors).length > 0
@@ -1701,6 +1741,12 @@ export class ComfyApp {
               this.canvas.draw(true, true)
             }
           } catch (error: unknown) {
+            promptQueueFailed = true
+            if (error instanceof PromptCapacityRetryCancelledError) {
+              stopQueueProcessing = true
+              break
+            }
+
             const preconditionResponseError =
               error instanceof PromptExecutionError &&
               typeof error.response.error === 'object'
@@ -1799,6 +1845,9 @@ export class ComfyApp {
               this.canvas.draw(true, true)
             }
             break
+          } finally {
+            delete api.authToken
+            delete api.apiKey
           }
 
           queuedCount++
@@ -1817,6 +1866,11 @@ export class ComfyApp {
           await this.ui.queue.update()
         }
 
+        if (stopQueueProcessing) {
+          this.queueItems.length = 0
+          break
+        }
+
         if (queuedCount > 0) {
           api.dispatchCustomEvent('promptQueued', {
             number,
@@ -1826,9 +1880,11 @@ export class ComfyApp {
         }
       }
     } finally {
+      capacityRetryController.abort()
+      this.clearPoolCapacityRetryToast()
       this.processingQueue = false
     }
-    return !executionErrorStore.lastNodeErrors
+    return !promptQueueFailed && !executionErrorStore.lastNodeErrors
   }
 
   showErrorOnFileLoad(file: File) {
