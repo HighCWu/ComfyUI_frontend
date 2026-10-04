@@ -114,6 +114,23 @@ describe('retryPromptWhenCapacityPreparing', () => {
       vi.useRealTimers()
     }
   })
+
+  it('surfaces the original capacity error when the retry window expires', async () => {
+    const error = poolCapacityError()
+    const operation = vi.fn<() => Promise<never>>().mockRejectedValue(error)
+    const sleep = vi.fn().mockResolvedValue(undefined)
+    const now = vi
+      .fn<() => number>()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(30 * 60 * 1_000)
+
+    await expect(
+      retryPromptWhenCapacityPreparing(operation, { now, sleep })
+    ).rejects.toBe(error)
+
+    expect(operation).toHaveBeenCalledTimes(1)
+    expect(sleep).not.toHaveBeenCalled()
+  })
 })
 
 describe('isWorkspaceEditorIframe', () => {

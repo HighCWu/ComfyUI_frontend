@@ -315,6 +315,12 @@ describe('ComfyApp', () => {
           })
         )
 
+        // Repeated Run clicks while the capacity toast is active must not
+        // create another pending submission behind the current retry loop.
+        await expect(app.queuePrompt(0)).resolves.toBe(false)
+        expect(api.queuePrompt).toHaveBeenCalledTimes(1)
+        expect(graphToPrompt).toHaveBeenCalledTimes(1)
+
         await vi.advanceTimersByTimeAsync(1_000)
         await expect(queuePromise).resolves.toBe(true)
 
@@ -325,6 +331,50 @@ describe('ComfyApp', () => {
         )
         expect(api.authToken).toBeUndefined()
         expect(api.apiKey).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('cancels capacity preparation when the editor page is hidden', async () => {
+      vi.useFakeTimers()
+      try {
+        mockIsWorkspaceEditorIframe.mockReturnValue(true)
+        const graph = new LGraph()
+        Reflect.set(app, 'rootGraphInternal', graph)
+        mockWorkspaceWorkflow.activeWorkflow = new ComfyWorkflow({
+          path: 'workflows/pagehide-retry.json',
+          modified: 0,
+          size: 0
+        })
+        vi.spyOn(app, 'graphToPrompt').mockResolvedValue({
+          output: {
+            '1': {
+              class_type: 'PreviewAny',
+              inputs: {},
+              _meta: { title: 'PreviewAny' }
+            }
+          },
+          workflow: createWorkflowGraphData()
+        })
+        vi.spyOn(api, 'dispatchCustomEvent').mockImplementation(() => true)
+        vi.spyOn(api, 'queuePrompt').mockRejectedValue(
+          createPoolCapacityError()
+        )
+
+        const queuePromise = app.queuePrompt(0)
+        for (let index = 0; index < 5; index += 1) {
+          await Promise.resolve()
+        }
+
+        expect(api.queuePrompt).toHaveBeenCalledTimes(1)
+        window.dispatchEvent(new Event('pagehide'))
+
+        await expect(queuePromise).resolves.toBe(false)
+        expect(api.queuePrompt).toHaveBeenCalledTimes(1)
+        expect(mockToastStore.remove).toHaveBeenCalledWith(
+          mockToastStore.add.mock.calls[0][0]
+        )
       } finally {
         vi.useRealTimers()
       }

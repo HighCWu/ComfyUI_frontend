@@ -1666,6 +1666,10 @@ export class ComfyApp {
     const comfyOrgAuthToken = await useAuthStore().getAuthToken()
     const comfyOrgApiKey = useApiKeyAuthStore().getApiKey()
     const capacityRetryController = new AbortController()
+    const cancelCapacityRetryOnPageHide = () => capacityRetryController.abort()
+    window.addEventListener('pagehide', cancelCapacityRetryOnPageHide, {
+      once: true
+    })
     let stopQueueProcessing = false
     let promptQueueFailed = false
 
@@ -1880,6 +1884,7 @@ export class ComfyApp {
         }
       }
     } finally {
+      window.removeEventListener('pagehide', cancelCapacityRetryOnPageHide)
       capacityRetryController.abort()
       this.clearPoolCapacityRetryToast()
       this.processingQueue = false
