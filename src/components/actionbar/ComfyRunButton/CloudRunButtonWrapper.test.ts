@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref } from 'vue'
 
 import CloudRunButtonWrapper from './CloudRunButtonWrapper.vue'
@@ -33,7 +33,9 @@ function renderWrapper() {
 describe('CloudRunButtonWrapper', () => {
   beforeEach(() => {
     mockIsActiveSubscription.value = true
+    vi.stubEnv('VITE_RUN_BILLING_MODE', undefined)
   })
+  afterEach(() => vi.unstubAllEnvs())
 
   it('renders the runnable queue button when the subscription is active', () => {
     renderWrapper()
@@ -65,5 +67,22 @@ describe('CloudRunButtonWrapper', () => {
     expect(
       screen.queryByTestId('subscribe-to-run-button')
     ).not.toBeInTheDocument()
+  })
+
+  it('offers Run without a subscription in explicitly prepaid deployments', () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    mockIsActiveSubscription.value = false
+    renderWrapper()
+    expect(screen.getByTestId('queue-button')).toBeInTheDocument()
+    expect(
+      screen.queryByTestId('subscribe-to-run-button')
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps the subscription guard for unknown billing modes', () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'unknown')
+    mockIsActiveSubscription.value = false
+    renderWrapper()
+    expect(screen.getByTestId('subscribe-to-run-button')).toBeInTheDocument()
   })
 })
