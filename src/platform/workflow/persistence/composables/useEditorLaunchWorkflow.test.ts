@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   fetchApi: vi.fn(),
+  isApiJson: vi.fn(),
+  loadApiJson: vi.fn(),
   loadGraphData: vi.fn()
 }))
 
@@ -10,7 +12,11 @@ vi.mock('@/scripts/api', () => ({
 }))
 
 vi.mock('@/scripts/app', () => ({
-  app: { loadGraphData: mocks.loadGraphData }
+  app: {
+    isApiJson: mocks.isApiJson,
+    loadApiJson: mocks.loadApiJson,
+    loadGraphData: mocks.loadGraphData
+  }
 }))
 
 import { useEditorLaunchWorkflow } from './useEditorLaunchWorkflow'
@@ -18,6 +24,7 @@ import { useEditorLaunchWorkflow } from './useEditorLaunchWorkflow'
 describe('useEditorLaunchWorkflow', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.isApiJson.mockReturnValue(false)
     window.name = ''
   })
 
@@ -52,5 +59,25 @@ describe('useEditorLaunchWorkflow', () => {
       false
     )
     expect(mocks.fetchApi).not.toHaveBeenCalled()
+  })
+
+  it('imports an API-format launch with the official API loader', async () => {
+    window.name = 'eds_pool-api'
+    const workflow = {
+      '1': {
+        class_type: 'UpscaleModelLoader',
+        inputs: { model_name: 'model.pth' }
+      }
+    }
+    mocks.isApiJson.mockReturnValue(true)
+    mocks.fetchApi.mockResolvedValue(
+      Response.json({ launch: { label: null, workflow } })
+    )
+    expect(await useEditorLaunchWorkflow().loadEditorLaunchWorkflow()).toBe(
+      true
+    )
+    expect(mocks.isApiJson).toHaveBeenCalledWith(workflow)
+    expect(mocks.loadApiJson).toHaveBeenCalledWith(workflow, 'Launch workflow')
+    expect(mocks.loadGraphData).not.toHaveBeenCalled()
   })
 })

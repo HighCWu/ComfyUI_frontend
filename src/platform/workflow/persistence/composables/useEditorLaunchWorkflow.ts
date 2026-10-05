@@ -1,11 +1,14 @@
 import { api } from '@/scripts/api'
 import { app } from '@/scripts/app'
-import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
+import type {
+  ComfyApiWorkflow,
+  ComfyWorkflowJSON
+} from '@/platform/workflow/validation/schemas/workflowSchema'
 
 interface EditorLaunchResponse {
   launch: {
     label: string | null
-    workflow: ComfyWorkflowJSON
+    workflow: ComfyWorkflowJSON | ComfyApiWorkflow
   } | null
 }
 
@@ -19,6 +22,13 @@ export function useEditorLaunchWorkflow() {
     if (!response.ok) return false
     const payload = (await response.json()) as EditorLaunchResponse
     if (!payload.launch) return false
+    if (app.isApiJson(payload.launch.workflow)) {
+      app.loadApiJson(
+        payload.launch.workflow,
+        payload.launch.label ?? 'Launch workflow'
+      )
+      return true
+    }
     await app.loadGraphData(
       payload.launch.workflow,
       true,
