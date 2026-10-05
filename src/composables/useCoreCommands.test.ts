@@ -1,5 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
 import { useCoreCommands } from '@/composables/useCoreCommands'
@@ -12,6 +12,11 @@ import { app } from '@/scripts/app'
 import type * as ModelStoreModule from '@/stores/modelStore'
 import { createMockLGraphNode } from '@/utils/__tests__/litegraphTestUtils'
 import { fromPartial } from '@total-typescript/shoehorn'
+
+const billing = vi.hoisted(() => ({
+  isActiveSubscription: { value: true },
+  showSubscriptionDialog: vi.fn()
+}))
 
 // Mock vue-i18n for useExternalLink
 const mockLocale = ref('en')
@@ -55,8 +60,10 @@ vi.mock('@/scripts/app', () => {
       }),
       openClipspace: vi.fn(),
       refreshComboInNodes: vi.fn().mockResolvedValue(undefined),
+      queuePrompt: vi.fn().mockResolvedValue(true),
       canvas: mockCanvas,
       rootGraph: {
+        nodes: [],
         clear: mockGraphClear
       }
     }
@@ -116,6 +123,7 @@ vi.mock('@/services/litegraphService', () => ({
 const mockTrackHelpResourceClicked = vi.hoisted(() => vi.fn())
 vi.mock('@/platform/telemetry', () => ({
   useTelemetry: vi.fn(() => ({
+    trackWorkflowExecution: vi.fn(),
     trackHelpResourceClicked: mockTrackHelpResourceClicked
   }))
 }))
@@ -197,8 +205,8 @@ vi.mock('@/platform/cloud/subscription/composables/useSubscription', () => ({
 
 vi.mock('@/composables/billing/useBillingContext', () => ({
   useBillingContext: vi.fn(() => ({
-    isActiveSubscription: { value: true },
-    showSubscriptionDialog: vi.fn()
+    isActiveSubscription: billing.isActiveSubscription,
+    showSubscriptionDialog: billing.showSubscriptionDialog
   }))
 }))
 
@@ -292,6 +300,8 @@ describe('useCoreCommands', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    billing.isActiveSubscription.value = true
+    vi.stubEnv('VITE_RUN_BILLING_MODE', undefined)
 
     // Set up Pinia
     setActivePinia(createPinia())
@@ -304,6 +314,33 @@ describe('useCoreCommands', () => {
 
     // Mock global confirm
     global.confirm = vi.fn().mockReturnValue(true)
+  })
+  afterEach(() => vi.unstubAllEnvs())
+
+  it.for(['Comfy.QueuePrompt', 'Comfy.QueuePromptFront'])(
+    'allows the native %s command in explicit prepaid mode',
+    async (id) => {
+      billing.isActiveSubscription.value = false
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      const command = useCoreCommands().find((value) => value.id === id)
+      if (!command) throw new Error('Queue command missing')
+      await command.function()
+      expect(app.queuePrompt).toHaveBeenCalledTimes(1)
+      expect(billing.showSubscriptionDialog).not.toHaveBeenCalled()
+    }
+  )
+
+  it('keeps native commands subscription-gated without prepaid opt-in', async () => {
+    billing.isActiveSubscription.value = false
+    const command = useCoreCommands().find(
+      (value) => value.id === 'Comfy.QueuePrompt'
+    )
+    if (!command) throw new Error('Queue command missing')
+    await command.function()
+    expect(app.queuePrompt).not.toHaveBeenCalled()
+    expect(billing.showSubscriptionDialog).toHaveBeenCalledWith({
+      reason: 'subscribe_to_run'
+    })
   })
 
   describe('ClearWorkflow command', () => {

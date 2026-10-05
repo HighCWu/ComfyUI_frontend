@@ -75,6 +75,8 @@ import { useDialogStore } from '@/stores/dialogStore'
 const moveSelectedNodesVersionAdded = '1.22.2'
 export function useCoreCommands(): ComfyCommand[] {
   const { isActiveSubscription, showSubscriptionDialog } = useBillingContext()
+  const requiresSubscription =
+    import.meta.env.VITE_RUN_BILLING_MODE !== 'prepaid'
   const workflowService = useWorkflowService()
   const workflowStore = useWorkflowStore()
   const settingsDialog = useSettingsDialog()
@@ -502,7 +504,7 @@ export function useCoreCommands(): ComfyCommand[] {
         trigger_source?: ExecutionTriggerSource
       }) => {
         trackRunButton(metadata)
-        if (!isActiveSubscription.value) {
+        if (requiresSubscription && !isActiveSubscription.value) {
           showSubscriptionDialog({ reason: 'subscribe_to_run' })
           return
         }
@@ -525,7 +527,7 @@ export function useCoreCommands(): ComfyCommand[] {
         trigger_source?: ExecutionTriggerSource
       }) => {
         trackRunButton(metadata)
-        if (!isActiveSubscription.value) {
+        if (requiresSubscription && !isActiveSubscription.value) {
           showSubscriptionDialog({ reason: 'subscribe_to_run' })
           return
         }
@@ -547,7 +549,7 @@ export function useCoreCommands(): ComfyCommand[] {
         trigger_source?: ExecutionTriggerSource
       }) => {
         trackRunButton(metadata)
-        if (!isActiveSubscription.value) {
+        if (requiresSubscription && !isActiveSubscription.value) {
           showSubscriptionDialog({ reason: 'subscribe_to_run' })
           return
         }
