@@ -19,9 +19,13 @@ declare global {
 
   interface ImportMetaEnv {
     VITE_RUN_BILLING_MODE?: 'prepaid' | 'subscription'
+    VITE_AGENT_BACKEND_MODE?: 'disabled' | 'official'
     VITE_APP_VERSION?: string
+    VITE_BILLING_WEB_URL?: string
     VITE_STAGING_API_BASE_URL?: string
+    VITE_STAGING_CLOUD_BASE_URL?: string
     VITE_STAGING_PLATFORM_BASE_URL?: string
+    VITE_STRIPE_PUBLISHABLE_KEY?: string
   }
 
   interface ImportMeta {

@@ -1,16 +1,22 @@
 import userEvent from '@testing-library/user-event'
 import { render, screen } from '@testing-library/vue'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import FormDropdownMenu from './FormDropdownMenu.vue'
 import type { FormDropdownItem, LayoutMode } from './types'
 
 const VirtualGridStub = {
   name: 'VirtualGrid',
-  props: ['items', 'maxColumns', 'itemHeight', 'scrollerHeight'],
-  emits: ['approach-end'],
+  props: [
+    'items',
+    'maxColumns',
+    'itemHeight',
+    'scrollerHeight',
+    'onLoadMore',
+    'canLoadMore'
+  ],
   template:
-    '<div data-testid="virtual-grid" :data-items="JSON.stringify(items)" :data-max-columns="maxColumns" @click="$emit(\'approach-end\')" />'
+    '<div data-testid="virtual-grid" :data-items="JSON.stringify(items)" :data-max-columns="maxColumns" :data-can-load-more="String(canLoadMore)" @click="onLoadMore && onLoadMore()" />'
 }
 
 function createItem(id: string, name: string): FormDropdownItem {
@@ -51,7 +57,7 @@ describe('FormDropdownMenu', () => {
       global: globalConfig
     })
 
-    // eslint-disable-next-line testing-library/no-container, testing-library/no-node-access
+    // oxlint-disable-next-line testing-library/no-container, testing-library/no-node-access
     const emptyIcon = container.querySelector('[class*="lucide--circle-off"]')
     expect(emptyIcon).not.toBeNull()
   })
@@ -96,16 +102,19 @@ describe('FormDropdownMenu', () => {
     expect(virtualGrid.getAttribute('data-max-columns')).toBe('1')
   })
 
-  it('forwards approach-end from the virtual grid', async () => {
+  it('forwards onLoadMore and canLoadMore to the virtual grid', async () => {
     const user = userEvent.setup()
-    const { emitted } = render(FormDropdownMenu, {
-      props: defaultProps,
+    const onLoadMore = vi.fn()
+    render(FormDropdownMenu, {
+      props: { ...defaultProps, onLoadMore, canLoadMore: true },
       global: globalConfig
     })
 
-    await user.click(screen.getByTestId('virtual-grid'))
+    const grid = screen.getByTestId('virtual-grid')
+    expect(grid.getAttribute('data-can-load-more')).toBe('true')
 
-    expect(emitted()['approach-end']).toHaveLength(1)
+    await user.click(grid)
+    expect(onLoadMore).toHaveBeenCalledTimes(1)
   })
 
   it('shows the loading-more row only while loadingMore is set', async () => {
@@ -135,25 +144,22 @@ describe('FormDropdownMenu', () => {
   })
 
   /** Regression: PrimeVue Popover teleports the menu to document.body, so
-   *  trackpad pinch-zoom and horizontal swipes must be guarded on the menu
-   *  itself rather than relying on the LGraphNode wheel handler. */
+   *  trackpad pinch-zoom must be guarded on the menu itself — `LGraphNode`
+   *  never sees these events. macOS pinch synthesizes `ctrlKey`; explicit
+   *  `⌘ + wheel` (and Windows/Linux equivalents) come through as `metaKey`. */
   it.for([
-    { name: 'pinch-zoom', overrides: { ctrlKey: true, deltaY: -10 } },
-    { name: 'horizontal swipe', overrides: { deltaX: 30, deltaY: 5 } }
-  ])('suppresses browser default for $name', ({ overrides }) => {
+    { name: 'ctrlKey', modifier: 'ctrlKey' as const },
+    { name: 'metaKey', modifier: 'metaKey' as const }
+  ])('suppresses browser default for pinch-zoom ($name)', ({ modifier }) => {
     render(FormDropdownMenu, {
       props: defaultProps,
       global: globalConfig
     })
 
     const root = screen.getByTestId('form-dropdown-menu')
-    const event = new WheelEvent('wheel', {
-      bubbles: true,
-      cancelable: true
-    })
-    Object.entries(overrides).forEach(([key, value]) => {
-      Object.defineProperty(event, key, { value })
-    })
+    const event = new WheelEvent('wheel', { bubbles: true, cancelable: true })
+    Object.defineProperty(event, modifier, { value: true })
+    Object.defineProperty(event, 'deltaY', { value: -10 })
     root.dispatchEvent(event)
 
     expect(event.defaultPrevented).toBe(true)
@@ -211,19 +217,33 @@ describe('FormDropdownMenu', () => {
     expect(emitted('show-picker')).toHaveLength(1)
   })
 
-  /** Vertical scrolling must remain native so the dropdown's own scroll
-   *  container can scroll its content. */
-  it('does not suppress vertical scroll', () => {
+  /** Regression: slow trackpad vertical scrolls emit small-delta frames with
+   *  stray horizontal jitter (`|deltaX| > |deltaY|`). preventDefault-ing those
+   *  cancelled the native scroll and starved the VirtualGrid's `useScroll`,
+   *  leaving rows blank. Horizontal-swipe-to-navigate is blocked at the page
+   *  boundary by `overscroll-behavior: none` on `html, body`, so the local
+   *  handler must NOT preventDefault these events. The `pure vertical` case
+   *  also covers plain native scrolling of the dropdown's own content. */
+  it.for([
+    { name: 'pure vertical', overrides: { deltaY: 30 } },
+    {
+      name: 'slow scroll with horizontal jitter',
+      overrides: { deltaX: 1.5, deltaY: 1.2 }
+    },
+    {
+      name: 'pronounced horizontal swipe',
+      overrides: { deltaX: 30, deltaY: 5 }
+    }
+  ])('does not suppress $name wheel', ({ overrides }) => {
     render(FormDropdownMenu, {
       props: defaultProps,
       global: globalConfig
     })
 
     const root = screen.getByTestId('form-dropdown-menu')
-    const event = new WheelEvent('wheel', {
-      deltaY: 30,
-      bubbles: true,
-      cancelable: true
+    const event = new WheelEvent('wheel', { bubbles: true, cancelable: true })
+    Object.entries(overrides).forEach(([key, value]) => {
+      Object.defineProperty(event, key, { value })
     })
     root.dispatchEvent(event)
 

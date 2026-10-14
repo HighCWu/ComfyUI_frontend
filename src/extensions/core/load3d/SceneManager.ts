@@ -1,13 +1,21 @@
 import { SparkRenderer } from '@sparkjsdev/spark'
+import { delay } from 'es-toolkit'
 import * as THREE from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
+import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
+
+import type { RendererView } from '@/renderer/three/RendererView'
+import { createHighPrecisionTarget } from '@/renderer/three/highPrecisionOutput'
 
 import Load3dUtils from './Load3dUtils'
-import {
-  type BackgroundRenderModeType,
-  type EventManagerInterface,
-  type SceneManagerInterface
+import { QuadWireframeOverlay } from './quadWireframe/QuadWireframeManager'
+import type {
+  BackgroundRenderModeType,
+  EventManagerInterface,
+  SceneManagerInterface
 } from './interfaces'
+
+const SPLAT_SORT_TIMEOUT_MS = 5_000
+const SPLAT_SORT_POLL_MS = 16
 
 export class SceneManager implements SceneManagerInterface {
   scene!: THREE.Scene
@@ -25,6 +33,19 @@ export class SceneManager implements SceneManagerInterface {
     return this.nextSparkDirtyPromise
   }
 
+  async whenSplatsSorted(camera: THREE.Camera): Promise<void> {
+    const spark = this.sparkRenderer
+    await spark.update({ scene: this.scene, camera })
+    const deadline = performance.now() + SPLAT_SORT_TIMEOUT_MS
+    while ((spark.sorting || spark.sortDirty) && performance.now() < deadline) {
+      await delay(SPLAT_SORT_POLL_MS)
+    }
+  }
+
+  hasSplats(): boolean {
+    return this.sparkRenderer.activeSplats > 0
+  }
+
   backgroundScene!: THREE.Scene
   backgroundCamera: THREE.OrthographicCamera
   backgroundMesh: THREE.Mesh | null = null
@@ -38,16 +59,18 @@ export class SceneManager implements SceneManagerInterface {
 
   private eventManager: EventManagerInterface
   private renderer: THREE.WebGLRenderer
+  private view: RendererView
 
   private getActiveCamera: () => THREE.Camera
 
   constructor(
-    renderer: THREE.WebGLRenderer,
+    view: RendererView,
     getActiveCamera: () => THREE.Camera,
     _getControls: () => OrbitControls,
     eventManager: EventManagerInterface
   ) {
-    this.renderer = renderer
+    this.view = view
+    this.renderer = view.renderer
     this.eventManager = eventManager
     this.scene = new THREE.Scene()
 
@@ -65,7 +88,7 @@ export class SceneManager implements SceneManagerInterface {
     // forceRender directly into onDirty caused a per-frame render-setDirty
     // cascade that made splats visibly "balloon" during camera interaction.
     this.sparkRenderer = new SparkRenderer({
-      renderer,
+      renderer: view.renderer,
       onDirty: () => {
         const resolve = this.nextSparkDirtyResolve
         this.nextSparkDirtyResolve = null
@@ -104,7 +127,8 @@ export class SceneManager implements SceneManagerInterface {
     this.backgroundMesh.position.set(0, 0, 0)
     this.backgroundScene.add(this.backgroundMesh)
 
-    this.renderer.setClearColor(0x000000, 0)
+    this.view.state.clearColor.set(0x000000)
+    this.view.state.clearAlpha = 0
   }
 
   init(): void {}
@@ -135,9 +159,7 @@ export class SceneManager implements SceneManagerInterface {
   }
 
   toggleGrid(showGrid: boolean): void {
-    if (this.gridHelper) {
-      this.gridHelper.visible = showGrid
-    }
+    this.gridHelper.visible = showGrid
 
     this.eventManager.emitEvent('showGridChange', showGrid)
   }
@@ -187,8 +209,8 @@ export class SceneManager implements SceneManagerInterface {
 
     let type = 'input'
     let pathParts = Load3dUtils.splitFilePath(uploadPath)
-    let subfolder = pathParts[0]
-    let filename = pathParts[1]
+    const subfolder = pathParts[0]
+    const filename = pathParts[1]
 
     if (subfolder === 'temp') {
       type = 'temp'
@@ -250,8 +272,8 @@ export class SceneManager implements SceneManagerInterface {
         this.updateBackgroundSize(
           this.backgroundTexture,
           this.backgroundMesh,
-          this.renderer.domElement.clientWidth,
-          this.renderer.domElement.clientHeight
+          this.view.canvas.clientWidth,
+          this.view.canvas.clientHeight
         )
       }
 
@@ -369,6 +391,8 @@ export class SceneManager implements SceneManagerInterface {
     width: number,
     height: number
   ): Promise<{ scene: string; mask: string; normal: string }> {
+    this.view.beginRender()
+
     const originalSize = new THREE.Vector2()
     this.renderer.getSize(originalSize)
     const originalPixelRatio = this.renderer.getPixelRatio()
@@ -393,7 +417,17 @@ export class SceneManager implements SceneManagerInterface {
       THREE.Material | THREE.Material[]
     >()
     const tempMaterials: THREE.MeshNormalMaterial[] = []
+    const hiddenOverlays: THREE.Object3D[] = []
     const gridVisible = this.gridHelper.visible
+    const captureTarget = this.hasSplats()
+      ? createHighPrecisionTarget(width, height)
+      : null
+    const capturePass = (draw: () => void): string => {
+      this.view.bindOutput(captureTarget, width, height)
+      draw()
+      this.view.resolveOutput()
+      return this.renderer.domElement.toDataURL('image/png')
+    }
 
     try {
       // Capture at exactly the requested pixel dimensions, independent of
@@ -431,15 +465,17 @@ export class SceneManager implements SceneManagerInterface {
         )
       }
 
-      this.renderer.clear()
-      this.renderBackground()
-      this.renderer.render(this.scene, activeCamera)
-      const sceneData = this.renderer.domElement.toDataURL('image/png')
+      const sceneData = capturePass(() => {
+        this.renderer.clear()
+        this.renderBackground()
+        this.renderer.render(this.scene, activeCamera)
+      })
 
       this.renderer.setClearColor(0x000000, 0)
-      this.renderer.clear()
-      this.renderer.render(this.scene, activeCamera)
-      const maskData = this.renderer.domElement.toDataURL('image/png')
+      const maskData = capturePass(() => {
+        this.renderer.clear()
+        this.renderer.render(this.scene, activeCamera)
+      })
 
       this.scene.traverse((child) => {
         if (child instanceof THREE.Mesh) {
@@ -452,21 +488,27 @@ export class SceneManager implements SceneManagerInterface {
           })
           tempMaterials.push(tempMaterial)
           child.material = tempMaterial
+        } else if (child instanceof QuadWireframeOverlay && child.visible) {
+          hiddenOverlays.push(child)
+          child.visible = false
         }
       })
 
       this.gridHelper.visible = false
 
       this.renderer.setClearColor(0x000000, 1)
-      this.renderer.clear()
-      this.renderer.render(this.scene, activeCamera)
-      const normalData = this.renderer.domElement.toDataURL('image/png')
+      const normalData = capturePass(() => {
+        this.renderer.clear()
+        this.renderer.render(this.scene, activeCamera)
+      })
 
       this.renderer.setClearColor(0xffffff, 1)
       this.renderer.clear()
 
       return { scene: sceneData, mask: maskData, normal: normalData }
     } finally {
+      this.view.bindOutput(null, width, height)
+      captureTarget?.dispose()
       this.scene.traverse((child) => {
         if (child instanceof THREE.Mesh) {
           const originalMaterial = originalMaterials.get(child)
@@ -478,6 +520,7 @@ export class SceneManager implements SceneManagerInterface {
       for (const mat of tempMaterials) {
         mat.dispose()
       }
+      for (const overlay of hiddenOverlays) overlay.visible = true
       this.gridHelper.visible = gridVisible
       if (savedCameraParams.type === 'perspective') {
         const persp = activeCamera as THREE.PerspectiveCamera
@@ -495,7 +538,10 @@ export class SceneManager implements SceneManagerInterface {
       this.renderer.setPixelRatio(originalPixelRatio)
       this.renderer.setSize(originalSize.x, originalSize.y)
       this.renderer.outputColorSpace = originalOutputColorSpace
-      this.handleResize(originalSize.x, originalSize.y)
+      this.handleResize(
+        this.view.canvas.clientWidth,
+        this.view.canvas.clientHeight
+      )
     }
   }
 

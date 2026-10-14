@@ -1,6 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import type { PromptResponse } from '@/schemas/apiSchema'
 import { POOL_CAPACITY_PREPARING_CODE, PromptExecutionError } from './api'
 import {
   isWorkspaceEditorIframe,
@@ -16,15 +15,11 @@ const poolCapacityError = (): PromptExecutionError =>
         message: 'capacity is preparing',
         details: { code: POOL_CAPACITY_PREPARING_CODE }
       }
-    } as unknown as PromptResponse,
+    },
     409
   )
 
 describe('retryPromptWhenCapacityPreparing', () => {
-  beforeEach(() => {
-    vi.restoreAllMocks()
-  })
-
   it('retries the exact capacity-preparing error and reuses the operation', async () => {
     const operation = vi
       .fn<() => Promise<string>>()
@@ -54,7 +49,7 @@ describe('retryPromptWhenCapacityPreparing', () => {
           message: 'not retryable',
           details: { code: 'pool_not_ready' }
         }
-      } as unknown as PromptResponse,
+      },
       409
     )
     const operation = vi

@@ -4,6 +4,7 @@ import type { ComfyPage } from '@e2e/fixtures/ComfyPage'
 import { TestIds } from '@e2e/fixtures/selectors'
 
 import { OutputHistoryComponent } from '@e2e/fixtures/components/OutputHistory'
+import { WorkflowActionsDropdown } from '@e2e/fixtures/components/WorkflowActionsDropdown'
 import { AppModeWidgetHelper } from '@e2e/fixtures/helpers/AppModeWidgetHelper'
 import { BuilderFooterHelper } from '@e2e/fixtures/helpers/BuilderFooterHelper'
 import { BuilderSaveAsHelper } from '@e2e/fixtures/helpers/BuilderSaveAsHelper'
@@ -19,6 +20,7 @@ export class AppModeHelper {
   readonly outputHistory: OutputHistoryComponent
   readonly steps: BuilderStepsHelper
   readonly widgets: AppModeWidgetHelper
+  readonly workflowActions: WorkflowActionsDropdown
 
   /** The "Connect an output" popover shown when saving without outputs. */
   public readonly connectOutputPopover: Locator
@@ -68,6 +70,7 @@ export class AppModeHelper {
   public readonly vueNodeSwitchDontShowAgainCheckbox: Locator
   /** The main content area where outputs are displayed*/
   public readonly centerPanel: Locator
+  public readonly rightPanelResizeHandle: Locator
 
   constructor(private readonly comfyPage: ComfyPage) {
     this.mobile = new MobileAppHelper(comfyPage)
@@ -77,6 +80,7 @@ export class AppModeHelper {
     this.outputHistory = new OutputHistoryComponent(comfyPage.page)
     this.steps = new BuilderStepsHelper(comfyPage)
     this.widgets = new AppModeWidgetHelper(comfyPage)
+    this.workflowActions = new WorkflowActionsDropdown(comfyPage.page)
 
     this.connectOutputPopover = this.page.getByTestId(
       TestIds.builder.connectOutputPopover
@@ -141,13 +145,28 @@ export class AppModeHelper {
       TestIds.appMode.vueNodeSwitchDontShowAgain
     )
     this.centerPanel = this.page.getByTestId(TestIds.linear.centerPanel)
+    this.rightPanelResizeHandle = this.page
+      .getByRole('separator')
+      .and(this.page.locator('[aria-controls="linearCenterPanel"]'))
   }
 
   private get page(): Page {
     return this.comfyPage.page
   }
 
-  /** Enable the linear mode feature flag and top menu. */
+  async resizeRightPanelBy(deltaX: number): Promise<void> {
+    const box = await this.rightPanelResizeHandle.boundingBox()
+    if (!box)
+      throw new Error('App mode right panel resize handle has no layout')
+
+    const x = box.x + box.width / 2
+    const y = box.y + box.height / 2
+    await this.page.mouse.move(x, y)
+    await this.page.mouse.down()
+    await this.page.mouse.move(x + deltaX, y, { steps: 10 })
+    await this.page.mouse.up()
+  }
+
   async enableLinearMode() {
     await this.page.evaluate(() => {
       window.app!.api.serverFeatureFlags.value = {
@@ -155,40 +174,13 @@ export class AppModeHelper {
         linear_toggle_enabled: true
       }
     })
-    await this.comfyPage.settings.setSetting('Comfy.UseNewMenu', 'Top')
-  }
-
-  /** Set preference so the Vue node switch popup does not appear in builder. */
-  async suppressVueNodeSwitchPopup() {
-    await this.comfyPage.settings.setSetting(
-      'Comfy.AppBuilder.VueNodeSwitchDismissed',
-      true
-    )
-  }
-
-  /** Allow the Vue node switch popup so tests can assert its behavior. */
-  async allowVueNodeSwitchPopup() {
-    await this.comfyPage.settings.setSetting(
-      'Comfy.AppBuilder.VueNodeSwitchDismissed',
-      false
-    )
   }
 
   /** Enter builder mode via the "Workflow actions" dropdown. */
   async enterBuilder() {
-    // Wait for any workflow-tab popover to dismiss before clicking —
-    // the popover overlay can intercept the "Workflow actions" click.
-    // Best-effort: the popover may or may not exist; if it stays visible
-    // past the timeout we still proceed with the click.
-    await this.page
-      .locator('.workflow-popover-fade')
-      .waitFor({ state: 'hidden', timeout: 5000 })
-      .catch(() => {})
+    await this.comfyPage.menu.topbar.dismissWorkflowPopover()
 
-    await this.page
-      .getByRole('button', { name: 'Workflow actions' })
-      .first()
-      .click()
+    await this.workflowActions.trigger.click()
     await this.page
       .getByRole('menuitem', { name: /Build app|Edit app/ })
       .click()
@@ -213,7 +205,6 @@ export class AppModeHelper {
   async enterAppModeWithInputs(inputs: [string, string][]) {
     await this.page.evaluate(async (inputTuples) => {
       const graph = window.app!.graph
-      if (!graph) return
 
       const outputNodeIds = graph.nodes
         .filter(

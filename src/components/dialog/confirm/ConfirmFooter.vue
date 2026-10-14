@@ -1,25 +1,32 @@
 <template>
-  <section class="flex w-full flex-wrap justify-end gap-2 px-2 pb-2">
-    <Button :disabled variant="textonly" autofocus @click="$emit('cancel')">
+  <section class="flex w-full flex-wrap items-center justify-end gap-4 p-4">
+    <Button
+      :disabled
+      variant="muted-textonly"
+      size="lg"
+      autofocus
+      @click="settle('cancel')"
+    >
       {{ cancelTextX }}
     </Button>
     <Button
       :disabled
       :variant="confirmVariant ?? 'textonly'"
+      size="lg"
       :class="confirmClass"
-      @click="$emit('confirm')"
+      @click="settle('confirm')"
     >
       {{ confirmTextX }}
     </Button>
   </section>
 </template>
 <script setup lang="ts">
-import { computed, toValue } from 'vue'
+import { computed, ref, toValue } from 'vue'
 import type { MaybeRefOrGetter } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import Button from '@/components/ui/button/Button.vue'
-import type { ButtonVariants } from '@/components/ui/button/button.variants'
+import type { ButtonVariants } from '@comfyorg/design-system/button.variants'
 
 const { t } = useI18n()
 
@@ -37,12 +44,21 @@ const {
   optionsDisabled?: MaybeRefOrGetter<boolean>
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   cancel: []
   confirm: []
 }>()
 
+const settled = ref(false)
+
 const confirmTextX = computed(() => confirmText || t('g.confirm'))
 const cancelTextX = computed(() => cancelText || t('g.cancel'))
-const disabled = computed(() => toValue(optionsDisabled))
+const disabled = computed(() => settled.value || toValue(optionsDisabled))
+
+function settle(choice: 'cancel' | 'confirm') {
+  if (settled.value) return
+  settled.value = true
+  if (choice === 'cancel') emit('cancel')
+  else emit('confirm')
+}
 </script>

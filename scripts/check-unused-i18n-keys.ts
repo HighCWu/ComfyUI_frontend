@@ -3,6 +3,8 @@ import { execSync } from 'child_process'
 import * as fs from 'fs'
 import { globSync } from 'glob'
 import type { LocaleData } from './i18n-types'
+import { isNestedLocaleData } from './i18n-types'
+import { createKeyUsageMatcher } from './i18n-key-usage'
 
 // Configuration
 const SOURCE_PATTERNS = ['src/**/*.{js,ts,vue}', '!src/locales/**/*']
@@ -15,6 +17,7 @@ const IGNORE_PATTERNS = [
   /^dataTypes\./, // Data types might be referenced dynamically
   /^contextMenu\./, // Context menu items might be dynamic
   /^color\./, // Color names might be used dynamically
+  /^onboardingCoachmarks\.[^.]+\.[^.]+\./, // Step keys derived as onboardingCoachmarks.<tour>.<step>.*
   // Auto-generated categories from collect-i18n-general.ts
   /^menuLabels\./, // Menu labels generated from command labels
   /^settingsCategories\./, // Settings categories generated from setting definitions
@@ -33,9 +36,7 @@ function getStagedLocaleFiles(): string[] {
     })
     return output
       .split('\n')
-      .filter(
-        (file) => file.startsWith('src/locales/') && file.endsWith('.json')
-      )
+      .filter((file) => /^src\/locales\/[^./][^/]*\/[^/]+\.json$/.test(file))
   } catch {
     return []
   }
@@ -48,7 +49,7 @@ function extractKeys(obj: LocaleData, prefix = ''): string[] {
   for (const [key, value] of Object.entries(obj)) {
     const fullKey = prefix ? `${prefix}.${key}` : key
 
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    if (isNestedLocaleData(value)) {
       keys.push(...extractKeys(value, fullKey))
     } else {
       keys.push(fullKey)
@@ -64,24 +65,25 @@ function getNewKeysFromStagedFiles(stagedFiles: string[]): Set<string> {
 
   for (const file of stagedFiles) {
     try {
-      // Get the staged content
-      const stagedContent = execSync(`git show :${file}`, { encoding: 'utf-8' })
+      const stagedContent = execSync(`git show :${file}`, {
+        encoding: 'utf-8',
+        maxBuffer: 16 * 1024 * 1024
+      })
       const stagedData: LocaleData = JSON.parse(stagedContent)
       const stagedKeys = new Set(extractKeys(stagedData))
 
-      // Get the current HEAD content (if file exists)
       let headKeys = new Set<string>()
       try {
         const headContent = execSync(`git show HEAD:${file}`, {
-          encoding: 'utf-8'
+          encoding: 'utf-8',
+          maxBuffer: 16 * 1024 * 1024
         })
         const headData: LocaleData = JSON.parse(headContent)
         headKeys = new Set(extractKeys(headData))
       } catch {
-        // File is new, all keys are new
+        headKeys = new Set<string>()
       }
 
-      // Find keys that are in staged but not in HEAD
       stagedKeys.forEach((key) => {
         if (!headKeys.has(key)) {
           newKeys.add(key)
@@ -101,67 +103,33 @@ function shouldIgnoreKey(key: string): boolean {
 }
 
 // Search for key usage in source files
-function isKeyUsed(key: string, sourceFiles: string[]): boolean {
-  // Escape special regex characters
-  const escapeRegex = (str: string) =>
-    str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const escapedKey = escapeRegex(key)
-  const lastPart = key.split('.').pop()
-  const escapedLastPart = lastPart ? escapeRegex(lastPart) : ''
-
-  // Common patterns for i18n key usage
-  const patterns = [
-    // Direct usage: $t('key'), t('key'), i18n.t('key')
-    new RegExp(`[t$]\\s*\\(\\s*['"\`]${escapedKey}['"\`]`, 'g'),
-    // With namespace: $t('g.key'), t('namespace.key')
-    new RegExp(`[t$]\\s*\\(\\s*['"\`][^'"]+\\.${escapedLastPart}['"\`]`, 'g'),
-    // Dynamic keys might reference parts of the key
-    new RegExp(`['"\`]${escapedKey}['"\`]`, 'g')
-  ]
-
-  for (const file of sourceFiles) {
-    const content = fs.readFileSync(file, 'utf-8')
-
-    for (const pattern of patterns) {
-      if (pattern.test(content)) {
-        return true
-      }
-    }
-  }
-
-  return false
-}
-
 // Main function
 async function checkNewUnusedKeys() {
   const stagedLocaleFiles = getStagedLocaleFiles()
 
   if (stagedLocaleFiles.length === 0) {
-    // No locale files staged, nothing to check
     process.exit(0)
   }
 
-  // Get all new keys from staged files
   const newKeys = getNewKeysFromStagedFiles(stagedLocaleFiles)
 
   if (newKeys.size === 0) {
-    // Silent success - no output needed
     process.exit(0)
   }
 
-  // Get all source files
-  const sourceFiles = globSync(SOURCE_PATTERNS)
+  const sourceContents = globSync(SOURCE_PATTERNS).map((file) =>
+    fs.readFileSync(file, 'utf-8')
+  )
+  const isKeyUsed = createKeyUsageMatcher(sourceContents)
 
-  // Check each new key
   const unusedNewKeys: string[] = []
 
   newKeys.forEach((key) => {
-    if (!shouldIgnoreKey(key) && !isKeyUsed(key, sourceFiles)) {
+    if (!shouldIgnoreKey(key) && !isKeyUsed(key)) {
       unusedNewKeys.push(key)
     }
   })
 
-  // Report results
   if (unusedNewKeys.length > 0) {
     console.warn('\n⚠️  Warning: Found unused NEW i18n keys:\n')
 
@@ -175,10 +143,7 @@ async function checkNewUnusedKeys() {
     )
     console.warn('Consider using them or removing them in a future update.')
 
-    // Changed from process.exit(1) to process.exit(0) for warning only
     process.exit(0)
-  } else {
-    // Silent success - no output needed
   }
 }
 

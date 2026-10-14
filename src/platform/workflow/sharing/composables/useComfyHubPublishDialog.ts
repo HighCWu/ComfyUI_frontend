@@ -22,8 +22,23 @@ export function useComfyHubPublishDialog() {
     })
   }
 
+  /** Extension-facing entry point; also used by the e2e publish fixture. */
+  async function showPublishDialog(): Promise<void> {
+    dialogService.showLayoutDialog({
+      key: DIALOG_KEY,
+      component: ComfyHubPublishDialog,
+      props: {
+        onClose: hide,
+        // Falls through to the BaseModalLayout root for the e2e
+        // publish-dialog selector.
+        'data-testid': 'publish-dialog'
+      }
+    })
+  }
+
   return {
     show,
-    hide
+    hide,
+    showPublishDialog
   }
 }

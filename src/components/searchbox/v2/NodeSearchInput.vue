@@ -35,13 +35,14 @@
           ref="inputRef"
           v-model="searchQuery"
           type="text"
+          autofocus
           role="combobox"
           aria-autocomplete="list"
           :aria-expanded="true"
           aria-controls="results-list"
           :aria-label="t('g.addNode')"
           :placeholder="t('g.addNode')"
-          class="text-foreground h-6 min-w-[min(300px,80vw)] flex-1 border-none bg-transparent font-inter text-sm outline-none placeholder:text-muted-foreground"
+          class="h-6 min-w-[min(300px,80vw)] flex-1 border-none bg-transparent font-inter text-sm text-base-foreground outline-none placeholder:text-muted-foreground"
           @keydown.enter.prevent="emit('selectCurrent')"
           @keydown.down.prevent="emit('navigateDown')"
           @keydown.up.prevent="emit('navigateUp')"
@@ -52,7 +53,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   TagsInputInput,
@@ -95,10 +96,6 @@ function onRemoveTag(tagValue: string) {
 function focus() {
   inputRef.value?.focus()
 }
-
-onMounted(() => {
-  focus()
-})
 
 defineExpose({ focus })
 </script>

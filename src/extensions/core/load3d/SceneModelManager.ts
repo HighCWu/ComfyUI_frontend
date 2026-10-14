@@ -2,6 +2,8 @@ import { SparkRenderer } from '@sparkjsdev/spark'
 import * as THREE from 'three'
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader'
 
+import type { RendererViewState } from '@/renderer/three/sharedWebGLRenderer'
+
 import { DEFAULT_MODEL_CAPABILITIES } from './ModelAdapter'
 import type { ModelAdapterCapabilities } from './ModelAdapter'
 import { buildPointCloudForMaterialMode } from './PointCloudModelAdapter'
@@ -11,6 +13,85 @@ import type {
   ModelManagerInterface,
   UpDirection
 } from './interfaces'
+import { QuadWireframeManager } from './quadWireframe/QuadWireframeManager'
+import {
+  faceSizesFor,
+  registerFaceSizes
+} from './quadWireframe/faceSizesRegistry'
+
+type ResourceRenderable = THREE.Mesh | THREE.Points | THREE.Line
+
+function isResourceRenderable(
+  object: THREE.Object3D
+): object is ResourceRenderable {
+  return (
+    object instanceof THREE.Mesh ||
+    object instanceof THREE.Points ||
+    object instanceof THREE.Line
+  )
+}
+
+export function disposeObject3D(
+  object: THREE.Object3D,
+  preservedMaterials: THREE.Material | ReadonlySet<THREE.Material>,
+  preservedTextures: ReadonlySet<THREE.Texture> = new Set()
+): void {
+  const preserved =
+    preservedMaterials instanceof THREE.Material
+      ? new Set([preservedMaterials])
+      : preservedMaterials
+  object.traverse((child) => {
+    if (!isResourceRenderable(child)) return
+    child.geometry.dispose()
+    const materials = Array.isArray(child.material)
+      ? child.material
+      : [child.material]
+    for (const material of materials) {
+      if (preserved.has(material)) continue
+      for (const [, texture] of materialTextures(material)) {
+        if (!preservedTextures.has(texture)) {
+          texture.dispose()
+        }
+      }
+      material.dispose()
+    }
+  })
+}
+
+function materialTextures(
+  material: THREE.Material
+): Array<[property: string, texture: THREE.Texture]> {
+  return Object.entries(material).filter(
+    (entry): entry is [string, THREE.Texture] =>
+      entry[1] instanceof THREE.Texture
+  )
+}
+
+function cloneMaterialResources(material: THREE.Material): THREE.Material {
+  const clone = material.clone()
+  for (const [property, texture] of materialTextures(clone)) {
+    // Material subclasses expose texture slots dynamically; Reflect.set keeps
+    // that boundary runtime-checked without pretending every slot is indexed.
+    if (!Reflect.set(clone, property, texture.clone())) {
+      throw new TypeError(`Unable to clone material resource ${property}`)
+    }
+  }
+  return clone
+}
+
+/** Give a cloned renderable graph independent ownership of GPU resources. */
+export function cloneObject3DResources(object: THREE.Object3D): void {
+  object.traverse((child) => {
+    if (!isResourceRenderable(child)) return
+    const geometry = child.geometry.clone()
+    const faceSizes = faceSizesFor(child.geometry)
+    if (faceSizes) registerFaceSizes(geometry, faceSizes)
+    child.geometry = geometry
+    child.material = Array.isArray(child.material)
+      ? child.material.map(cloneMaterialResources)
+      : cloneMaterialResources(child.material)
+  })
+}
 
 export class SceneModelManager implements ModelManagerInterface {
   currentModel: THREE.Object3D | null = null
@@ -28,16 +109,19 @@ export class SceneModelManager implements ModelManagerInterface {
   normalMaterial: THREE.MeshNormalMaterial
   standardMaterial: THREE.MeshStandardMaterial
   wireframeMaterial: THREE.MeshBasicMaterial
+  occluderMaterial: THREE.MeshBasicMaterial
   depthMaterial: THREE.MeshDepthMaterial
+  clayMaterial: THREE.MeshStandardMaterial
   originalFileName: string | null = null
   originalURL: string | null = null
   appliedTexture: THREE.Texture | null = null
+  private ownsAppliedTexture = true
   textureLoader: THREE.TextureLoader
   skeletonHelper: THREE.SkeletonHelper | null = null
   showSkeleton: boolean = false
 
   private scene: THREE.Scene
-  private renderer: THREE.WebGLRenderer
+  private viewState: RendererViewState
   private eventManager: EventManagerInterface
   private activeCamera: THREE.Camera
   private setupCamera: (size: THREE.Vector3, center: THREE.Vector3) => void
@@ -49,10 +133,22 @@ export class SceneModelManager implements ModelManagerInterface {
     size: THREE.Vector3
     center: THREE.Vector3
   } | null
+  private readonly quadWireframe = new QuadWireframeManager()
+
+  private get preservedMaterials(): ReadonlySet<THREE.Material> {
+    return new Set([
+      this.normalMaterial,
+      this.standardMaterial,
+      this.wireframeMaterial,
+      this.depthMaterial,
+      this.clayMaterial,
+      this.occluderMaterial
+    ])
+  }
 
   constructor(
     scene: THREE.Scene,
-    renderer: THREE.WebGLRenderer,
+    viewState: RendererViewState,
     eventManager: EventManagerInterface,
     getActiveCamera: () => THREE.Camera,
     setupCamera: (size: THREE.Vector3, center: THREE.Vector3) => void,
@@ -68,7 +164,7 @@ export class SceneModelManager implements ModelManagerInterface {
     } | null = () => null
   ) {
     this.scene = scene
-    this.renderer = renderer
+    this.viewState = viewState
     this.eventManager = eventManager
     this.activeCamera = getActiveCamera()
     this.setupCamera = setupCamera
@@ -94,27 +190,69 @@ export class SceneModelManager implements ModelManagerInterface {
       opacity: 1.0
     })
 
+    this.occluderMaterial = new THREE.MeshBasicMaterial({
+      colorWrite: false,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1
+    })
+
     this.depthMaterial = new THREE.MeshDepthMaterial({
       depthPacking: THREE.BasicDepthPacking,
       side: THREE.DoubleSide
     })
+    this.depthMaterial.onBeforeCompile = (shader) => {
+      shader.uniforms.cameraType = {
+        value: this.activeCamera instanceof THREE.OrthographicCamera ? 1.0 : 0.0
+      }
+
+      shader.fragmentShader = `
+                uniform float cameraType;
+                ${shader.fragmentShader}
+              `
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        /gl_FragColor\s*=\s*vec4\(\s*vec3\(\s*1.0\s*-\s*fragCoordZ\s*\)\s*,\s*opacity\s*\)\s*;/,
+        `
+                  float depth = 1.0 - fragCoordZ;
+                  if (cameraType > 0.5) {
+                    depth = pow(depth, 400.0);
+                  } else {
+                    depth = pow(depth, 0.6);
+                  }
+                  gl_FragColor = vec4(vec3(depth), opacity);
+                `
+      )
+    }
+    this.depthMaterial.customProgramCacheKey = () => {
+      return this.activeCamera instanceof THREE.OrthographicCamera
+        ? 'ortho'
+        : 'persp'
+    }
 
     this.standardMaterial = this.createSTLMaterial()
+
+    this.clayMaterial = new THREE.MeshStandardMaterial({
+      color: 0x888888,
+      metalness: 0.0,
+      roughness: 0.9,
+      flatShading: false,
+      side: THREE.DoubleSide
+    })
   }
 
   init(): void {}
 
   dispose(): void {
     this.clearModel()
+    this.quadWireframe.dispose()
     this.normalMaterial.dispose()
     this.standardMaterial.dispose()
     this.wireframeMaterial.dispose()
+    this.occluderMaterial.dispose()
     this.depthMaterial.dispose()
-
-    if (this.appliedTexture) {
-      this.appliedTexture.dispose()
-      this.appliedTexture = null
-    }
+    this.clayMaterial.dispose()
   }
 
   createSTLMaterial(): THREE.MeshStandardMaterial {
@@ -127,24 +265,48 @@ export class SceneModelManager implements ModelManagerInterface {
     })
   }
 
+  borrowAppliedTexture(texture: THREE.Texture, takeOwnership = false): void {
+    if (this.ownsAppliedTexture) this.appliedTexture?.dispose()
+    ;[this.appliedTexture, this.ownsAppliedTexture] = [texture, takeOwnership]
+  }
+
+  private appliedTexturesToPreserve(): ReadonlySet<THREE.Texture> {
+    return this.ownsAppliedTexture || !this.appliedTexture
+      ? new Set()
+      : new Set([this.appliedTexture])
+  }
+
   private removeAllMainModelsFromScene(): void {
+    this.quadWireframe.clear()
     const oldMainModels: THREE.Object3D[] = []
     this.scene.traverse((obj) => {
       if (obj.name === 'MainModel') oldMainModels.push(obj)
     })
     oldMainModels.forEach((oldModel) => {
-      oldModel.traverse((child) => {
-        if (child instanceof THREE.Mesh || child instanceof THREE.Points) {
-          child.geometry?.dispose()
-          if (Array.isArray(child.material)) {
-            child.material.forEach((m) => m.dispose())
-          } else {
-            child.material?.dispose()
-          }
-        }
-      })
+      this.restoreOriginalMaterials(oldModel)
+      disposeObject3D(
+        oldModel,
+        this.preservedMaterials,
+        this.appliedTexturesToPreserve()
+      )
       this.disposeModelViaAdapter(oldModel)
       this.scene.remove(oldModel)
+    })
+  }
+
+  private restoreOriginalMaterials(model: THREE.Object3D): void {
+    const preserved = this.preservedMaterials
+    model.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return
+      const original = this.originalMaterials.get(child)
+      if (!original || original === child.material) return
+      const replaced = Array.isArray(child.material)
+        ? child.material
+        : [child.material]
+      for (const material of replaced) {
+        if (!preserved.has(material)) material.dispose()
+      }
+      child.material = original
     })
   }
 
@@ -196,14 +358,12 @@ export class SceneModelManager implements ModelManagerInterface {
     }
 
     if (mode === 'depth') {
-      this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace
+      this.viewState.outputColorSpace = THREE.LinearSRGBColorSpace
     } else {
-      this.renderer.outputColorSpace = THREE.SRGBColorSpace
+      this.viewState.outputColorSpace = THREE.SRGBColorSpace
     }
 
-    if (this.currentModel) {
-      this.currentModel.visible = true
-    }
+    this.currentModel.visible = true
 
     this.currentModel.traverse((child) => {
       if (child instanceof THREE.Mesh) {
@@ -212,71 +372,28 @@ export class SceneModelManager implements ModelManagerInterface {
             if (!this.originalMaterials.has(child)) {
               this.originalMaterials.set(child, child.material)
             }
-            const depthMat = new THREE.MeshDepthMaterial({
-              depthPacking: THREE.BasicDepthPacking,
-              side: THREE.DoubleSide
-            })
-
-            depthMat.onBeforeCompile = (shader) => {
-              shader.uniforms.cameraType = {
-                value:
-                  this.activeCamera instanceof THREE.OrthographicCamera
-                    ? 1.0
-                    : 0.0
-              }
-
-              shader.fragmentShader = `
-                uniform float cameraType;
-                ${shader.fragmentShader}
-              `
-
-              shader.fragmentShader = shader.fragmentShader.replace(
-                /gl_FragColor\s*=\s*vec4\(\s*vec3\(\s*1.0\s*-\s*fragCoordZ\s*\)\s*,\s*opacity\s*\)\s*;/,
-                `
-                  float depth = 1.0 - fragCoordZ;
-                  if (cameraType > 0.5) {
-                    depth = pow(depth, 400.0);
-                  } else {
-                    depth = pow(depth, 0.6);
-                  }
-                  gl_FragColor = vec4(vec3(depth), opacity);
-                `
-              )
-            }
-
-            depthMat.customProgramCacheKey = () => {
-              return this.activeCamera instanceof THREE.OrthographicCamera
-                ? 'ortho'
-                : 'persp'
-            }
-
-            child.material = depthMat
+            child.material = this.depthMaterial
             break
           case 'normal':
             if (!this.originalMaterials.has(child)) {
               this.originalMaterials.set(child, child.material)
             }
-            child.material = new THREE.MeshNormalMaterial({
-              flatShading: false,
-              side: THREE.DoubleSide,
-              normalScale: new THREE.Vector2(1, 1),
-              transparent: false,
-              opacity: 1.0
-            })
+            child.material = this.normalMaterial
             break
           case 'wireframe':
             if (!this.originalMaterials.has(child)) {
               this.originalMaterials.set(child, child.material)
             }
-            child.material = new THREE.MeshBasicMaterial({
-              color: 0xffffff,
-              wireframe: true,
-              transparent: false,
-              opacity: 1.0
-            })
+            child.material = this.wireframeMaterial
+            break
+          case 'clay':
+            if (!this.originalMaterials.has(child)) {
+              this.originalMaterials.set(child, child.material)
+            }
+            child.material = this.clayMaterial
             break
           case 'original':
-          case 'pointCloud':
+          case 'pointCloud': {
             const originalMaterial = this.originalMaterials.get(child)
             if (originalMaterial) {
               child.material = originalMaterial
@@ -293,11 +410,28 @@ export class SceneModelManager implements ModelManagerInterface {
               }
             }
             break
+          }
         }
       }
     })
 
+    this.syncQuadWireframe(mode)
     this.eventManager.emitEvent('materialModeChange', mode)
+  }
+
+  clearQuadWireframe(): void {
+    this.quadWireframe.clear()
+  }
+
+  private syncQuadWireframe(mode: MaterialMode): void {
+    if (mode !== 'wireframe') {
+      this.quadWireframe.hide()
+      return
+    }
+    if (!this.currentModel) return
+    for (const mesh of this.quadWireframe.show(this.currentModel)) {
+      mesh.material = this.occluderMaterial
+    }
   }
 
   setupModelMaterials(model: THREE.Object3D): void {
@@ -310,10 +444,29 @@ export class SceneModelManager implements ModelManagerInterface {
     this.setMaterialMode('original')
   }
 
+  disposeCurrentModel(): void {
+    const model = this.currentModel
+    if (!model) return
+    const appliedTextures = this.appliedTexture
+      ? new Set([this.appliedTexture])
+      : new Set<THREE.Texture>()
+
+    this.quadWireframe.clear()
+    this.scene.remove(model)
+    this.restoreOriginalMaterials(model)
+    disposeObject3D(model, this.preservedMaterials, appliedTextures)
+    this.disposeModelViaAdapter(model)
+    const { originalFileName, originalURL } = this
+    this.reset()
+    this.originalFileName = originalFileName
+    this.originalURL = originalURL
+  }
+
   clearModel(): void {
+    this.quadWireframe.clear()
     const objectsToRemove: THREE.Object3D[] = []
 
-    for (const object of [...this.scene.children]) {
+    for (const object of Array.from(this.scene.children)) {
       const isEnvironmentObject =
         object instanceof THREE.GridHelper ||
         object instanceof THREE.Light ||
@@ -329,16 +482,12 @@ export class SceneModelManager implements ModelManagerInterface {
     objectsToRemove.forEach((obj) => {
       this.scene.remove(obj)
 
-      obj.traverse((child) => {
-        if (child instanceof THREE.Mesh || child instanceof THREE.Points) {
-          child.geometry?.dispose()
-          if (Array.isArray(child.material)) {
-            child.material.forEach((material) => material.dispose())
-          } else {
-            child.material?.dispose()
-          }
-        }
-      })
+      this.restoreOriginalMaterials(obj)
+      disposeObject3D(
+        obj,
+        this.preservedMaterials,
+        this.appliedTexturesToPreserve()
+      )
       this.disposeModelViaAdapter(obj)
     })
 
@@ -354,10 +503,11 @@ export class SceneModelManager implements ModelManagerInterface {
     this.originalFileName = null
     this.originalURL = null
 
-    if (this.appliedTexture) {
+    if (this.appliedTexture && this.ownsAppliedTexture) {
       this.appliedTexture.dispose()
-      this.appliedTexture = null
     }
+    this.appliedTexture = null
+    this.ownsAppliedTexture = true
 
     if (this.skeletonHelper) {
       this.scene.remove(this.skeletonHelper)
@@ -373,7 +523,7 @@ export class SceneModelManager implements ModelManagerInterface {
     if (!this.currentModel) return false
     let found = false
     this.currentModel.traverse((child) => {
-      if (child instanceof THREE.SkinnedMesh && child.skeleton) {
+      if (child instanceof THREE.SkinnedMesh) {
         found = true
       }
     })
@@ -385,30 +535,23 @@ export class SceneModelManager implements ModelManagerInterface {
 
     if (show) {
       if (!this.skeletonHelper && this.currentModel) {
-        let rootBone: THREE.Bone | null = null
+        const rootBones: THREE.Bone[] = []
+        const skinnedMeshes: THREE.SkinnedMesh[] = []
         this.currentModel.traverse((child) => {
-          if (child instanceof THREE.Bone && !rootBone) {
-            if (!(child.parent instanceof THREE.Bone)) {
-              rootBone = child
-            }
+          if (
+            child instanceof THREE.Bone &&
+            !(child.parent instanceof THREE.Bone)
+          ) {
+            rootBones.push(child)
+          } else if (child instanceof THREE.SkinnedMesh) {
+            skinnedMeshes.push(child)
           }
         })
 
-        if (rootBone) {
-          this.skeletonHelper = new THREE.SkeletonHelper(rootBone)
+        const skeletonRoot = rootBones.at(0) ?? skinnedMeshes.at(0)
+        if (skeletonRoot) {
+          this.skeletonHelper = new THREE.SkeletonHelper(skeletonRoot)
           this.scene.add(this.skeletonHelper)
-        } else {
-          let skinnedMesh: THREE.SkinnedMesh | null = null
-          this.currentModel.traverse((child) => {
-            if (child instanceof THREE.SkinnedMesh && !skinnedMesh) {
-              skinnedMesh = child
-            }
-          })
-
-          if (skinnedMesh) {
-            this.skeletonHelper = new THREE.SkeletonHelper(skinnedMesh)
-            this.scene.add(this.skeletonHelper)
-          }
         }
       } else if (this.skeletonHelper) {
         this.skeletonHelper.visible = true
@@ -529,15 +672,9 @@ export class SceneModelManager implements ModelManagerInterface {
 
     const directionChanged = this.currentUpDirection !== direction
 
-    if (!this.originalRotation && this.currentModel.rotation) {
-      this.originalRotation = this.currentModel.rotation.clone()
-    }
-
+    this.originalRotation ??= this.currentModel.rotation.clone()
     this.currentUpDirection = direction
-
-    if (this.originalRotation) {
-      this.currentModel.rotation.copy(this.originalRotation)
-    }
+    this.currentModel.rotation.copy(this.originalRotation)
 
     switch (direction) {
       case 'original':

@@ -24,7 +24,6 @@
 
     <template #header>
       <div
-        :ref="primeVueOverlay.overlayScopeRef"
         class="flex w-full items-center justify-between gap-2"
         @click.self="focusedAsset = null"
       >
@@ -32,6 +31,7 @@
           v-model="searchQuery"
           :autofocus="true"
           size="lg"
+          :aria-label="$t('assetBrowser.searchModels')"
           :placeholder="$t('g.searchPlaceholder', { subject: '' })"
           class="max-w-lg flex-1"
         />
@@ -39,6 +39,7 @@
           v-if="isUploadButtonEnabled"
           variant="primary"
           :size="breakpoints.md ? 'lg' : 'icon'"
+          :aria-label="$t('assetBrowser.uploadModel')"
           data-attr="upload-model-button"
           @click="showUploadDialog"
         >
@@ -54,7 +55,6 @@
       <AssetFilterBar
         :assets="categoryFilteredAssets"
         :show-ownership-filter
-        :content-style="selectContentStyle"
         @filter-change="updateFilters"
         @click.self="focusedAsset = null"
       />
@@ -75,12 +75,7 @@
     </template>
 
     <template #rightPanel>
-      <ModelInfoPanel
-        v-if="focusedAsset"
-        :asset="focusedAsset"
-        :cache-key
-        :select-content-style="selectContentStyle"
-      />
+      <ModelInfoPanel v-if="focusedAsset" :asset="focusedAsset" :cache-key />
       <div
         v-else
         class="flex h-full items-center justify-center p-6 text-center wrap-break-word text-muted"
@@ -100,7 +95,7 @@ import SearchInput from '@/components/ui/search-input/SearchInput.vue'
 import Button from '@/components/ui/button/Button.vue'
 import BaseModalLayout from '@/components/widget/layout/BaseModalLayout.vue'
 import LeftSidePanel from '@/components/widget/panel/LeftSidePanel.vue'
-import { usePrimeVueOverlayChildStyle } from '@/composables/usePopoverSizing'
+import { useFeatureFlags } from '@/composables/useFeatureFlags'
 import AssetFilterBar from '@/platform/assets/components/AssetFilterBar.vue'
 import AssetGrid from '@/platform/assets/components/AssetGrid.vue'
 import ModelInfoPanel from '@/platform/assets/components/modelInfo/ModelInfoPanel.vue'
@@ -108,33 +103,20 @@ import type { AssetDisplayItem } from '@/platform/assets/composables/useAssetBro
 import { useAssetBrowser } from '@/platform/assets/composables/useAssetBrowser'
 import { useModelTypes } from '@/platform/assets/composables/useModelTypes'
 import { useModelUpload } from '@/platform/assets/composables/useModelUpload'
-import type { AssetItem } from '@/platform/assets/schemas/assetSchema'
+import type { AssetBrowserModalProps } from '@/platform/assets/types/assetBrowserModalProps'
+import { getPrimaryCategoryTag } from '@/platform/assets/utils/assetMetadataUtils'
 import { formatCategoryLabel } from '@/platform/assets/utils/categoryLabel'
 import { useAssetsStore } from '@/stores/assetsStore'
 import { useModelToNodeStore } from '@/stores/modelToNodeStore'
 import { OnCloseKey } from '@/types/widgetTypes'
 
 const { t } = useI18n()
+const { flags } = useFeatureFlags()
 const assetStore = useAssetsStore()
 const modelToNodeStore = useModelToNodeStore()
 const breakpoints = useBreakpoints(breakpointsTailwind)
-const primeVueOverlay = usePrimeVueOverlayChildStyle()
-const selectContentStyle = primeVueOverlay.contentStyle
 
-const props = defineProps<{
-  nodeType?: string
-  assetType?: string
-  onSelect?: (asset: AssetItem) => void
-  onClose?: () => void
-  showLeftPanel?: boolean
-  title?: string
-  /**
-   * Storybook/test seam: when provided, bypasses the cloud-only
-   * `assetsStore.getAssets(cacheKey)` fetch and renders this list directly.
-   * Production callers should leave this undefined and rely on the store.
-   */
-  overrideAssets?: AssetItem[]
-}>()
+const props = defineProps<AssetBrowserModalProps>()
 
 const emit = defineEmits<{
   'asset-select': [asset: AssetDisplayItem]
@@ -191,9 +173,21 @@ const focusedAsset = ref<AssetDisplayItem | null>(null)
 const isRightPanelOpen = ref(false)
 
 const primaryCategoryTag = computed(() => {
+  const modelTypeMode = flags.supportsModelTypeTags
+  // A node-typed picker is FOR a category; title off that category rather
+  // than guessing from the first asset, whose first model_type value may be
+  // a different category it shares a root with.
+  if (modelTypeMode && props.nodeType) {
+    const mapped = modelToNodeStore.getCategoryForNodeType(props.nodeType)
+    if (mapped) return mapped
+  }
+
   const assets = fetchedAssets.value ?? []
+  // Covered assets title off the model_type value they group under (so title
+  // and grouping cannot diverge); uncovered assets keep the legacy verbatim
+  // first tag.
   const tagFromAssets = assets
-    .map((asset) => asset.tags?.find((tag) => tag !== 'models'))
+    .map((asset) => getPrimaryCategoryTag(asset, modelTypeMode))
     .find((tag): tag is string => typeof tag === 'string' && tag.length > 0)
 
   if (tagFromAssets) return tagFromAssets

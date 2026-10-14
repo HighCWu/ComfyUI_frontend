@@ -1,14 +1,19 @@
 <template>
-  <div class="flex w-full min-w-116 flex-col rounded-2xl bg-base-background">
+  <div
+    class="flex w-xl max-w-full min-w-116 flex-col rounded-2xl border border-border-default bg-base-background shadow-lg"
+  >
     <!-- Header -->
     <div
       class="flex h-12 items-center justify-between border-b border-border-default px-4"
     >
       <div class="flex items-center gap-2">
         <slot name="header-icon" />
-        <h2 class="m-0 text-sm font-normal text-base-foreground">
+        <DialogTitle
+          as="h2"
+          class="m-0 text-sm font-normal text-base-foreground"
+        >
           <slot name="title" />
-        </h2>
+        </DialogTitle>
       </div>
       <Button
         v-if="showClose"
@@ -35,6 +40,7 @@
 
 <script setup lang="ts">
 import Button from '@/components/ui/button/Button.vue'
+import DialogTitle from '@/components/ui/dialog/DialogTitle.vue'
 
 const { showClose = true } = defineProps<{
   showClose?: boolean

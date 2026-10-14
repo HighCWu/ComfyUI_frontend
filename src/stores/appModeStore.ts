@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useEventListener } from '@vueuse/core'
 
-import { useEmptyWorkflowDialog } from '@/components/builder/useEmptyWorkflowDialog'
 import { useAppMode } from '@/composables/useAppMode'
 import { SubgraphNode } from '@/lib/litegraph/src/subgraph/SubgraphNode'
 import type {
@@ -14,7 +13,8 @@ import { useSettingStore } from '@/platform/settings/settingStore'
 import { useCanvasStore } from '@/renderer/core/canvas/canvasStore'
 import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
 import { useSidebarTabStore } from '@/stores/workspace/sidebarTabStore'
-import { app } from '@/scripts/app'
+import { useApp } from '@/scripts/appInstance'
+import type { ComfyApp } from '@/types/comfy'
 import { ChangeTracker } from '@/scripts/changeTracker'
 import { resolveSubgraphInputTarget } from '@/core/graph/subgraph/resolveSubgraphInputTarget'
 import type { LGraph } from '@/lib/litegraph/src/litegraph'
@@ -28,6 +28,7 @@ import { parseNodeId } from '@/types/nodeId'
 import type { NodeId } from '@/types/nodeId'
 import type { WidgetId } from '@/types/widgetId'
 import { isWidgetId, parseWidgetId } from '@/types/widgetId'
+import type { ViewMode } from '@/utils/appMode'
 
 function findWidgetByEntityId(
   rootGraph: LGraph,
@@ -50,10 +51,30 @@ export const useAppModeStore = defineStore('appMode', () => {
   const { getCanvas } = useCanvasStore()
   const settingStore = useSettingStore()
   const workflowStore = useWorkflowStore()
-  const { mode, setMode, isBuilderMode, isSelectMode } = useAppMode()
-  const emptyWorkflowDialog = useEmptyWorkflowDialog()
+  const { mode, setMode, isAppMode, isBuilderMode, isSelectMode } = useAppMode()
 
   const showVueNodeSwitchPopup = ref(false)
+
+  const viewMode = computed<ViewMode>(() => (isAppMode.value ? 'app' : 'graph'))
+
+  /**
+   * Frame-lagged mirror of {@link viewMode} driving the view-mode toggle's
+   * segment morph. The two-frame lag lets a toggle that mounts mid-switch
+   * render the previous mode first, then animate in. Kept in the store so it
+   * outlives the graph-mode toggle unmounting as the app toggle replaces it.
+   */
+  const displayViewMode = ref<ViewMode>(viewMode.value)
+  let outerFrame: number | undefined
+  let innerFrame: number | undefined
+  watch(viewMode, (next) => {
+    if (outerFrame !== undefined) cancelAnimationFrame(outerFrame)
+    if (innerFrame !== undefined) cancelAnimationFrame(innerFrame)
+    outerFrame = requestAnimationFrame(() => {
+      innerFrame = requestAnimationFrame(() => {
+        displayViewMode.value = next
+      })
+    })
+  })
 
   const selectedInputs = ref<LinearInput[]>([])
   const selectedOutputs = ref<NodeId[]>([])
@@ -62,7 +83,8 @@ export const useAppModeStore = defineStore('appMode', () => {
     // Nodes are not reactive, so trigger recomputation when workflow changes
     void workflowStore.activeWorkflow
     void mode.value
-    return !!app.rootGraph?.nodes?.length
+    const app = useApp()
+    return app.isGraphReady && app.rootGraph.nodes.length > 0
   })
 
   function pruneLinearData(data: Partial<LinearData> | undefined): {
@@ -71,7 +93,8 @@ export const useAppModeStore = defineStore('appMode', () => {
   } {
     const rawInputs = data?.inputs ?? []
     const rawOutputs = data?.outputs ?? []
-    const rootGraph = app.rootGraph
+    const app = useApp()
+    const rootGraph = app.isGraphReady ? app.rootGraph : undefined
     if (!rootGraph) {
       return {
         inputs: rawInputs,
@@ -105,7 +128,7 @@ export const useAppModeStore = defineStore('appMode', () => {
 
   function upgradeAndValidateInput(
     input: LinearInput,
-    rootGraph: NonNullable<typeof app.rootGraph>
+    rootGraph: ComfyApp['rootGraph']
   ): LinearInput | null {
     const [storedId, widgetName, config] = input
 
@@ -113,7 +136,7 @@ export const useAppModeStore = defineStore('appMode', () => {
       const widget = findWidgetByEntityId(rootGraph, storedId)
       if (widget) return buildEntry(storedId, widgetName, config)
       const { nodeId } = parseWidgetId(storedId)
-      if (rootGraph.getNodeById?.(nodeId)) {
+      if (rootGraph.getNodeById(nodeId)) {
         return buildEntry(storedId, widgetName, config)
       }
       return null
@@ -126,9 +149,7 @@ export const useAppModeStore = defineStore('appMode', () => {
     }
 
     const directNodeId = parseNodeId(storedId)
-    const directNode = directNodeId
-      ? rootGraph.getNodeById?.(directNodeId)
-      : null
+    const directNode = directNodeId ? rootGraph.getNodeById(directNodeId) : null
     const directWidget = directNode?.widgets?.find((w) => w.name === widgetName)
     if (directNode && directWidget) {
       const derivedId = getWidgetIdForNode(directNode, directWidget)
@@ -165,10 +186,33 @@ export const useAppModeStore = defineStore('appMode', () => {
     return null
   }
 
+  function warnOnUninterpretableAppConfig(
+    data: Partial<LinearData> | undefined,
+    resolvedInputs: LinearInput[],
+    resolvedOutputs: NodeId[]
+  ) {
+    if (ChangeTracker.isLoadingGraph) return
+
+    const app = useApp()
+    if (!app.isGraphReady || !app.rootGraph.nodes.length) return
+
+    const hadConfig = !!(data?.inputs?.length || data?.outputs?.length)
+    if (!hadConfig || resolvedInputs.length || resolvedOutputs.length) return
+
+    console.warn(
+      '[appModeStore] app config could not be interpreted; no inputs or outputs resolved from linearData',
+      {
+        inputs: data.inputs,
+        outputs: data.outputs
+      }
+    )
+  }
+
   function loadSelections(data: Partial<LinearData> | undefined) {
     const { inputs, outputs } = pruneLinearData(data)
     selectedInputs.value = inputs
     selectedOutputs.value = outputs
+    warnOnUninterpretableAppConfig(data, inputs, outputs)
   }
 
   function resetSelectedToWorkflow() {
@@ -176,13 +220,16 @@ export const useAppModeStore = defineStore('appMode', () => {
     if (!activeWorkflow) return
 
     const source =
-      activeWorkflow.changeTracker?.activeState?.extra?.linearData ??
-      activeWorkflow.initialState?.extra?.linearData
+      activeWorkflow.changeTracker.activeState.extra?.linearData ??
+      activeWorkflow.initialState.extra?.linearData
     loadSelections(source)
   }
 
   useEventListener(
-    () => app.rootGraph?.events,
+    () => {
+      const app = useApp()
+      return app.isGraphReady ? app.rootGraph.events : undefined
+    },
     'configured',
     resetSelectedToWorkflow
   )
@@ -194,28 +241,27 @@ export const useAppModeStore = defineStore('appMode', () => {
         : null,
     (data) => {
       if (!data || ChangeTracker.isLoadingGraph) return
-      const graph = app.rootGraph
-      if (!graph) return
-      const extra = (graph.extra ??= {})
+      if (!useApp().isGraphReady) return
+      const graph = useApp().rootGraph
+      const extra = graph.extra
       extra.linearData = {
         inputs: [...data.inputs],
         outputs: [...data.outputs]
       }
-      workflowStore.activeWorkflow?.changeTracker?.captureCanvasState()
+      workflowStore.activeWorkflow?.changeTracker.captureCanvasState()
     },
     { deep: true }
   )
 
   let unwatchReadOnly: (() => void) | undefined
   function enforceReadOnly(inSelect: boolean) {
-    const { state } = getCanvas()
-    if (!state) return
-    state.readOnly = inSelect
+    const canvas = getCanvas()
+    canvas.read_only = inSelect
     unwatchReadOnly?.()
     if (inSelect)
       unwatchReadOnly = watch(
-        () => state.readOnly,
-        () => (state.readOnly = true)
+        () => canvas.read_only,
+        () => (canvas.read_only = true)
       )
   }
 
@@ -236,14 +282,6 @@ export const useAppModeStore = defineStore('appMode', () => {
   })
 
   function enterBuilder() {
-    if (!hasNodes.value) {
-      emptyWorkflowDialog.show({
-        onEnterBuilder: () => enterBuilder(),
-        onDismiss: () => setMode('graph')
-      })
-      return
-    }
-
     resetSelectedToWorkflow()
 
     useSidebarTabStore().activeSidebarTabId = null
@@ -292,6 +330,8 @@ export const useAppModeStore = defineStore('appMode', () => {
     selectedInputs,
     selectedOutputs,
     updateInputConfig,
-    showVueNodeSwitchPopup
+    showVueNodeSwitchPopup,
+    viewMode,
+    displayViewMode
   }
 })

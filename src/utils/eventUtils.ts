@@ -1,4 +1,54 @@
+import type { MediaKind } from '@/platform/assets/schemas/mediaAssetSchema'
 import { parseAssetInfo } from '@/platform/assets/schemas/mediaAssetSchema'
+import { isHdrImageFilename } from '@/utils/hdrFormatUtil'
+
+export interface DroppedAsset {
+  name: string
+  uri?: string
+  ref?: string
+  kind?: MediaKind
+  previewUrl?: string
+  mediaUrl?: string
+}
+
+export function getDroppedAsset(
+  dataTransfer: DataTransfer
+): DroppedAsset | undefined {
+  const asset = parseAssetInfo(dataTransfer)
+  const name = asset?.display_name ?? asset?.filename
+  const validTypes = ['text/uri-list', 'text/x-moz-url']
+  const match = [...dataTransfer.types].find((type) =>
+    validTypes.includes(type)
+  )
+  const uri = match && dataTransfer.getData(match).split('\n')[0]
+  const ref = asset?.attachment_ref
+
+  return uri || ref
+    ? {
+        name: name ?? ref ?? uri!,
+        uri,
+        ref,
+        kind: asset?.media_kind,
+        previewUrl: asset?.preview_url,
+        mediaUrl: asset?.media_url
+      }
+    : undefined
+}
+
+export async function fetchDroppedAsset({
+  name,
+  uri
+}: DroppedAsset): Promise<File | undefined> {
+  if (!uri) return undefined
+  try {
+    const response = await fetch(uri)
+    if (!response.ok) return undefined
+    const blob = await response.blob()
+    return new File([blob], name, { type: blob.type })
+  } catch {
+    return undefined
+  }
+}
 
 export async function extractFilesFromDragEvent(
   event: DragEvent
@@ -6,32 +56,25 @@ export async function extractFilesFromDragEvent(
   if (!event.dataTransfer) return []
 
   // Dragging from Chrome->Firefox there is a file but its a bmp, so ignore that
-  const files = Array.from(event.dataTransfer.files).filter(
-    (file) => file.type !== 'image/bmp'
-  )
+  const files = Array.from(event.dataTransfer.files)
+    .filter((file) => file.type !== 'image/bmp')
+    .map(withHdrImageType)
 
   if (files.length > 0) return files
 
-  const asset = parseAssetInfo(event.dataTransfer)
-  const assetName = asset?.display_name ?? asset?.filename
+  const asset = getDroppedAsset(event.dataTransfer)
+  if (!asset) return []
 
-  // Try loading the first URI in the transfer list
-  const validTypes = ['text/uri-list', 'text/x-moz-url']
-  const match = [...event.dataTransfer.types].find((t) =>
-    validTypes.includes(t)
-  )
-  if (!match) return []
+  const file = await fetchDroppedAsset(asset)
+  return file ? [file] : []
+}
 
-  const uri = event.dataTransfer.getData(match)?.split('\n')?.[0]
-  if (!uri) return []
-
-  try {
-    const response = await fetch(uri)
-    const blob = await response.blob()
-    return [new File([blob], assetName ?? uri, { type: blob.type })]
-  } catch {
-    return []
-  }
+export function withHdrImageType(file: File): File {
+  if (file.type || !isHdrImageFilename(file.name)) return file
+  const type = file.name.toLowerCase().endsWith('.hdr')
+    ? 'image/vnd.radiance'
+    : 'image/x-exr'
+  return new File([file], file.name, { type, lastModified: file.lastModified })
 }
 
 export function hasImageType({ type }: File): boolean {
