@@ -9,11 +9,6 @@
       "count": 2
     }
   },
-  "src/composables/auth/useAuthActions.ts": {
-    "comfy/no-new-error-throw": {
-      "count": 3
-    }
-  },
   "src/composables/billing/useBillingContext.ts": {
     "comfy/no-new-error-throw": {
       "count": 1
@@ -247,11 +242,6 @@
   "src/platform/workflow/sharing/services/workflowShareService.ts": {
     "comfy/no-new-error-throw": {
       "count": 6
-    }
-  },
-  "src/platform/workspace/auth/WorkspaceAuthGate.vue": {
-    "comfy/no-new-error-throw": {
-      "count": 4
     }
   },
   "src/platform/workspace/composables/useDowngradeToPersonal.ts": {
