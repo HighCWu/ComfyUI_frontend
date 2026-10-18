@@ -2,6 +2,8 @@ import { render, screen, waitFor } from '@testing-library/vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import MaskEditorContent from '@/components/maskeditor/MaskEditorContent.vue'
+import { useToast } from '@/components/ui/toast/toastStore'
+import { t } from '@/i18n'
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { useDialogStore } from '@/stores/dialogStore'
 import { useMaskEditorDataStore } from '@/stores/maskEditorDataStore'
@@ -32,7 +34,7 @@ const mockImageLoader = vi.hoisted(() => ({
 }))
 
 const mockMaskEditorLoader = vi.hoisted(() => ({
-  loadFromNode: vi.fn().mockResolvedValue(undefined)
+  loadFromNode: vi.fn().mockResolvedValue({ ok: true })
 }))
 
 let mockStore: ReturnType<typeof useMaskEditorStore>
@@ -120,7 +122,7 @@ describe('MaskEditorContent', () => {
     vi.spyOn(mockStore.canvasHistory, 'clearStates').mockImplementation(
       () => {}
     )
-    mockMaskEditorLoader.loadFromNode.mockResolvedValue(undefined)
+    mockMaskEditorLoader.loadFromNode.mockResolvedValue({ ok: true })
     mockImageLoader.loadImages.mockResolvedValue({ width: 100, height: 100 })
     mockPanZoom.initializeCanvasPanZoom.mockResolvedValue(undefined)
     mockBrushDrawing.initGPUResources.mockResolvedValue(undefined)
@@ -227,6 +229,26 @@ describe('MaskEditorContent', () => {
   })
 
   describe('init error', () => {
+    it('shows a useful error and stops initialization when loading is refused', async () => {
+      const message = 'Image channel loading failed'
+      mockMaskEditorLoader.loadFromNode.mockResolvedValueOnce({
+        ok: false,
+        title: t('maskEditor.loadFailed'),
+        message
+      })
+
+      renderContent()
+
+      await waitFor(() => {
+        expect(useDialogStore().closeDialog).toHaveBeenCalledTimes(1)
+      })
+      expect(useToast().error).toHaveBeenCalledWith(
+        t('maskEditor.loadFailed'),
+        { description: message }
+      )
+      expect(mockImageLoader.loadImages).not.toHaveBeenCalled()
+    })
+
     it('should close the dialog and log when loader.loadFromNode rejects', async () => {
       mockMaskEditorLoader.loadFromNode.mockRejectedValueOnce(
         new Error('load failed')

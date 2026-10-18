@@ -19,6 +19,7 @@ import {
   prepareWorkflowWorkspaceTransition
 } from '@/platform/workflow/persistence/base/storageIO'
 import { useWorkspaceAuthStore } from '@/platform/workspace/stores/workspaceAuthStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 
 import type {
   BillingRail,
@@ -205,6 +206,9 @@ const MAX_INIT_RETRIES = 3
 const BASE_RETRY_DELAY_MS = 1000
 
 export const useTeamWorkspaceStore = defineStore('teamWorkspace', () => {
+  const prepaidSession = usePrepaidSessionStore()
+  const prepaid = import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
+  const workspaceCreationAllowed = ref(false)
   const { flags } = useFeatureFlags()
   const initState = ref<InitState>('uninitialized')
   const workspaces = shallowRef<WorkspaceState[]>([])
@@ -265,13 +269,15 @@ export const useTeamWorkspaceStore = defineStore('teamWorkspace', () => {
   /** The server says an SSO organization manages this account's workspaces. */
   const workspacesManagedByOrganization = ref(false)
 
-  const canCreateWorkspace = computed(
-    () =>
-      !workspacesManagedByOrganization.value &&
-      ownedWorkspacesCount.value < MAX_OWNED_WORKSPACES
+  const canCreateWorkspace = computed(() =>
+    prepaid
+      ? workspaceCreationAllowed.value
+      : !workspacesManagedByOrganization.value &&
+        ownedWorkspacesCount.value < MAX_OWNED_WORKSPACES
   )
 
   function applyWorkspaceList(response: ListedWorkspaces): void {
+    workspaceCreationAllowed.value = response.can_create_workspace === true
     workspaces.value = sortWorkspaces(
       response.workspaces.map(createWorkspaceState)
     )
@@ -376,16 +382,25 @@ export const useTeamWorkspaceStore = defineStore('teamWorkspace', () => {
     error.value = null
 
     const workspaceAuthStore = useWorkspaceAuthStore()
-    const isApiKeySession = useCurrentUser().isApiKeyLogin.value
+    const isCredentialBoundSession =
+      prepaid || useCurrentUser().isApiKeyLogin.value
 
     for (let attempt = 0; attempt <= MAX_INIT_RETRIES; attempt++) {
       try {
-        // An API-key credential is bound to exactly one workspace on the
-        // server. There is no discovery, switching, or token exchange for it:
-        // the server echoes the binding back and the key itself authenticates
-        // workspace-scoped calls.
-        // Desktop owns a host session's workspace: list what the account can
-        // reach and follow the workspace Desktop's session is scoped to.
+        if (prepaid) {
+          const response = await workspaceApi.list()
+          if (isStaleIdentity(generation)) return
+          const personal = response.workspaces.find(
+            (workspace) => workspace.type === 'personal'
+          )
+          if (!personal)
+            throw new NoWorkspaceAccessError('Personal workspace not available')
+          applyWorkspaceList(response)
+          mutableActiveWorkspaceId.value = personal.id
+          initState.value = 'ready'
+          isFetchingWorkspaces.value = false
+          return
+        }
         if (isDesktopHostSignedIn()) {
           const response = await workspaceApi.list()
           if (isStaleIdentity(generation)) return
@@ -400,7 +415,7 @@ export const useTeamWorkspaceStore = defineStore('teamWorkspace', () => {
           return
         }
 
-        if (isApiKeySession) {
+        if (isCredentialBoundSession) {
           const current = await workspaceApi.getCurrentWorkspace()
           if (isStaleIdentity(generation)) return
           workspaces.value = [createWorkspaceStateFromCredential(current)]
@@ -509,7 +524,7 @@ export const useTeamWorkspaceStore = defineStore('teamWorkspace', () => {
         // resending the same key; retries stay reserved for transient
         // failures (network, 408/429, 5xx).
         const isPermanentCredentialError =
-          isApiKeySession &&
+          isCredentialBoundSession &&
           e instanceof WorkspaceApiError &&
           e.status !== undefined &&
           e.status >= 400 &&
@@ -1164,6 +1179,7 @@ export const useTeamWorkspaceStore = defineStore('teamWorkspace', () => {
     initState.value = 'uninitialized'
     workspaces.value = []
     workspacesManagedByOrganization.value = false
+    workspaceCreationAllowed.value = false
     mutableActiveWorkspaceId.value = null
     billingRailByWorkspaceId.value = {}
     error.value = null
@@ -1174,6 +1190,13 @@ export const useTeamWorkspaceStore = defineStore('teamWorkspace', () => {
     loadedMemberWorkspaceIds.clear()
     inFlightMembersRequest = null
     resendingInviteIds.clear()
+  }
+
+  if (prepaid) {
+    watch(
+      () => prepaidSession.user?.id,
+      () => resetForIdentityChange()
+    )
   }
 
   return {

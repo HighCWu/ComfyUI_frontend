@@ -75,6 +75,7 @@ import { useKeyboard } from '@/composables/maskeditor/useKeyboard'
 import { useMaskEditorLoader } from '@/composables/maskeditor/useMaskEditorLoader'
 import { usePanAndZoom } from '@/composables/maskeditor/usePanAndZoom'
 import { useToolManager } from '@/composables/maskeditor/useToolManager'
+import { useToast } from '@/components/ui/toast/toastStore'
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { useDialogStore } from '@/stores/dialogStore'
 import { useMaskEditorDataStore } from '@/stores/maskEditorDataStore'
@@ -94,6 +95,7 @@ const { node } = defineProps<{
 const store = useMaskEditorStore()
 const dataStore = useMaskEditorDataStore()
 const dialogStore = useDialogStore()
+const toast = useToast()
 
 const loader = useMaskEditorLoader()
 
@@ -149,7 +151,14 @@ const initUI = async () => {
   store.canvasBackground = canvasBackgroundRef.value
 
   try {
-    await loader.loadFromNode(node)
+    const loaded = await loader.loadFromNode(node)
+    if (!loaded.ok) {
+      toast.error(loaded.title, {
+        description: loaded.message
+      })
+      dialogStore.closeDialog()
+      return
+    }
 
     const imageLoader = useImageLoader()
     const image = await imageLoader.loadImages()
@@ -163,11 +172,9 @@ const initUI = async () => {
 
     store.canvasHistory.saveInitialState()
 
-    // Initialize GPU resources
     if (toolManager.brushDrawing) {
       await toolManager.brushDrawing.initGPUResources()
       if (gpuCanvasRef.value && toolManager.brushDrawing.initPreviewCanvas) {
-        // Match preview canvas resolution to mask canvas
         gpuCanvasRef.value.width = maskCanvasRef.value.width
         gpuCanvasRef.value.height = maskCanvasRef.value.height
 

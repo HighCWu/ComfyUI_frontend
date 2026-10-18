@@ -106,6 +106,10 @@ export const useSubscriptionDialog = () => {
 
   function showPricingTable(options?: SubscriptionDialogOptions) {
     if (!isCloud) return
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+      window.location.assign('/billing/')
+      return
+    }
     const paymentIntentSource = paymentIntentSourceOf(options)
     if (showInactiveMemberDialog(paymentIntentSource)) return
 

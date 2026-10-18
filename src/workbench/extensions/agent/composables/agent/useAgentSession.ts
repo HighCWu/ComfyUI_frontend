@@ -20,8 +20,11 @@ import {
   StorageKeys
 } from '@/platform/workflow/persistence/base/storageKeys'
 import { createUuidv4 } from '@/utils/uuid'
+import { createNodeLocatorId } from '@/types/nodeIdentification'
+import type { SelectedNode } from './useCanvasSelection'
 import type {
   AgentActiveTabData,
+  AgentAnswerReceipt,
   AgentMessages,
   AgentTurnAccepted,
   AgentWsEvent,
@@ -32,6 +35,8 @@ import {
   parseAgentWsEvent,
   toTurnId,
   zAgentAdmissionError,
+  zAgentAskConflict,
+  zAttachmentRequestError,
   zDisownedWorkflowError,
   zTurnInProgressError
 } from '../../schemas/agentApiSchema'
@@ -45,7 +50,12 @@ import type {
   OpenTabsSnapshot,
   PostMessageInput
 } from '../../services/agent/agentRestClient'
-import type { AssistantMessage } from '../../services/agent/agentMessageParts'
+import type {
+  AgentAskResolution,
+  AssistantMessage,
+  AgentAskSelection
+} from '../../services/agent/agentMessageParts'
+import { toAskResolution } from '../../services/agent/agentMessageParts'
 import { normalizeAgentTranscript } from '../../services/agent/agentTranscript'
 import type { LiveTurn } from '../../stores/agent/agentConversationStore'
 import { useAgentConversationStore } from '../../stores/agent/agentConversationStore'
@@ -70,10 +80,7 @@ type SentAttachment = Pick<
   'ref' | 'name' | 'previewUrl' | 'mediaUrl'
 >
 
-interface SentTag {
-  id: string
-  title: string
-}
+type SentTag = Pick<SelectedNode, 'id' | 'title' | 'locatorId'>
 
 export interface WorkflowTurnContext {
   id?: string
@@ -369,6 +376,30 @@ function parseTurnInProgress(error: unknown) {
     return undefined
   const parsed = zTurnInProgressError.safeParse(error.body)
   return parsed.success ? parsed.data : undefined
+}
+
+function isAttachmentRequestRejection(error: unknown): boolean {
+  return (
+    error instanceof AgentApiError &&
+    error.status === 422 &&
+    zAttachmentRequestError.safeParse(error.body).success
+  )
+}
+
+function reportSendFailure(error: unknown): void {
+  if (isAttachmentRequestRejection(error)) return
+  reportError(error, {
+    surface: 'agent',
+    errorType: 'agent_send_message_failed',
+    tags:
+      error instanceof AgentApiError
+        ? {
+            status: error.status,
+            operation: error.operation,
+            retryAfterSeconds: error.retryAfterSeconds
+          }
+        : undefined
+  })
 }
 
 export function useAgentSession(deps: AgentSessionDeps) {
@@ -794,12 +825,19 @@ export function useAgentSession(deps: AgentSessionDeps) {
       reconcileLiveTurns()
       readyThreadId.value = threadId
       drainHydration(buffer)
+      const restoredWorkflowId = conversationStore.latestWorkflowId
       const workflowReady = await workflow?.restored?.(
-        conversationStore.latestWorkflowId,
+        restoredWorkflowId,
         isCurrent
       )
       if (workflowReady === false) return false
       if (conversationStore.threadId !== threadId || !isCurrent()) return false
+      if (
+        workflowReady === true &&
+        restoredWorkflowId !== undefined &&
+        workflow?.current()?.id === restoredWorkflowId
+      )
+        bindWorkflow(restoredWorkflowId)
       return true
     } catch (error) {
       return handleHistoryLoadError(error, threadId, isCurrent, stashedTurn)
@@ -950,6 +988,13 @@ export function useAgentSession(deps: AgentSessionDeps) {
     if (tags === undefined || tags.length === 0) return undefined
     return {
       node_ids: tags.map((tag) => tag.id),
+      ...(import.meta.env.VITE_AGENT_BACKEND_MODE === 'official'
+        ? {
+            node_locators: tags.map(
+              (tag) => tag.locatorId ?? createNodeLocatorId(null, tag.id)
+            )
+          }
+        : {}),
       ...(selectedWorkflowId !== undefined
         ? { workflow_id: selectedWorkflowId }
         : {})
@@ -1102,10 +1147,7 @@ export function useAgentSession(deps: AgentSessionDeps) {
         : `${i18n.global.t('agent.sendFailed')}: ${message}`
     )
     const turnAccepted = accepted || isUnreadableAckFailure(error)
-    reportError(error, {
-      surface: 'agent',
-      errorType: 'agent_send_message_failed'
-    })
+    reportSendFailure(error)
     trackAgentError(
       'request_failed',
       turnAccepted ? 'post_acceptance' : 'pre_acceptance',
@@ -1428,49 +1470,79 @@ export function useAgentSession(deps: AgentSessionDeps) {
     }
   }
 
+  async function answerQuestionOrRun(
+    askId: string,
+    selection: AgentAskSelection
+  ): Promise<boolean> {
+    if (typeof selection === 'string') return answerAsk(askId, selection)
+    const threadId = conversationStore.threadId
+    if (threadId === null || answeringAskIds.value.has(askId)) return false
+    conversationStore.recordAskSelection(askId, selection)
+    conversationStore.setAskAnswering(askId, true)
+    try {
+      const result = await rest.answerAsk(
+        threadId,
+        askId,
+        selection.selected,
+        selection.other_text
+      )
+      const committed = toAskResolution(result)
+      reportSupersededAnswer(askId, committed)
+      conversationStore.commitAsk(askId, threadId, committed)
+      return true
+    } catch (error) {
+      if (!answeringAskIds.value.has(askId)) return false
+      if (error instanceof AgentApiError && error.status === 400) {
+        conversationStore.submittedAskSelection(askId)
+        conversationStore.setAskAnswering(askId, false)
+        pushError(i18n.global.t('agent.runApproval.answerFailed'))
+        return false
+      }
+      if (error instanceof AgentApiError && error.status === 409) {
+        const committed = toAskResolution(
+          zAgentAskConflict.safeParse(error.body).data ?? {}
+        )
+        reportSupersededAnswer(askId, committed)
+        conversationStore.retireAsk(askId, threadId, committed)
+        return false
+      }
+      conversationStore.retireAsk(askId, threadId, {
+        status: 'unconfirmed'
+      })
+      pushError(i18n.global.t('agent.runApproval.answerUncertain'))
+      return false
+    }
+  }
+
   async function answerAsk(
     askId: string,
     selection: 'run' | 'cancel'
   ): Promise<boolean> {
     const currentThreadId = conversationStore.threadId
     if (currentThreadId === null) {
-      // PM-1658: the card is on screen, so a click on it is never a no-op.
       reportError(
         new Error('run approval answered with no thread to send on'),
         { surface: 'agent', errorType: 'agent_ask_answer_unroutable' }
       )
       pushError(i18n.global.t('agent.runApproval.answerFailed'))
-      // Nothing can ever answer this card, so retire it rather than let every
-      // further click raise another toast and another telemetry event.
       conversationStore.retireAsk(askId)
       return false
     }
-    // PM-1658: deliberately NOT gated on an active turn. The endpoint is keyed
-    // by thread and ask alone — it never looks a turn up — and the server
-    // parks a run approval for days, so a card can still be answered long
-    // after the turn that raised it stopped streaming to this client.
     if (answeringAskIds.value.has(askId)) return false
     conversationStore.recordAskSelection(askId, selection)
     conversationStore.setAskAnswering(askId, true)
     try {
-      await sendAnswer(currentThreadId, askId, selection)
-      conversationStore.commitAsk(askId, currentThreadId)
+      const receipt = await sendAnswer(currentThreadId, askId, selection)
+      const committed = toAskResolution(receipt)
+      reportSupersededAnswer(askId, committed)
+      conversationStore.commitAsk(askId, currentThreadId, committed)
       return true
     } catch (error) {
-      // A resolution frame can land while this request is still out, and it
-      // retires the card on the way through. The ask is settled and gone, so
-      // whatever this rejection says about delivery is no longer news the user
-      // can act on — any mismatch worth telling them about has already been
-      // raised by reportSupersededAnswer.
       if (!answeringAskIds.value.has(askId)) return false
       if (
         error instanceof AgentApiError &&
         TERMINAL_ANSWER_STATUSES.has(error.status)
       ) {
-        // A 409 is the ordinary double-click, and the ask really is resolved,
-        // so it needs neither telemetry nor a notice. The rest mean this
-        // client could never have answered, which the user has to be told
-        // about or the card simply vanishes as though it had worked.
         if (error.status !== 409) {
           reportError(error, {
             surface: 'agent',
@@ -1484,7 +1556,14 @@ export function useAgentSession(deps: AgentSessionDeps) {
           )
           pushError(i18n.global.t('agent.runApproval.answerFailed'))
         }
-        conversationStore.retireAsk(askId, currentThreadId)
+        const committed =
+          error.status === 409
+            ? toAskResolution(
+                zAgentAskConflict.safeParse(error.body).data ?? {}
+              )
+            : ({ status: 'retired' } as const)
+        reportSupersededAnswer(askId, committed)
+        conversationStore.retireAsk(askId, currentThreadId, committed)
         return false
       }
       reportError(error, {
@@ -1494,44 +1573,30 @@ export function useAgentSession(deps: AgentSessionDeps) {
       trackAgentError('ask_answer_failed', 'post_acceptance', 'error_overlay', {
         retryable: isRetryableRequestFailure(error, false)
       })
-      // Every re-drive above has been spent. The card cannot simply go back
-      // into service: the server CASes an answer onto the row BEFORE it wakes
-      // the turn and reports 500 for the wake alone, so this may already have
-      // authorized the run, and it answers any later click by replaying THIS
-      // selection while the card disappears as though the new one had taken
-      // effect. On a spend authorization that is the wrong way to be wrong, so
-      // retire the card and say the outcome is unknown rather than show a raw
-      // transport string next to a card that is about to vanish.
-      conversationStore.retireAsk(askId, currentThreadId)
+      conversationStore.retireAsk(askId, currentThreadId, {
+        status: 'unconfirmed'
+      })
       pushError(i18n.global.t('agent.runApproval.answerUncertain'))
       return false
     }
   }
 
-  /**
-   * PM-1658: the server commits the FIRST answer an ask receives and takes
-   * every later one with 202 while replaying the stored selection, so another
-   * tab — or this one before a reload — can decide a card this client also
-   * answered. The resolution frame names the selection that actually won, so
-   * when it disagrees with ours, the card is about to disappear on someone
-   * else's choice and the user has to be told rather than left reading the
-   * dismissal as their own.
-   */
   function reportSupersededAnswer(
     askId: string,
-    settled: string[] | null
+    settled: AgentAskResolution
   ): void {
     const submitted = conversationStore.submittedAskSelection(askId)
     if (
       submitted === undefined ||
-      settled === null ||
-      settled.length === 0 ||
-      settled.includes(submitted)
+      settled.status !== 'answered' ||
+      (JSON.stringify([...settled.selected].sort()) ===
+        JSON.stringify([...submitted.selected].sort()) &&
+        settled.otherText === submitted.other_text)
     )
       return
     reportError(
       new Error(
-        `run approval resolved as ${settled.join(',')}, not ${submitted}`
+        `agent ask resolved as ${settled.selected.join(',')}, not ${submitted.selected.join(',')}`
       ),
       { surface: 'agent', errorType: 'agent_ask_answer_superseded' }
     )
@@ -1542,11 +1607,10 @@ export function useAgentSession(deps: AgentSessionDeps) {
     threadId: string,
     askId: string,
     selection: 'run' | 'cancel'
-  ): Promise<void> {
+  ): Promise<AgentAnswerReceipt> {
     for (let attempt = 0; ; attempt++) {
       try {
-        await rest.answerAsk(threadId, askId, [selection])
-        return
+        return await rest.answerAsk(threadId, askId, [selection])
       } catch (error) {
         if (
           attempt >= ANSWER_RETRY_BACKOFF_MS.length ||
@@ -1745,11 +1809,13 @@ export function useAgentSession(deps: AgentSessionDeps) {
     if (heldForHydration(event)) return
     observeLiveDelivery(event)
     if (event.type === 'agent_ask_resolved') {
-      reportSupersededAnswer(event.data.ask_id, event.data.selected)
-      // Not just un-busying it: `ingest` below routes this frame through the
-      // owning turn's transport, and the turn is gone in exactly the case that
-      // matters, so on its own it would re-enable a card it cannot remove.
-      conversationStore.retireAsk(event.data.ask_id, event.data.thread_id)
+      const resolution = toAskResolution(event.data)
+      reportSupersededAnswer(event.data.ask_id, resolution)
+      conversationStore.retireAsk(
+        event.data.ask_id,
+        event.data.thread_id,
+        resolution
+      )
       onAskResolved?.(event.data.ask_id)
     }
     for (const turn of conversationStore.liveTurns()) observeSkillTurn(turn)
@@ -1964,7 +2030,7 @@ export function useAgentSession(deps: AgentSessionDeps) {
     stop,
     sendMessage,
     stopTurn,
-    answerAsk,
+    answerAsk: answerQuestionOrRun,
     answeringAskIds: computed(() => answeringAskIds.value),
     newChat,
     listThreads,

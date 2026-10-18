@@ -83,6 +83,7 @@ import { startModelLoaderDrag } from '@/composables/node/startModelNodeDragFromA
 import { useFeatureFlags } from '@/composables/useFeatureFlags'
 import { useTreeExpansion } from '@/composables/useTreeExpansion'
 import { useSettingStore } from '@/platform/settings/settingStore'
+import { api } from '@/scripts/api'
 import { useToast } from '@/components/ui/toast/toastStore'
 import { useAssetDownloadStore } from '@/stores/assetDownloadStore'
 import type { ComfyModelDef } from '@/stores/modelStore'
@@ -273,9 +274,12 @@ const visibleModels = computed(() => {
   return models
 })
 
-watch(visibleModels, (models) => {
-  for (const model of models) void model.load()
-})
+watch(
+  [visibleModels, () => api.getServerFeature('model_library_metadata')],
+  ([models]) => {
+    for (const model of models) void model.load()
+  }
+)
 
 watch(
   toRef(expandedKeys, 'value'),

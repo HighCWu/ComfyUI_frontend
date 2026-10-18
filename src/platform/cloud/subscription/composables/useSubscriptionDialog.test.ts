@@ -178,6 +178,28 @@ describe('useSubscriptionDialog', () => {
       expect(mockShowLayoutDialog).not.toHaveBeenCalled()
     })
 
+    it('routes every prepaid pricing entry to the balance portal', () => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      const navigate = vi
+        .spyOn(window.location, 'assign')
+        .mockImplementation(() => {})
+      const { showPricingTable } = useSubscriptionDialog()
+
+      showPricingTable({
+        reason: 'deep_link',
+        planMode: 'personal',
+        initialCheckout: {
+          planMode: 'personal',
+          tierKey: 'creator',
+          billingCycle: 'monthly'
+        }
+      })
+
+      expect(navigate).toHaveBeenCalledExactlyOnceWith('/billing/')
+      expect(mockShowLayoutDialog).not.toHaveBeenCalled()
+      expect(useTelemetry()?.trackSubscription).not.toHaveBeenCalled()
+    })
+
     it('opens dialog on cloud', () => {
       mockIsCloud.value = true
       const { showPricingTable } = useSubscriptionDialog()

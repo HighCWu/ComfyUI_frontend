@@ -1,4 +1,8 @@
-import { zAssetInfo, zHubProfile } from '@comfyorg/ingest-types/zod'
+import {
+  zGetPublishedWorkflowResponse,
+  zGetUserdataFilePublishResponse,
+  zHubProfile
+} from '@comfyorg/ingest-types/zod'
 import { z } from 'zod'
 
 const zComfyHubProfile = zHubProfile
@@ -11,13 +15,7 @@ const zComfyHubProfile = zHubProfile
 
 export type ComfyHubProfile = z.infer<typeof zComfyHubProfile>
 
-export const zPublishRecordResponse = z.object({
-  workflow_id: z.string(),
-  share_id: z.string().nullable(),
-  listed: z.boolean(),
-  publish_time: z.string().nullable(),
-  assets: z.array(zAssetInfo).optional()
-})
+export const zPublishRecordResponse = zGetUserdataFilePublishResponse
 
 /**
  * Strips path separators and control characters from a workflow name to prevent
@@ -30,14 +28,8 @@ function sanitizeWorkflowName(name: string): string {
     .trim()
 }
 
-export const zSharedWorkflowResponse = z.object({
-  share_id: z.string(),
-  workflow_id: z.string(),
-  name: z.string().transform(sanitizeWorkflowName),
-  listed: z.boolean(),
-  publish_time: z.string().nullable(),
-  workflow_json: z.record(z.string(), z.unknown()),
-  assets: z.array(zAssetInfo)
+export const zSharedWorkflowResponse = zGetPublishedWorkflowResponse.extend({
+  name: zGetPublishedWorkflowResponse.shape.name.transform(sanitizeWorkflowName)
 })
 
 export const zHubProfileResponse = z.preprocess((data) => {

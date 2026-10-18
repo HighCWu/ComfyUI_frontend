@@ -22,7 +22,13 @@ export function formatWorkflowSyncErrorDetail(
   const detail = translate(
     code === 'catalog_mismatch'
       ? 'agent.workflowSyncFailedDetailCatalogMismatch'
-      : 'agent.workflowSyncFailedDetail'
+      : code === 'stale_client_schema'
+        ? 'agent.workflowSyncFailedDetailStaleClient'
+        : code === 'local_projection_incomplete'
+          ? 'agent.workflowSyncFailedDetailProjection'
+          : code === 'local_edits_unconfirmed'
+            ? 'agent.workflowSyncFailedDetailUnconfirmed'
+            : 'agent.workflowSyncFailedDetail'
   )
   if (!message) return detail
   return `${detail} (${truncate(message, { length: SYNC_ERROR_RAW_MESSAGE_MAX_LENGTH })})`

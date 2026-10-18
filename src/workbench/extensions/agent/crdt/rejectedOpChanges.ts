@@ -4,16 +4,8 @@ import type * as Y from 'yjs'
 
 import type { FrameChanges, NodeChange } from './liveGraphApplier'
 import { docLinksIncident } from './liveGraphApplier'
+import { documentInteriorWidgetTarget } from './interiorWidgetTarget'
 
-/**
- * The live-graph changes that put a host-rejected human batch back the way
- * the document has it. Each op names exactly the node, widget, link, or field
- * register it claimed; replaying those registers from the document undoes the
- * live edit without touching anything else. A node the document lacks is
- * removed live along with its links; one it holds is restored with the
- * document links incident to it. Interior (`path`) writes address subgraph
- * definitions the applier never projects, so they have nothing to undo here.
- */
 export function changesForRejectedOps(
   doc: Y.Doc,
   ops: readonly Op[]
@@ -22,6 +14,7 @@ export function changesForRejectedOps(
   const widgets = new Map<string, Set<string>>()
   const resyncNodes = new Set<string>()
   const links = new Set<string>()
+  const interiorWidgets = new Map<string, Map<string, Set<string>>>()
   const docNodes = nodesMap(doc)
   const settleNode = (id: string): void => {
     if (!docNodes.has(id)) {
@@ -32,7 +25,20 @@ export function changesForRejectedOps(
     for (const link of docLinksIncident(doc, id)) links.add(String(link.id))
   }
   for (const op of ops) {
-    if ('path' in op && op.path != null) continue
+    if ('path' in op && op.path != null) {
+      if (op.op === 'set_widget' && typeof op.inner_widget === 'string') {
+        const target = documentInteriorWidgetTarget(doc, op.path)
+        if (!target) continue
+        const nodes =
+          interiorWidgets.get(target.definitionId) ??
+          new Map<string, Set<string>>()
+        const names = nodes.get(target.nodeId) ?? new Set<string>()
+        names.add(op.inner_widget)
+        nodes.set(target.nodeId, names)
+        interiorWidgets.set(target.definitionId, nodes)
+      }
+      continue
+    }
     switch (op.op) {
       case 'add_node':
       case 'delete_node':
@@ -59,5 +65,11 @@ export function changesForRejectedOps(
         break
     }
   }
-  return { nodes, widgets, resyncNodes, links }
+  return {
+    nodes,
+    widgets,
+    resyncNodes,
+    links,
+    ...(interiorWidgets.size ? { interiorWidgets } : {})
+  }
 }

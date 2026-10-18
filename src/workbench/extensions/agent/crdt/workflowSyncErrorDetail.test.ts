@@ -7,14 +7,35 @@ const translate = (key: string): string => {
     return 'Your canvas is unchanged.'
   if (key === 'agent.workflowSyncFailedDetailCatalogMismatch')
     return 'Your node catalog is incompatible.'
+  if (key === 'agent.workflowSyncFailedDetailStaleClient')
+    return 'Reload the page to see the latest changes.'
   return key
 }
 
 describe('formatWorkflowSyncErrorDetail', () => {
+  it('warns about unconfirmed edits without claiming they were rejected or saved', () => {
+    expect(
+      formatWorkflowSyncErrorDetail(
+        translate,
+        undefined,
+        'local_edits_unconfirmed'
+      )
+    ).toBe('agent.workflowSyncFailedDetailUnconfirmed')
+  })
   it('falls back to the localized copy alone when there is no raw message', () => {
     expect(formatWorkflowSyncErrorDetail(translate, undefined)).toBe(
       'Your canvas is unchanged.'
     )
+  })
+
+  it('uses projection recovery guidance rather than claiming the canvas is unchanged', () => {
+    expect(
+      formatWorkflowSyncErrorDetail(
+        translate,
+        undefined,
+        'local_projection_incomplete'
+      )
+    ).toBe('agent.workflowSyncFailedDetailProjection')
   })
 
   it('appends a short raw message as extra context after the localized copy', () => {
@@ -27,6 +48,12 @@ describe('formatWorkflowSyncErrorDetail', () => {
     expect(
       formatWorkflowSyncErrorDetail(translate, undefined, 'catalog_mismatch')
     ).toBe('Your node catalog is incompatible.')
+  })
+
+  it('uses the reload copy when this page is older than the document', () => {
+    expect(
+      formatWorkflowSyncErrorDetail(translate, undefined, 'stale_client_schema')
+    ).toBe('Reload the page to see the latest changes.')
   })
 
   it('falls back to the schema-mismatch copy for an undifferentiated code', () => {

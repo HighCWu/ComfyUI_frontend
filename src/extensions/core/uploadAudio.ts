@@ -1,4 +1,6 @@
 import { MediaRecorder as ExtendableMediaRecorder } from 'extendable-media-recorder'
+import { zUploadImageResponse } from '@comfyorg/ingest-types/zod'
+import { z } from 'zod'
 
 import { useNodeDragAndDrop } from '@/composables/node/useNodeDragAndDrop'
 import { useNodeFileInput } from '@/composables/node/useNodeFileInput'
@@ -28,6 +30,10 @@ import { getNodeByLocatorId } from '@/utils/graphTraversalUtil'
 import { api } from '../../scripts/api'
 import { app } from '../../scripts/app'
 import { useWidgetValueStore } from '@/stores/widgetValueStore'
+
+const audioUploadResponseSchema = zUploadImageResponse.extend({
+  name: z.string().min(1)
+})
 
 function updateUIWidget(
   audioUIWidget: DOMWidget<HTMLAudioElement, string>,
@@ -64,7 +70,7 @@ async function uploadFile(
     })
 
     if (resp.status === 200) {
-      const data: { name: string; subfolder?: string } = await resp.json()
+      const data = audioUploadResponseSchema.parse(await resp.json())
       // Add the file to the dropdown list and update the widget value
       const path = data.subfolder ? `${data.subfolder}/${data.name}` : data.name
 

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { buildFeedbackTypeformUrl, buildSupportUrl } from './config'
+
 const distribution = vi.hoisted(() => ({ isCloud: false, isNightly: false }))
 
 vi.mock(import('@/platform/distribution/types'), () => ({
@@ -10,6 +12,39 @@ vi.mock(import('@/platform/distribution/types'), () => ({
     return distribution.isNightly
   }
 }))
+
+it('keeps prepaid support and help-center feedback on the first-party site without user identifiers', () => {
+  vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+
+  expect(
+    buildSupportUrl({
+      userEmail: 'private@example.test',
+      userId: 'private-user'
+    })
+  ).toBe('/support')
+  expect(buildFeedbackTypeformUrl('help-center')).toBe('/support')
+})
+
+it('preserves upstream support prefill outside prepaid mode', () => {
+  vi.stubEnv('VITE_RUN_BILLING_MODE', '')
+
+  const url = new URL(
+    buildSupportUrl({
+      userEmail: 'upstream@example.test',
+      userId: 'upstream-user'
+    })
+  )
+
+  expect(url.origin).toBe('https://support.comfy.org')
+  expect(url.pathname).toBe('/hc/en-us/requests/new')
+  expect(url.searchParams.get('tf_anonymous_requester_email')).toBe(
+    'upstream@example.test'
+  )
+  expect(url.searchParams.get('tf_40029135130388')).toBe(
+    'upstream@example.test'
+  )
+  expect(url.searchParams.get('tf_42515251051412')).toBe('upstream-user')
+})
 
 describe('buildFeedbackTypeformUrl', () => {
   beforeEach(() => {

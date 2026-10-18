@@ -1,4 +1,4 @@
-import { defineAsyncComponent } from 'vue'
+import { defineAsyncComponent, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { useCurrentUser } from '@/composables/auth/useCurrentUser'
@@ -50,6 +50,35 @@ export function useAgentConsent() {
   const { accepted, identity, isChecking } = storeToRefs(consentStore)
   const { t } = i18n.global
 
+  async function waitForExpectedIdentity(expected: string): Promise<boolean> {
+    if (identity.value === expected) return true
+    // A non-null mismatch is an account change, never a bootstrap gap.
+    if (identity.value !== null) return false
+    return await new Promise<boolean>((resolve) => {
+      let settled = false
+      let stop = () => {}
+      const finish = (result: boolean): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        stop()
+        resolve(result)
+      }
+      const timeout = setTimeout(() => finish(false), 3_000)
+      stop = watch(
+        identity,
+        (current) => {
+          if (current === expected) finish(true)
+          else if (current !== null) finish(false)
+        },
+        { flush: 'sync' }
+      )
+      // Close the subscribe-after-check race without extending the window.
+      if (identity.value === expected) finish(true)
+      else if (identity.value !== null) finish(false)
+    })
+  }
+
   /**
    * Names an ending of the consent request that produced neither a card on
    * screen nor a decision.
@@ -76,6 +105,7 @@ export function useAgentConsent() {
     exit: AgentConsentOfferExit,
     trigger: AgentConsentTrigger
   ): void {
+    console.warn(`[AgentConsent] request exited: ${exit} (${trigger})`)
     useTelemetry()?.trackAgentConsentOfferExited({
       exit,
       stage: 'request',
@@ -298,6 +328,9 @@ export function useAgentConsent() {
       reading = true
       await consentStore.load()
     } catch (error) {
+      console.warn(
+        `[AgentConsent] ${reading ? 'consent_read_failed' : 'scope_probe_failed'} (${trigger})`
+      )
       reportRequestExit(
         reading ? 'consent_read_failed' : 'scope_probe_failed',
         trigger
@@ -312,7 +345,10 @@ export function useAgentConsent() {
       return null
     }
 
-    if (identity.value !== decisionIdentity) {
+    if (!(await waitForExpectedIdentity(decisionIdentity))) {
+      console.warn(
+        `[AgentConsent] expected identity ${identity.value === null ? 'missing' : 'changed'} after read (${trigger})`
+      )
       reportRequestExit('scope_changed_after_read', trigger)
       return null
     }
@@ -341,12 +377,19 @@ export function useAgentConsent() {
     const decisionIdentity = isLoggedIn.value
       ? await requestConsentForCurrentUser(trigger, hooks)
       : await acceptAfterSignIn(trigger, hooks)
-    if (
-      !decisionIdentity ||
-      identity.value !== decisionIdentity ||
-      !accepted.value
-    )
+    if (!decisionIdentity) return
+    if (!(await waitForExpectedIdentity(decisionIdentity))) {
+      console.warn(
+        `[AgentConsent] expected identity ${identity.value === null ? 'missing' : 'changed'} before open (${trigger})`
+      )
       return
+    }
+    if (!accepted.value) {
+      console.warn(
+        `[AgentConsent] consent not accepted before open (${trigger})`
+      )
+      return
+    }
     onAccept()
   }
 

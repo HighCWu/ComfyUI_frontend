@@ -87,8 +87,10 @@
       <span>{{ $t('workspaceSwitcher.scopeCaption') }}</span>
     </div>
 
-    <!-- Create workspace button -->
-    <div v-if="isCloud" class="shrink-0 border-t border-border-default p-2">
+    <div
+      v-if="isCloud && (!prepaid || canCreateWorkspace)"
+      class="shrink-0 border-t border-border-default p-2"
+    >
       <div
         :class="
           cn(
@@ -147,6 +149,8 @@ import type {
 } from '@/platform/workspace/api/workspaceApi'
 import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
 import { cn } from '@comfyorg/tailwind-utils'
+
+const prepaid = import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
 
 interface AvailableWorkspace {
   id: string

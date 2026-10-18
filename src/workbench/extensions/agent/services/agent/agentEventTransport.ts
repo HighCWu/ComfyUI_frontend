@@ -1,14 +1,23 @@
 import type { AgentWsEvent } from '../../schemas/agentApiSchema'
+import { zAgentAskContext } from '../../schemas/agentApiSchema'
 
 import { STALE_AFTER_MS } from '../../crdt/agentCrdtDocLifecycle'
 import type {
+  AgentAskResolution,
   AssistantMessage,
   RunApprovalPart,
   TextPart,
   ThinkingPart,
   ToolPart
 } from './agentMessageParts'
-import { snapshotMessage } from './agentMessageParts'
+import {
+  retireAskParts,
+  snapshotMessage,
+  toAskResolution
+} from './agentMessageParts'
+import { agentQuestionSchema } from './agentQuestion'
+import { agentDeletionSchema } from './agentDeletion'
+import { agentPausedSchema } from './agentPaused'
 import type {
   UndeliverableAskContext,
   UndeliverableAskReason
@@ -84,13 +93,7 @@ export interface AgentEventTransport {
   notifyCanvasCaughtUp: () => void
   /** Whether any tool-call part is currently held pending canvas catch-up. */
   hasPendingCanvasSync: () => boolean
-  /**
-   * PM-1658: drops a run-approval part the way an `agent_ask_resolved` frame
-   * would, for an ask resolved out of band. The transport owns the message
-   * every later emit republishes, so editing the store's copy alone lets a
-   * dismissed card reappear the next time this one snapshots.
-   */
-  dropAskPart: (askId: string) => void
+  retireAskPart: (askId: string, resolution: AgentAskResolution) => void
   /**
    * Tears the transport down for a reason other than natural completion
    * (abort, drop, reset, hydrate). Flushes any tool-call parts held pending
@@ -325,18 +328,21 @@ export function createAgentEventTransport(
     return true
   }
 
-  /**
-   * Applies one `agent_ask` frame. Only the `run_approval` kind renders a
-   * part; returns `false` for any other kind, mirroring `ingest`'s early
-   * `return` for that case.
-   *
-   * That `false` reaches a live turn and still shows the user nothing, while
-   * the server parks waiting for an answer — the same dead-panel outcome as an
-   * ask dropped in routing, so it is reported the same way. Generated-contract
-   * kinds without a client renderer are tagged separately from unknown input.
-   */
   function handleAskEvent(data: AgentAskEvent['data']): boolean {
-    if (data.kind !== 'run_approval') {
+    const question =
+      data.kind === 'ask_user' ? agentQuestionSchema.safeParse(data) : undefined
+    const deletion =
+      data.kind === 'delete_approval'
+        ? agentDeletionSchema.safeParse(data)
+        : undefined
+    const paused =
+      data.kind === 'paused' ? agentPausedSchema.safeParse(data) : undefined
+    if (
+      data.kind !== 'run_approval' &&
+      !question?.success &&
+      !deletion?.success &&
+      !paused?.success
+    ) {
       reportUndeliverableAsk(
         data,
         data.kind === 'ask_user' ? 'unrendered-kind' : 'unknown-kind'
@@ -348,11 +354,20 @@ export function createAgentEventTransport(
     closeOpenThinking()
     message.thinking = false
     message.thinkingText = undefined
+    const context = zAgentAskContext.safeParse(data.context)
     const part: RunApprovalPart = {
       type: 'runApproval',
+      ...(question?.success ? { question: question.data } : {}),
+      ...(deletion?.success ? { deletion: deletion.data } : {}),
+      ...(paused?.success ? { paused: paused.data } : {}),
       askId: data.ask_id,
-      workflowId: data.context?.workflow_id || undefined,
-      workflowName: data.context?.workflow_name || undefined
+      prompt: data.prompt,
+      workflowId: context.success
+        ? context.data.workflow_id || undefined
+        : undefined,
+      workflowName: context.success
+        ? context.data.workflow_name || undefined
+        : undefined
     }
     message.parts.push(part)
     return true
@@ -367,12 +382,17 @@ export function createAgentEventTransport(
     message.thinkingText = openThinking?.text
   }
 
-  /** Applies one `agent_ask_resolved` frame: drops the matching run-approval
-   * part, since its ask is no longer pending. */
-  function handleAskResolvedEvent(data: AgentAskResolvedEvent['data']): void {
-    message.parts = message.parts.filter(
-      (part) => part.type !== 'runApproval' || part.askId !== data.ask_id
+  function handleAskResolvedEvent(
+    data: AgentAskResolvedEvent['data']
+  ): boolean {
+    const parts = retireAskParts(
+      message.parts,
+      data.ask_id,
+      toAskResolution(data)
     )
+    if (parts === message.parts) return false
+    message.parts = parts
+    return true
   }
 
   /** Applies one `agent_message_delta` frame: appends its delta to the open
@@ -472,8 +492,7 @@ export function createAgentEventTransport(
       case 'agent_ask':
         return handleAskEvent(event.data)
       case 'agent_ask_resolved':
-        handleAskResolvedEvent(event.data)
-        return true
+        return handleAskResolvedEvent(event.data)
       case 'agent_message_delta':
         handleMessageDeltaEvent(event.data)
         return true
@@ -507,11 +526,9 @@ export function createAgentEventTransport(
     emit(snapshotMessage(message))
   }
 
-  function dropAskPart(askId: string): void {
-    const parts = message.parts.filter(
-      (part) => part.type !== 'runApproval' || part.askId !== askId
-    )
-    if (parts.length === message.parts.length) return
+  function retireAskPart(askId: string, resolution: AgentAskResolution): void {
+    const parts = retireAskParts(message.parts, askId, resolution)
+    if (parts === message.parts) return
     message.parts = parts
     emit(snapshotMessage(message))
   }
@@ -522,6 +539,6 @@ export function createAgentEventTransport(
     notifyCanvasCaughtUp,
     hasPendingCanvasSync,
     dispose,
-    dropAskPart
+    retireAskPart
   }
 }

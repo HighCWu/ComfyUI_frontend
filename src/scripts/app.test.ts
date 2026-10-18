@@ -206,8 +206,8 @@ vi.mock(import('@/platform/missingModel/missingModelPipeline'), () => ({
 }))
 
 vi.mock(import('./promptCapacityRetry'), { spy: true })
-const mockIsWorkspaceEditorIframe = vi.mocked(
-  promptCapacityRetry.isWorkspaceEditorIframe
+const mockIsManagedEditorSession = vi.mocked(
+  promptCapacityRetry.isManagedEditorSession
 )
 
 function createMockNode(
@@ -356,7 +356,7 @@ describe('ComfyApp', () => {
     ).mockResolvedValue()
     mockExtensionService.invokeExtensions.mockReturnValue([])
     mockExtensionService.invokeExtensionsAsync.mockResolvedValue(undefined)
-    mockIsWorkspaceEditorIframe.mockReturnValue(false)
+    mockIsManagedEditorSession.mockReturnValue(false)
     vi.mocked(extractFilesFromDragEvent).mockResolvedValue([])
     mockImportA1111.mockResolvedValue('imported')
     mockWorkflowService.afterLoadNewGraph.mockResolvedValue()
@@ -1806,10 +1806,10 @@ describe('ComfyApp', () => {
       expect(mockCanvas.draw).toHaveBeenCalledWith(true, true)
     })
 
-    it('retries capacity preparation with the captured prompt in an editor iframe', async () => {
+    it('retries capacity preparation with the captured prompt in a bound editor', async () => {
       vi.useFakeTimers()
       try {
-        mockIsWorkspaceEditorIframe.mockReturnValue(true)
+        mockIsManagedEditorSession.mockReturnValue(true)
         const graph = new LGraph()
         const workflow = new ComfyWorkflow({
           path: 'workflows/retry.json',
@@ -1870,7 +1870,7 @@ describe('ComfyApp', () => {
     it('cancels capacity preparation when the editor page is hidden', async () => {
       vi.useFakeTimers()
       try {
-        mockIsWorkspaceEditorIframe.mockReturnValue(true)
+        mockIsManagedEditorSession.mockReturnValue(true)
         const graph = new LGraph()
         Reflect.set(app, 'rootGraphInternal', graph)
         useWorkflowStore().activeWorkflow = markLoaded(
@@ -1914,7 +1914,7 @@ describe('ComfyApp', () => {
     it('cancels a later batch retry with the one queue-level controller', async () => {
       vi.useFakeTimers()
       try {
-        mockIsWorkspaceEditorIframe.mockReturnValue(true)
+        mockIsManagedEditorSession.mockReturnValue(true)
         const graph = new LGraph()
         Reflect.set(app, 'rootGraphInternal', graph)
         useWorkflowStore().activeWorkflow = markLoaded(

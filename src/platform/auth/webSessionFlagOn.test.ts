@@ -62,7 +62,10 @@ import { installCloudApiAuth } from '@/platform/auth/cloudApiAuthProvider'
 import { useTelemetry } from '@/platform/telemetry'
 import { reportError } from '@/platform/telemetry/reportError'
 import { refreshRemoteConfig } from '@/platform/remoteConfig/refreshRemoteConfig'
-import { remoteConfig } from '@/platform/remoteConfig/remoteConfig'
+import {
+  remoteConfig,
+  remoteConfigState
+} from '@/platform/remoteConfig/remoteConfig'
 import { useToast } from '@/components/ui/toast/toastStore'
 import { workspaceApi } from '@/platform/workspace/api/workspaceApi'
 import { installWorkspaceApiAuth } from '@/platform/workspace/api/workspaceApiAuth'
@@ -858,7 +861,7 @@ const sessionRequest = (
   method,
   path,
   headers: { 'x-comfy-client': COMFY_CLIENT, ...headers },
-  credentials: 'include'
+  credentials: 'same-origin'
 })
 
 const LISTED = {
@@ -871,7 +874,8 @@ const WORKSPACE_LIST = {
   workspaces: [
     { ...LISTED, id: 'ws-personal', name: 'Personal', type: 'personal' },
     { ...LISTED, id: 'ws-team', name: 'Team', type: 'team' }
-  ]
+  ],
+  can_create_workspace: true
 }
 
 const STORED_CONSENT = {
@@ -2395,15 +2399,24 @@ describe('billing on a tab that arrived by session', () => {
   })
 
   it.for([
-    { name: 'resolves', capabilitiesDown: false, authoritative: true },
     {
-      name: 'is unavailable, falling back to the owner',
+      name: 'resolves',
+      capabilitiesDown: false,
+      authoritative: true,
+      canTopUp: true
+    },
+    {
+      name: 'is unavailable and fails closed',
       capabilitiesDown: true,
-      authoritative: false
+      authoritative: false,
+      canTopUp: false
     }
   ])(
     'billing capabilities for the session user: the read $name',
-    async ({ capabilitiesDown, authoritative }, { onTestFinished }) => {
+    async (
+      { capabilitiesDown, authoritative, canTopUp },
+      { onTestFinished }
+    ) => {
       const { ingest } = await bootSessionOnly()
       ingest.capabilitiesDown = capabilitiesDown
       localStorage.setItem(WORKSPACE_STORAGE_KEYS.LAST_WORKSPACE_ID, 'ws-team')
@@ -2419,7 +2432,7 @@ describe('billing on a tab that arrived by session', () => {
         isReady: capabilities.isReady.value,
         canTopUp: capabilities.canTopUp.value,
         authoritative: capabilities.snapshotAuthoritative.value
-      }).toEqual({ isReady: true, canTopUp: true, authoritative })
+      }).toEqual({ isReady: true, canTopUp, authoritative })
     }
   )
 })
@@ -2604,6 +2617,51 @@ describe.for([{ unified: false }, { unified: true }])(
       expect(methodsOfServer(server)).toEqual(['GET'])
     })
 
+    it.for(['unloaded', 'anonymous'] as const)(
+      'restores cookie Run authentication from %s prepaid bootstrap flags',
+      async (phase) => {
+        vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+        await install({ userId: 'user-a' })
+        const previousName = window.name
+        window.name = 'eds_cookie-run-binding'
+        onTestFinished(() => {
+          window.name = previousName
+        })
+        const respond = vi.mocked(fetch).getMockImplementation()
+        assert.exists(respond)
+        vi.mocked(fetch).mockImplementation((input, init) => {
+          if (
+            new URL(String(input), location.href).pathname ===
+            '/api/auth/get-session'
+          )
+            return Promise.resolve(
+              jsonResponse({
+                user: {
+                  id: 'user-a',
+                  name: 'Cookie user',
+                  email: 'user-a@example.com',
+                  emailVerified: true
+                }
+              })
+            )
+          return respond(input, init)
+        })
+        identity.resolve(null)
+
+        await cloudSignIn()
+        remoteConfig.value = {
+          web_session_probe: true,
+          unified_web_session: false
+        }
+        remoteConfigState.value = phase
+        await bootCloudIdentity()
+
+        expect(useCloudWebSessionStore().state.phase).toBe('signed_in')
+        expect(useAuthStore().userId).toBe('user-a')
+        expect(webSessionRequests()).toBeDefined()
+      }
+    )
+
     it.for([
       {
         name: 'a remembered login',
@@ -2746,7 +2804,7 @@ describe.for([{ unified: false }, { unified: true }])(
       await vi.advanceTimersByTimeAsync(60_000)
       await response
       expect(queueReads().map(([, init]) => init?.credentials)).toEqual([
-        'include'
+        'same-origin'
       ])
     })
 

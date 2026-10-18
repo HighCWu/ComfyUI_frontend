@@ -4,6 +4,8 @@ import type {
   WorkflowResponse
 } from '@comfyorg/ingest-types'
 import {
+  zAgentIdentity,
+  zAgentThreadSummary,
   zUploadImageResponse,
   zWorkflowResponse
 } from '@comfyorg/ingest-types/zod'
@@ -25,6 +27,7 @@ import { api } from '@/scripts/api'
 import type { AuthCredential, AuthScheme } from '@/types/authTypes'
 
 import {
+  RENDERED_ASK_KINDS,
   zAgentAnswerReceipt,
   zAgentCancelAccepted,
   zAgentError,
@@ -32,6 +35,8 @@ import {
   zAgentRunMode,
   zAgentThreads,
   zAgentTurnAccepted,
+  zAttachmentBoundsExceeded,
+  zAttachmentRejection,
   zCloudWorkflowIndex
 } from '../../schemas/agentApiSchema'
 import type {
@@ -43,8 +48,14 @@ import type {
   AgentTurnAccepted,
   CloudWorkflowEntry
 } from '../../schemas/agentApiSchema'
+import { nativeAttachmentCapabilitiesSchema } from '../../schemas/nativeRunPlan.generated'
+import {
+  attachmentBoundsMessage,
+  refusedAttachmentsMessage
+} from '../../utils/attachmentMessages'
 
 const CLOUD_WORKFLOW_PAGE_SIZE = 100
+const AGENT_THREAD_PAGE_SIZE = 20
 
 /**
  * PM-1658: tightens `fetchApi`'s shared 60s header deadline for the one
@@ -73,15 +84,20 @@ const ANSWER_ASK_TIMEOUT_MS = 15_000
  * audit gate rejects a type export with no consumers.
  */
 type AgentApiOperation =
+  | 'adopt_saved_workflow'
   | 'answer_thread_ask'
   | 'cancel_thread_message'
+  | 'delete_thread'
+  | 'get_agent_identity'
   | 'get_cloud_workflow'
   | 'get_run_mode'
+  | 'get_attachment_policy'
   | 'get_thread_messages'
   | 'list_cloud_workflows'
   | 'list_threads'
   | 'post_thread_message'
   | 'put_run_mode'
+  | 'rename_thread'
   | 'upload_image'
 
 type ReportedAuthScheme = AuthScheme | 'unreported'
@@ -144,12 +160,14 @@ export class AgentApiError extends Error {
   readonly status: number
   readonly body: unknown
   readonly retryAfterSeconds?: number
+  readonly operation?: string
 
   constructor(
     message: string,
     status: number,
     body: unknown,
-    retryAfterSeconds?: number
+    retryAfterSeconds?: number,
+    operation?: string
   ) {
     super(
       message.trim().length > 0
@@ -160,6 +178,7 @@ export class AgentApiError extends Error {
     this.status = status
     this.body = body
     this.retryAfterSeconds = retryAfterSeconds
+    this.operation = operation
   }
 }
 
@@ -266,6 +285,24 @@ function parseErrorBody(text: string): unknown {
 }
 
 function getErrorMessage(body: unknown, fallback: string): string {
+  const refused = zAttachmentRejection.safeParse(body)
+  if (refused.success) {
+    return refusedAttachmentsMessage(
+      refused.data.rejected,
+      refused.data.rejected_count
+    )
+  }
+  const bounds = zAttachmentBoundsExceeded.safeParse(body)
+  if (bounds.success) {
+    return attachmentBoundsMessage({
+      limits: {
+        maxItemLength: bounds.data.limits.max_item_length,
+        maxItems: bounds.data.limits.max_items
+      },
+      overlongRef: bounds.data.overlong_ref,
+      receivedCount: bounds.data.received_count
+    })
+  }
   const plain = zAgentError.safeParse(body)
   if (plain.success) {
     return typeof plain.data.error === 'string'
@@ -500,7 +537,8 @@ export function createAgentRestClient() {
       message,
       response.status,
       body,
-      retryAfterSeconds
+      retryAfterSeconds,
+      operation
     )
     if (
       isAuthRejectionStatus(response.status) &&
@@ -573,7 +611,12 @@ export function createAgentRestClient() {
       attachments: req.attachments,
       draft: req.draft && { content: req.draft.content },
       current_tab_unbound: req.currentTabUnbound,
-      client_message_id: req.clientMessageId
+      client_message_id: req.clientMessageId,
+      ...(import.meta.env.VITE_AGENT_BACKEND_MODE === 'official'
+        ? {
+            ask_kinds: [...RENDERED_ASK_KINDS]
+          }
+        : {})
     })
     return request(
       'post_thread_message',
@@ -596,13 +639,37 @@ export function createAgentRestClient() {
   }
 
   async function listThreads(): Promise<AgentThreadSummary[]> {
-    const page = await request(
+    let page = await request(
       'list_threads',
-      '/agent/threads',
+      `/agent/threads?limit=${AGENT_THREAD_PAGE_SIZE}`,
       { method: 'GET' },
       zAgentThreads
     )
-    return page.threads
+    if (import.meta.env.VITE_AGENT_BACKEND_MODE !== 'official')
+      return page.threads
+    const threads = new Map(page.threads.map((thread) => [thread.id, thread]))
+    const maxFollowUpPages = Math.max(
+      1,
+      Math.ceil(page.pagination.total / page.pagination.limit)
+    )
+    const cursors = new Set<string>()
+    while (page.pagination.has_more) {
+      const cursor = page.pagination.next_cursor
+      if (!cursor || cursors.has(cursor) || cursors.size >= maxFollowUpPages)
+        throw new AgentResponseUnreadableError(
+          'Invalid native history pagination'
+        )
+      cursors.add(cursor)
+      page = await request(
+        'list_threads',
+        `/agent/threads?limit=${AGENT_THREAD_PAGE_SIZE}&after=${encodeURIComponent(cursor)}`,
+        { method: 'GET' },
+        zAgentThreads
+      )
+      for (const thread of page.threads)
+        if (!threads.has(thread.id)) threads.set(thread.id, thread)
+    }
+    return [...threads.values()]
   }
 
   async function getRunMode(): Promise<AgentRunModePreference> {
@@ -612,6 +679,16 @@ export function createAgentRestClient() {
       { method: 'GET' },
       zAgentRunMode
     )
+  }
+
+  async function getIdentity(): Promise<{ userId: string }> {
+    const identity = await request(
+      'get_agent_identity',
+      '/agent/identity',
+      { method: 'GET' },
+      zAgentIdentity
+    )
+    return { userId: identity.user_id }
   }
 
   async function putRunMode(
@@ -665,6 +742,18 @@ export function createAgentRestClient() {
     )
   }
 
+  async function adoptSavedWorkflow(
+    path: string,
+    content: unknown
+  ): Promise<WorkflowResponse> {
+    return request(
+      'adopt_saved_workflow',
+      '/agent/workflows/adopt',
+      jsonInit('POST', { path, content }),
+      zWorkflowResponse
+    )
+  }
+
   async function cancelMessage(
     threadId: string,
     messageId: string
@@ -680,12 +769,19 @@ export function createAgentRestClient() {
   async function answerAsk(
     threadId: string,
     askId: string,
-    selected: string[]
+    selected: string[],
+    otherText?: string
   ): Promise<AgentAnswerReceipt> {
     return request(
       'answer_thread_ask',
       `/agent/threads/${encodeURIComponent(threadId)}/asks/${encodeURIComponent(askId)}/answer`,
-      { ...jsonInit('POST', { selected }), timeoutMs: ANSWER_ASK_TIMEOUT_MS },
+      {
+        ...jsonInit('POST', {
+          selected,
+          ...(otherText ? { other_text: otherText } : {})
+        }),
+        timeoutMs: ANSWER_ASK_TIMEOUT_MS
+      },
       zAgentAnswerReceipt
     )
   }
@@ -695,6 +791,23 @@ export function createAgentRestClient() {
     filename: string,
     signal?: AbortSignal
   ): Promise<UploadImageResponse> {
+    if (import.meta.env.VITE_AGENT_BACKEND_MODE === 'official') {
+      const capabilities = await request(
+        'get_attachment_policy',
+        '/agent/capabilities',
+        { method: 'GET', cache: 'no-store', signal },
+        nativeAttachmentCapabilitiesSchema
+      )
+      const policy = capabilities.attachmentPolicy
+      if (
+        !capabilities.attachments ||
+        image.size <= 0 ||
+        image.size > policy.maxFileBytes ||
+        !new RegExp(policy.filenamePattern, 'i').test(filename)
+      )
+        throw new AgentApiError('Attachment is not supported', 400, null)
+      if (signal?.aborted) throw signal.reason
+    }
     const form = new FormData()
     form.append('image', image, filename)
     return request(
@@ -710,14 +823,68 @@ export function createAgentRestClient() {
     )
   }
 
+  async function renameThread(
+    threadId: string,
+    title: string,
+    signal?: AbortSignal
+  ) {
+    try {
+      const thread = await request(
+        'rename_thread',
+        `/agent/threads/${encodeURIComponent(threadId)}`,
+        { ...jsonInit('PATCH', { title }), signal },
+        zAgentThreadSummary
+          .pick({ id: true, title: true })
+          .refine(
+            (value) =>
+              value.id === threadId &&
+              value.title === value.title.trim() &&
+              value.title.length > 0 &&
+              value.title.length <= 200
+          )
+      )
+      return { ok: true as const, thread }
+    } catch (cause) {
+      reportError(cause, {
+        surface: 'agent',
+        errorType: 'agent_thread_rename_failed'
+      })
+      return { ok: false as const }
+    }
+  }
+
+  async function deleteThread(threadId: string, signal?: AbortSignal) {
+    try {
+      await request(
+        'delete_thread',
+        `/agent/threads/${encodeURIComponent(threadId)}`,
+        { method: 'DELETE', signal },
+        zAgentThreadSummary
+          .pick({ id: true })
+          .refine((value) => value.id === threadId)
+      )
+      return { ok: true as const }
+    } catch (cause) {
+      reportError(cause, {
+        surface: 'agent',
+        errorType: 'agent_thread_delete_failed'
+      })
+      return { ok: false as const }
+    }
+  }
+
   return {
+    deleteThread,
+    renameThread,
     postMessage,
     getMessages,
     listThreads,
+    getIdentity,
     getRunMode,
     putRunMode,
     listCloudWorkflows,
     getCloudWorkflow,
+    adoptSavedWorkflow,
     cancelMessage,
     answerAsk,
     uploadImage

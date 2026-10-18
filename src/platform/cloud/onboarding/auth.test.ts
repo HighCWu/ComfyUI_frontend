@@ -13,6 +13,7 @@ import { api } from '@/scripts/api'
 import { stubFirebaseAuthHarness } from '@/utils/__tests__/stubAccountIdentityPort'
 
 import {
+  getUserCloudStatus,
   getSurveyCompletedStatus as getSurveyCompletedStatusFor,
   submitSurvey as submitSurveyFor
 } from './auth'
@@ -72,6 +73,34 @@ function mockResponse({
     json: async () => body
   })
 }
+
+describe('getUserCloudStatus', () => {
+  test('returns a schema-validated current user', async () => {
+    fetchApi.mockResolvedValueOnce(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { id: 'firebase-user-1', status: 'active' }
+      })
+    )
+
+    await expect(getUserCloudStatus()).resolves.toEqual({
+      id: 'firebase-user-1',
+      status: 'active'
+    })
+  })
+
+  test.for([{ status: 'active' }, { id: 42, status: 'active' }, null, []])(
+    'rejects malformed successful current-user data %#',
+    async (body) => {
+      fetchApi.mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body })
+      )
+
+      await expect(getUserCloudStatus()).rejects.toThrow()
+    }
+  )
+})
 
 describe('getSurveyCompletedStatus', () => {
   test('200 with non-empty value → true', async () => {

@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { cn } from '@comfyorg/tailwind-utils'
 
-import type { ActivityPart } from '../../../services/agent/agentMessageParts'
+import type {
+  ActivityPart,
+  AgentAskSelection
+} from '../../../services/agent/agentMessageParts'
 import type {
   AgentPaywallAction,
   AgentPaywallPresentation
@@ -23,7 +26,7 @@ const { group } = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  answer: [askId: string, selection: 'run' | 'cancel']
+  answer: [askId: string, selection: AgentAskSelection]
   openWorkflow: [askId: string, workflowId: string, workflowName?: string]
   approvalShown: [askId: string, workflowId: string | null]
   paywallAction: [action: AgentPaywallAction]

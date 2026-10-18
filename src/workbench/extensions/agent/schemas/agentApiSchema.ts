@@ -1,9 +1,13 @@
 import {
   zAgentAdmissionError,
   zAgentAnswerAccepted,
+  zAgentAskConflict,
+  zAgentAskKind,
+  zAgentAskResolvedData,
   zAgentCancelAccepted,
   zAgentError as zGeneratedAgentError,
   zAgentMessage as zGeneratedAgentMessage,
+  zAgentPendingAskBase,
   zAgentRunMode as zGeneratedAgentRunMode,
   zAgentThreadListResponse as zGeneratedAgentThreadListResponse,
   zAgentTurnAccepted as zGeneratedAgentTurnAccepted,
@@ -12,6 +16,7 @@ import {
 } from '@comfyorg/ingest-types/zod'
 import type {
   AgentAnswerAccepted,
+  AgentAskKind,
   AgentCancelAccepted,
   AgentRunMode as AgentRunModePreference,
   AgentThreadSummary,
@@ -20,8 +25,9 @@ import type {
 import { z } from 'zod'
 
 import { isNodeLocatorId } from '@/types/nodeIdentification'
+import { nativeAcceptedAttachmentPolicy } from './nativeRunPlan.generated'
 
-export { zAgentAdmissionError, zAgentCancelAccepted }
+export { zAgentAdmissionError, zAgentAskConflict, zAgentCancelAccepted }
 export type {
   AgentAnswerAccepted,
   AgentCancelAccepted,
@@ -29,13 +35,7 @@ export type {
   AgentThreadSummary
 }
 
-/**
- * The 202 from the answer route. A backend that predates the committed-answer
- * body sends only `status`, so `selected` is optional here.
- */
-export const zAgentAnswerReceipt = zAgentAnswerAccepted.partial({
-  selected: true
-})
+export const zAgentAnswerReceipt = zAgentAnswerAccepted
 export type AgentAnswerReceipt = z.infer<typeof zAgentAnswerReceipt>
 
 const zTurnId = z.string().brand<'TurnId'>()
@@ -51,31 +51,25 @@ export type AgentTurnAccepted = GeneratedAgentTurnAccepted & {
   workflow_id?: string
 }
 
-const zAgentAskOption = z
-  .object({
-    id: z.string(),
-    label: z.string(),
-    description: z.string().optional()
-  })
-  .passthrough()
+export const RENDERED_ASK_KINDS = [
+  'run_approval',
+  'ask_user',
+  'delete_approval',
+  'paused'
+] as const satisfies readonly AgentAskKind[]
 
-const zAgentPendingAsk = z
+const zTolerantPendingAsk = zAgentPendingAskBase.extend({
+  kind: zAgentAskKind.or(z.literal('unknown')).catch('unknown'),
+  context: z.unknown().optional()
+})
+
+// Ask context is display-only and older persisted rows may contain a null or
+// unrelated object. Parse only the two fields the panel renders instead of
+// trusting the generated schema's deliberately tolerant `unknown` boundary.
+export const zAgentAskContext = z
   .object({
-    message_id: z.string(),
-    ask_id: z.string(),
-    kind: z.string().optional(),
-    context: z
-      .object({
-        workflow_id: z.string().optional(),
-        workflow_name: z.string().optional()
-      })
-      .passthrough()
-      .optional(),
-    prompt: z.string(),
-    options: z.array(zAgentAskOption),
-    min_selections: z.number().int(),
-    max_selections: z.number().int(),
-    allow_other: z.boolean()
+    workflow_id: z.string().optional(),
+    workflow_name: z.string().optional()
   })
   .passthrough()
 
@@ -184,7 +178,7 @@ const zAgentMessageContent = z
 export const zAgentMessage = zGeneratedAgentMessage
   .extend({
     content: zAgentMessageContent.optional(),
-    pending_ask: zAgentPendingAsk.optional()
+    pending_ask: zTolerantPendingAsk.optional()
   })
   .passthrough()
 
@@ -197,7 +191,13 @@ export const zCloudWorkflowIndex = zWorkflowListResponse
   .pick({ pagination: true })
   .extend({
     data: z.array(
-      z.object({ id: z.string(), name: z.string().optional() }).passthrough()
+      z
+        .object({
+          id: z.string(),
+          name: z.string().optional(),
+          editor_path: z.string().min(1).optional()
+        })
+        .passthrough()
     )
   })
 export type CloudWorkflowEntry = z.infer<
@@ -205,6 +205,46 @@ export type CloudWorkflowEntry = z.infer<
 >['data'][number]
 
 export const zAgentError = z.union([zGeneratedAgentError, zAgentAdmissionError])
+
+const zAcceptedAttachmentPolicy = z.object({
+  view: z.array(z.enum(nativeAcceptedAttachmentPolicy.view)),
+  probe: z.array(z.enum(nativeAcceptedAttachmentPolicy.probe)),
+  read: z.array(z.enum(nativeAcceptedAttachmentPolicy.read)),
+  reference: z.array(z.enum(nativeAcceptedAttachmentPolicy.reference)),
+  retain: z.array(z.enum(nativeAcceptedAttachmentPolicy.retain))
+})
+
+export const zAttachmentRejection = z
+  .object({
+    type: z.literal('ATTACHMENT_TYPE_NOT_ACCEPTED'),
+    error: z.string(),
+    accepted: zAcceptedAttachmentPolicy,
+    rejected: z.array(z.string().max(256)).max(10),
+    rejected_count: z.number().int().nonnegative().max(1000)
+  })
+  .refine((value) => value.rejected_count >= value.rejected.length)
+
+export const zAttachmentBoundsExceeded = z
+  .object({
+    type: z.literal('ATTACHMENT_BOUNDS_EXCEEDED'),
+    error: z.string(),
+    limits: z.object({
+      max_item_length: z.number().int().positive(),
+      max_items: z.number().int().positive()
+    }),
+    overlong_ref: z.string().max(256),
+    received_count: z.number().int().nonnegative()
+  })
+  .refine(
+    (value) =>
+      value.received_count > value.limits.max_items ||
+      value.overlong_ref.length > 0
+  )
+
+export const zAttachmentRequestError = z.union([
+  zAttachmentRejection,
+  zAttachmentBoundsExceeded
+])
 
 /**
  * The 403 body the agent service returns when it will not serve the turn's
@@ -340,20 +380,12 @@ const zAgentActiveTabEvent = z.object({
 
 const zAgentAskEvent = z.object({
   type: z.literal('agent_ask'),
-  data: zAgentPendingAsk.extend({ thread_id: z.string() })
+  data: zTolerantPendingAsk.extend({ thread_id: z.string() })
 })
 
 const zAgentAskResolvedEvent = z.object({
   type: z.literal('agent_ask_resolved'),
-  data: z
-    .object({
-      thread_id: z.string(),
-      message_id: z.string(),
-      ask_id: z.string(),
-      status: z.enum(['answered', 'cancelled', 'expired']),
-      selected: z.array(z.string()).nullable()
-    })
-    .passthrough()
+  data: zAgentAskResolvedData
 })
 
 export const zAgentWsEvent = z.discriminatedUnion('type', [
@@ -380,4 +412,9 @@ export function parseAgentWsEvent(
   value: unknown
 ): z.ZodSafeParseResult<AgentWsEvent> {
   return zAgentWsEvent.safeParse(value)
+}
+
+export interface AgentServerFeature {
+  state: 'starting' | 'ready' | 'failed'
+  reason?: string | null
 }

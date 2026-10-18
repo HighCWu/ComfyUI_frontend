@@ -16,6 +16,7 @@ import type {
   PromotedHostWrite,
   WorkflowNode
 } from '@comfyorg/comfy-multi-player'
+import { z } from 'zod'
 
 import { liveAutogrowGroupOf } from '@/core/graph/widgets/dynamicWidgets'
 import { registerDocBoundRootGraphProbe } from '@/lib/litegraph/src/docBoundGraphs'
@@ -26,6 +27,8 @@ import type { LGraph } from '@/lib/litegraph/src/LGraph'
 import type { LGraphNode } from '@/lib/litegraph/src/LGraphNode'
 import type { LLink } from '@/lib/litegraph/src/LLink'
 import type { Subgraph } from '@/lib/litegraph/src/subgraph/Subgraph'
+import { findUsedSubgraphIds } from '@/lib/litegraph/src/subgraph/subgraphUtils'
+import { topologicalSortSubgraphs } from '@/lib/litegraph/src/subgraph/subgraphDeduplication'
 import type { ISerialisedNode } from '@/lib/litegraph/src/types/serialisation'
 import { isWidgetValue } from '@/lib/litegraph/src/types/widgets'
 import type { IBaseWidget } from '@/lib/litegraph/src/types/widgets'
@@ -167,6 +170,19 @@ function isValueWidget(
   // drift apart again.
   const { type = stored?.type, serialize = stored?.serialize } = widget ?? {}
   return type !== 'button' && serialize !== false
+}
+
+function serializeDefinition(subgraph: Subgraph) {
+  const serialized = subgraph.asSerialisable()
+  return {
+    ...serialized,
+    nodes: serialized.nodes.map((node) => {
+      const snapshot = { ...node }
+      Reflect.deleteProperty(snapshot, '__incarnation')
+      return snapshot
+    }),
+    links: serialized.links ?? []
+  }
 }
 
 function nodeKey(graphId: string, nodeId: NodeId): string {
@@ -357,6 +373,22 @@ export function docInputIndex(
   return index === -1 ? undefined : index
 }
 
+function growForMissingSlot(
+  target: LGraphNode | null | undefined,
+  input: INodeInputSlot | undefined
+): { name: string; type: string; widget?: string } | undefined {
+  if (!target || !input) return undefined
+  const widgetBacked = !!input.widget && !target.isSubgraphNode()
+  if (!widgetBacked && !liveAutogrowGroupOf(target, input.name)) {
+    return undefined
+  }
+  return {
+    name: input.name,
+    type: String(input.type),
+    ...(input.widget ? { widget: input.widget.name } : {})
+  }
+}
+
 export function attachDocOpMinter(deps: DocOpMinterDeps): DocOpMinter {
   let pending: PendingOp[] = []
   const pendingAdds = new Map<string, LGraphNode>()
@@ -401,14 +433,60 @@ export function attachDocOpMinter(deps: DocOpMinterDeps): DocOpMinter {
     pending = []
     pendingAdds.clear()
     if (detached) return
-    const operations = batch.flatMap((entry) => {
-      const operation =
-        entry.kind === 'op'
-          ? entry.operation
-          : mintAddNodeOperation(entry.graph, entry.node)
-      return operation ? [operation] : []
-    })
-    if (operations.length > 0) deps.enqueue(operations)
+    let operations: GraphOperation[]
+    try {
+      operations = batch.flatMap((entry) => {
+        const operation =
+          entry.kind === 'op'
+            ? entry.operation
+            : mintAddNodeOperation(entry.graph, entry.node)
+        if (!operation) return []
+        if (entry.kind !== 'add_node' || operation.op !== 'add_node')
+          return [operation]
+        const definition = findSubgraphByUuid(
+          entry.graph.rootGraph,
+          operation.class_type
+        )
+        if (!definition) return [operation]
+        const dependencies = findUsedSubgraphIds(
+          definition,
+          entry.graph.rootGraph.subgraphs
+        )
+        const serialized = serializeDefinition(definition)
+        const nested = [...entry.graph.rootGraph.subgraphs.values()]
+          .filter((subgraph) => dependencies.has(subgraph.id))
+          .map(serializeDefinition)
+        const registrations = topologicalSortSubgraphs([
+          ...nested,
+          serialized
+        ]).map(
+          (item): GraphOperation => ({
+            op: 'define_subgraph',
+            subgraph_id: item.id,
+            subgraph_definition: z
+              .object({
+                id: z.string(),
+                nodes: z.array(z.unknown()),
+                links: z.array(z.unknown())
+              })
+              .passthrough()
+              .parse(JSON.parse(JSON.stringify(item)))
+          })
+        )
+        return [...registrations, operation]
+      })
+    } catch (error) {
+      reportError(error, {
+        surface: 'agent',
+        errorType: 'agent_crdt_unrepresentable_subgraph_definition'
+      })
+      return
+    }
+    if (operations.length > 0)
+      deps.enqueue([
+        ...operations.filter((operation) => operation.op === 'define_subgraph'),
+        ...operations.filter((operation) => operation.op !== 'define_subgraph')
+      ])
   }
 
   function reportOnce(
@@ -592,18 +670,11 @@ export function attachDocOpMinter(deps: DocOpMinterDeps): DocOpMinter {
       schedule({ kind: 'op', operation: { ...connect, to_slot: toSlot } })
       return
     }
-    if (target && input && liveAutogrowGroupOf(target, input.name)) {
+    const grow = growForMissingSlot(target, input)
+    if (grow) {
       schedule({
         kind: 'op',
-        operation: {
-          ...connect,
-          to_slot: null,
-          grow: {
-            name: input.name,
-            type: String(input.type),
-            ...(input.widget ? { widget: input.widget.name } : {})
-          }
-        }
+        operation: { ...connect, to_slot: null, grow }
       })
       return
     }

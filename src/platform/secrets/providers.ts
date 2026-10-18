@@ -61,7 +61,8 @@ export function getProviderLabel(provider: string | undefined): string {
 export function getProviderLogo(
   provider: string | undefined
 ): string | undefined {
-  return findProvider(provider)?.logo
+  const logo = findProvider(provider)?.logo
+  return logo ? `${import.meta.env.BASE_URL || '/'}${logo.slice(1)}` : undefined
 }
 
 export function getProviderHelpKey(

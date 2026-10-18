@@ -73,6 +73,21 @@ describe('useComposer', () => {
     expect(composer.canSend.value).toBe(true)
   })
 
+  it('blocks send while any attachment has a validation error', () => {
+    const { composer, onSend } = setup()
+    composer.setText('inspect it')
+    composer.addAttachment({
+      id: 'invalid-1',
+      name: 'archive.zip',
+      ref: '',
+      validationError: 'unsupported-type'
+    })
+
+    expect(composer.canSend.value).toBe(false)
+    composer.submit()
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
   it('revokes a dismissed blob preview but never a submitted one', () => {
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     const { composer } = setup()

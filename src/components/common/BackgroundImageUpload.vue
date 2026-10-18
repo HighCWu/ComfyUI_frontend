@@ -29,6 +29,7 @@
       ref="fileInput"
       type="file"
       class="hidden"
+      :aria-label="$t('g.upload')"
       accept="image/*"
       @change="handleFileUpload"
     />
@@ -36,8 +37,10 @@
 </template>
 
 <script setup lang="ts">
+import { zUploadImageResponse } from '@comfyorg/ingest-types/zod'
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { z } from 'zod'
 
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
@@ -47,6 +50,9 @@ import { api } from '@/scripts/api'
 import { getErrorMessage } from '@/utils/errorUtil'
 
 const { t } = useI18n()
+const backgroundUploadResponseSchema = zUploadImageResponse.extend({
+  name: z.string().min(1)
+})
 
 const modelValue = defineModel<string>()
 
@@ -74,7 +80,7 @@ const uploadFile = async (file: File): Promise<string | null> => {
     return null
   }
 
-  const data = await resp.json()
+  const data = backgroundUploadResponseSchema.parse(await resp.json())
   return data.subfolder ? `${data.subfolder}/${data.name}` : data.name
 }
 

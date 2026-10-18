@@ -58,6 +58,10 @@ describe('DesktopCloudNotificationController', () => {
     })
   })
 
+  it('compiles an explicit empty render surface for the headless controller', () => {
+    expect('render' in DesktopCloudNotificationController).toBe(true)
+  })
+
   it('waits for settings to load before deciding whether to show the notification', async () => {
     const loadSettings = createDeferred()
     vi.mocked(settingStore.load).mockImplementation(() => loadSettings.promise)

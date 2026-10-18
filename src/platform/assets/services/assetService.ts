@@ -7,7 +7,10 @@ import { ASSETS_SEED_FAST_COMPLETE_EVENT } from '@/platform/assets/constants/ass
 
 import {
   assetFilenameSchema,
+  assetExportDownloadResponseSchema,
+  assetExportTaskResponseSchema,
   assetItemSchema,
+  assetMetadataSchema,
   assetResponseSchema,
   asyncUploadResponseSchema,
   tagsOperationResultSchema
@@ -828,7 +831,7 @@ function createAssetService() {
       throw new Error(getLocalizedErrorMessage(code))
     }
 
-    const data: AssetMetadata = await res.json()
+    const data = assetMetadataSchema.parse(await res.json())
     if (data.validation?.is_valid === false) {
       throw new Error(
         getLocalizedErrorMessage(
@@ -1073,7 +1076,7 @@ function createAssetService() {
       throw new Error(`Failed to create asset export: ${res.status}`)
     }
 
-    return await res.json()
+    return assetExportTaskResponseSchema.parse(await res.json())
   }
 
   async function getExportDownloadUrl(
@@ -1085,7 +1088,7 @@ function createAssetService() {
       throw new Error(`Failed to get export download URL: ${res.status}`)
     }
 
-    return await res.json()
+    return assetExportDownloadResponseSchema.parse(await res.json())
   }
 
   return {

@@ -144,7 +144,11 @@ function runApproval(
   })
 }
 
-function askResolved(askId = 'turn-1:call-1'): AgentChatEvent {
+function askResolved(
+  askId = 'turn-1:call-1',
+  selected = ['run'],
+  otherText?: string
+): AgentChatEvent {
   return zAgentWsEvent.parse({
     type: 'agent_ask_resolved',
     data: {
@@ -152,7 +156,8 @@ function askResolved(askId = 'turn-1:call-1'): AgentChatEvent {
       message_id: 'm',
       ask_id: askId,
       status: 'answered',
-      selected: ['run']
+      selected,
+      ...(otherText ? { other_text: otherText } : {})
     }
   })
 }
@@ -599,6 +604,7 @@ describe('agentEventTransport run approval', () => {
       {
         type: 'runApproval',
         askId: 'turn-1:call-1',
+        prompt: 'Run workflow “Portrait workflow”?',
         workflowId: 'workflow-1',
         workflowName: 'Portrait workflow'
       },
@@ -623,21 +629,119 @@ describe('agentEventTransport run approval', () => {
     expect(message.streaming).toBe(true)
   })
 
-  it('reports ask_user as a generated kind without a client renderer', () => {
-    drive([runApproval('ask-user-1', 'ask_user')])
-
-    expect(reportError).toHaveBeenCalledWith(
-      expect.any(Error),
+  it('keeps a validated ask_user read-only with the authoritative resolution', () => {
+    const message = drive([runApproval('ask-user-1', 'ask_user')])
+    expect(message.parts).toContainEqual(
       expect.objectContaining({
-        tags: expect.objectContaining({
-          reason: 'unrendered-kind',
-          ask_kind: 'ask_user'
+        type: 'runApproval',
+        askId: 'ask-user-1',
+        question: expect.objectContaining({
+          kind: 'ask_user',
+          min_selections: 1,
+          max_selections: 1
         })
+      })
+    )
+    expect(reportError).not.toHaveBeenCalled()
+    expect(
+      drive([
+        runApproval('ask-user-1', 'ask_user'),
+        askResolved('ask-user-1', ['run'], 'Use transparency')
+      ]).parts
+    ).toContainEqual(
+      expect.objectContaining({
+        askId: 'ask-user-1',
+        resolution: {
+          status: 'answered',
+          selected: ['run'],
+          otherText: 'Use transparency'
+        }
       })
     )
   })
 
-  it('reports an unknown ask kind once with a bounded tag', () => {
+  it('renders and resolves a supported pause, refusing unsupported admission reasons', () => {
+    const data = {
+      thread_id: 't',
+      message_id: 'm',
+      ask_id: 'pause-1',
+      kind: 'paused',
+      prompt: 'Reply paused',
+      options: [{ id: 'resume', label: 'Resume' }],
+      min_selections: 1,
+      max_selections: 1,
+      allow_other: false,
+      context: {
+        reason: 'step_limit',
+        message: 'Step limit',
+        recheck_after_seconds: 0
+      }
+    }
+    const event = zAgentWsEvent.parse({ type: 'agent_ask', data })
+    expect(drive([event]).parts).toContainEqual(
+      expect.objectContaining({
+        askId: 'pause-1',
+        paused: expect.objectContaining({ kind: 'paused' })
+      })
+    )
+    expect(drive([event, askResolved('unrelated')]).parts).toHaveLength(1)
+    expect(drive([event, askResolved('pause-1')]).parts).toEqual([])
+    const invalid = zAgentWsEvent.parse({
+      type: 'agent_ask',
+      data: {
+        ...data,
+        context: { ...data.context, reason: 'no_funds' }
+      }
+    })
+    expect(drive([invalid]).parts).toEqual([])
+  })
+
+  it('renders the server-owned deletion context and retains its decision', () => {
+    const event = zAgentWsEvent.parse({
+      type: 'agent_ask',
+      data: {
+        thread_id: 't',
+        message_id: 'm',
+        ask_id: 'delete-1',
+        kind: 'delete_approval',
+        prompt: 'Delete nodes?',
+        options: [
+          { id: 'delete', label: 'Delete' },
+          { id: 'keep', label: 'Keep' }
+        ],
+        min_selections: 1,
+        max_selections: 1,
+        allow_other: false,
+        context: {
+          action: 'delete_nodes',
+          nodes: [{ id: '1', title: 'Owned node' }]
+        }
+      }
+    })
+    expect(drive([event]).parts).toContainEqual(
+      expect.objectContaining({
+        type: 'runApproval',
+        askId: 'delete-1',
+        deletion: expect.objectContaining({
+          context: {
+            action: 'delete_nodes',
+            nodes: [{ id: '1', title: 'Owned node' }]
+          }
+        })
+      })
+    )
+    expect(drive([event, askResolved('unrelated')]).parts).toHaveLength(1)
+    expect(
+      drive([event, askResolved('delete-1', ['keep'])]).parts
+    ).toContainEqual(
+      expect.objectContaining({
+        askId: 'delete-1',
+        resolution: { status: 'answered', selected: ['keep'] }
+      })
+    )
+  })
+
+  it('reports an unknown ask kind once with a normalized tag', () => {
     const unknownKind = 'x'.repeat(100)
     drive([
       runApproval('unknown-1', unknownKind),
@@ -650,7 +754,7 @@ describe('agentEventTransport run approval', () => {
       expect.objectContaining({
         tags: {
           reason: 'unknown-kind',
-          ask_kind: 'x'.repeat(64)
+          ask_kind: 'unknown'
         }
       })
     )

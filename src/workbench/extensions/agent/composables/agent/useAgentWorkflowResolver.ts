@@ -26,6 +26,7 @@ type WorkflowResolverDeps = {
   >
   listCloudWorkflows: AgentRestClient['listCloudWorkflows']
   getCloudWorkflow: AgentRestClient['getCloudWorkflow']
+  includeUnboundSaved?: boolean
 }
 
 export type CloudWorkflowLifecycle = 'live' | 'gone' | 'unknown'
@@ -34,7 +35,8 @@ export function useAgentWorkflowResolver({
   workflows,
   bindings,
   listCloudWorkflows,
-  getCloudWorkflow
+  getCloudWorkflow,
+  includeUnboundSaved = false
 }: WorkflowResolverDeps) {
   const cloudIndex = ref<WorkflowReferenceMetadata[]>([])
   const listedCloudIds = ref<ReadonlySet<string>>(new Set())
@@ -45,8 +47,10 @@ export function useAgentWorkflowResolver({
     for (const { name } of cloudIndex.value)
       counts.set(name, (counts.get(name) ?? 0) + 1)
     return new Map(
-      cloudIndex.value.flatMap(({ id, name }) =>
-        counts.get(name) === 1 ? [[name, id] as const] : []
+      cloudIndex.value.flatMap(({ id, name, editorPath }) =>
+        editorPath === undefined && counts.get(name) === 1
+          ? [[name, id] as const]
+          : []
       )
     )
   })
@@ -58,8 +62,18 @@ export function useAgentWorkflowResolver({
       if (generation !== refreshGeneration) return false
       listedCloudIds.value = new Set(entries.map(({ id }) => id))
       listingComplete.value = complete
-      cloudIndex.value = entries.flatMap(({ id, name }) =>
-        name === undefined ? [] : [{ id, name }]
+      cloudIndex.value = entries.flatMap(({ id, name, editor_path }) =>
+        name === undefined
+          ? []
+          : [
+              {
+                id,
+                name,
+                ...(editor_path === undefined
+                  ? {}
+                  : { editorPath: editor_path })
+              }
+            ]
       )
       return true
     } catch (error) {
@@ -70,6 +84,13 @@ export function useAgentWorkflowResolver({
       })
       return false
     }
+  }
+
+  function resetCloudWorkflowIds(): void {
+    refreshGeneration += 1
+    cloudIndex.value = []
+    listedCloudIds.value = new Set()
+    listingComplete.value = false
   }
 
   /**
@@ -99,6 +120,10 @@ export function useAgentWorkflowResolver({
   }
 
   function cloudIdFor(workflow: ComfyWorkflow): string | undefined {
+    const exact = cloudIndex.value.filter(
+      ({ editorPath }) => editorPath === workflow.path
+    )
+    if (!workflow.isTemporary && exact.length === 1) return exact[0].id
     const name = cloudWorkflowName(workflow)
     const saved =
       !workflow.isTemporary &&
@@ -107,6 +132,11 @@ export function useAgentWorkflowResolver({
         : undefined
     if (saved !== undefined) return saved
     const bound = bindings.workflowIdFor(workflow.path)
+    const indexedPath = cloudIndex.value.find(
+      ({ id }) => id === bound
+    )?.editorPath
+    if (indexedPath !== undefined && indexedPath !== workflow.path)
+      return undefined
     return bound !== undefined && bindings.matchesWorkflow(bound, workflow)
       ? bound
       : undefined
@@ -135,6 +165,15 @@ export function useAgentWorkflowResolver({
     workflowId: string,
     nameCandidates: ComfyWorkflow[]
   ): ComfyWorkflow | null {
+    const editorPath = cloudIndex.value.find(
+      ({ id }) => id === workflowId
+    )?.editorPath
+    if (editorPath !== undefined) {
+      const matches = nameCandidates.filter(
+        (workflow) => !workflow.isTemporary && workflow.path === editorPath
+      )
+      return matches.length === 1 ? matches[0] : null
+    }
     const path = bindings.tabPathFor(workflowId)
     const bound = path === undefined ? null : workflows.getWorkflowByPath(path)
     if (bound && bindings.matchesWorkflow(workflowId, bound)) {
@@ -208,8 +247,12 @@ export function useAgentWorkflowResolver({
           if (seenIds.has(id)) continue
           seenIds.add(id)
           open.push({ id, name })
-        } else if (workflow.isTemporary) {
-          open.push({ tabPath: workflow.path, name })
+        } else if (workflow.isTemporary || includeUnboundSaved) {
+          open.push({
+            tabPath: workflow.path,
+            name,
+            ...(!workflow.isTemporary ? { isPersisted: true } : {})
+          })
         }
       }
       const saved = cloudIndex.value.filter(({ id }) => {
@@ -217,9 +260,40 @@ export function useAgentWorkflowResolver({
         seenIds.add(id)
         return true
       })
+      const openPaths = new Set(workflows.openWorkflows.map(({ path }) => path))
+      const indexedPaths = new Set(
+        cloudIndex.value.flatMap(({ editorPath }) =>
+          editorPath === undefined ? [] : [editorPath]
+        )
+      )
+      const ordinary = includeUnboundSaved
+        ? workflows.workflows.flatMap((workflow) => {
+            const name = cloudWorkflowName(workflow)
+            if (
+              workflow.isTemporary ||
+              openPaths.has(workflow.path) ||
+              indexedPaths.has(workflow.path) ||
+              (workflow.suffix !== 'json' && workflow.suffix !== 'app.json') ||
+              (cloudIdsByName.value.has(name) &&
+                savedMatches(name, workflows.workflows).length === 1)
+            )
+              return []
+            return [
+              {
+                tabPath: workflow.path,
+                isPersisted: true,
+                name: workflow.path.startsWith('workflows/')
+                  ? workflow.path
+                      .slice('workflows/'.length)
+                      .replace(/\.json$/, '')
+                  : name
+              }
+            ]
+          })
+        : []
       return [
         ...[...open].sort((a, b) => a.name.localeCompare(b.name)),
-        ...[...saved].sort((a, b) => a.name.localeCompare(b.name))
+        ...[...saved, ...ordinary].sort((a, b) => a.name.localeCompare(b.name))
       ]
     }
   )
@@ -252,6 +326,7 @@ export function useAgentWorkflowResolver({
 
   return {
     refreshCloudWorkflowIds,
+    resetCloudWorkflowIds,
     forgetCloudWorkflowId,
     cloudIdFor,
     cloudWorkflowName,

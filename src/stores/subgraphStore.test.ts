@@ -76,10 +76,9 @@ describe('useSubgraphStore', () => {
       }))
     )
     vi.mocked(api).getUserData = vi.fn((f) =>
-      Promise.resolve({
-        status: 200,
-        text: () => Promise.resolve(JSON.stringify(filenames[f.slice(10)]))
-      } as Response)
+      Promise.resolve(
+        new Response(JSON.stringify(filenames[f.slice(10)]), { status: 200 })
+      )
     )
     vi.mocked(api.getGlobalSubgraphs).mockResolvedValue(globalSubgraphs)
     return await store.fetchSubgraphs()
@@ -121,15 +120,13 @@ describe('useSubgraphStore', () => {
       }
     })
     //mock saving of file
-    vi.mocked(api.storeUserData).mockResolvedValue({
-      status: 200,
-      json: () =>
-        Promise.resolve({
-          path: 'subgraphs/testname.json',
-          modified: Date.now(),
-          size: 2
-        })
-    } as Response)
+    vi.mocked(api.storeUserData).mockResolvedValue(
+      Response.json({
+        path: 'subgraphs/testname.json',
+        modified: Date.now(),
+        size: 2
+      })
+    )
   }
 
   it.for([
@@ -195,6 +192,7 @@ describe('useSubgraphStore', () => {
       {
         global_test: {
           name: 'Global Test Blueprint',
+          source: 'test',
           info: { node_pack: 'comfy_essentials' },
           data: JSON.stringify(mockGraph)
         }
@@ -219,6 +217,7 @@ describe('useSubgraphStore', () => {
         {
           global_bp: {
             name: 'Global Blueprint',
+            source: 'test',
             info: { node_pack: 'comfy_essentials' },
             data: JSON.stringify(mockGraph)
           }
@@ -243,6 +242,7 @@ describe('useSubgraphStore', () => {
         {
           global_bp: {
             name: 'Global Blueprint',
+            source: 'test',
             info: { node_pack: 'some-uuid-string' },
             data: JSON.stringify(mockGraph)
           }
@@ -270,6 +270,7 @@ describe('useSubgraphStore', () => {
         {
           global_bp: {
             name: 'Global Blueprint',
+            source: 'test',
             info: { node_pack: 'comfyui-ltx-video-0fbc55c6-long-uuid' },
             data: JSON.stringify(mockGraph)
           }
@@ -290,6 +291,7 @@ describe('useSubgraphStore', () => {
       {
         broken_blueprint: {
           name: 'Broken Blueprint',
+          source: 'test',
           info: { node_pack: 'test_pack' },
           data: ''
         }
@@ -308,6 +310,7 @@ describe('useSubgraphStore', () => {
       {
         failing_blueprint: {
           name: 'Failing Blueprint',
+          source: 'test',
           info: { node_pack: 'test_pack' },
           data: fromAny<string, unknown>(
             Promise.reject(new Error('Network error'))
@@ -331,11 +334,13 @@ describe('useSubgraphStore', () => {
       {
         broken: {
           name: 'Broken',
+          source: 'test',
           info: { node_pack: 'test_pack' },
           data: ''
         },
         valid: {
           name: 'Valid Blueprint',
+          source: 'test',
           info: { node_pack: 'test_pack' },
           data: JSON.stringify(mockGraph)
         }
@@ -375,6 +380,7 @@ describe('useSubgraphStore', () => {
         {
           global_with_aliases: {
             name: 'Global With Aliases',
+            source: 'test',
             info: {
               node_pack: 'comfy_essentials',
               search_aliases: ['global alias', 'test alias']
@@ -451,15 +457,11 @@ describe('useSubgraphStore', () => {
       let savedWorkflowData: Record<string, unknown> | null = null
       vi.mocked(api.storeUserData).mockImplementation(async (_path, data) => {
         savedWorkflowData = JSON.parse(data as string)
-        return {
-          status: 200,
-          json: () =>
-            Promise.resolve({
-              path: 'subgraphs/testname.json',
-              modified: Date.now(),
-              size: 2
-            })
-        } as Response
+        return Response.json({
+          path: 'subgraphs/testname.json',
+          modified: Date.now(),
+          size: 2
+        })
       })
 
       await mockFetch({ 'testname.json': mockGraph })
@@ -496,6 +498,7 @@ describe('useSubgraphStore', () => {
         {
           categorized: {
             name: 'Categorized Blueprint',
+            source: 'test',
             info: { node_pack: 'test_pack' },
             data: JSON.stringify(mockGraphWithCategory)
           }
@@ -531,6 +534,7 @@ describe('useSubgraphStore', () => {
         {
           no_cat_global: {
             name: 'No Category Global',
+            source: 'test',
             info: { node_pack: 'test_pack' },
             data: JSON.stringify(mockGraph)
           }
@@ -556,6 +560,7 @@ describe('useSubgraphStore', () => {
         {
           bp_override: {
             name: 'Override Blueprint',
+            source: 'test',
             info: {
               node_pack: 'test_pack',
               category: 'Custom Category'
@@ -591,6 +596,7 @@ describe('useSubgraphStore', () => {
         {
           bp_precedence: {
             name: 'Precedence Blueprint',
+            source: 'test',
             info: { node_pack: 'test_pack' },
             data: JSON.stringify(graphWithEssentials),
             essentials_category: 'Video Generation'
@@ -609,6 +615,7 @@ describe('useSubgraphStore', () => {
         {
           bp_essentials: {
             name: 'Test Essentials Blueprint',
+            source: 'test',
             info: { node_pack: 'test_pack', category: 'Test Category' },
             data: JSON.stringify(mockGraph),
             essentials_category: 'Image Generation'
@@ -629,6 +636,7 @@ describe('useSubgraphStore', () => {
     ): GlobalSubgraphData {
       return {
         name: 'Filtered Blueprint',
+        source: 'test',
         info: { node_pack: 'test_pack', ...overrides },
         data: JSON.stringify(mockGraph)
       }

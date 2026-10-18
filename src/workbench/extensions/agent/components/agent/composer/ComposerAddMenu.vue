@@ -117,7 +117,9 @@ async function pickWorkflow(workflow: WorkflowReferenceOption): Promise<void> {
                 <span class="icon-[comfy--workflow] size-4 shrink-0" />
                 <span class="max-w-64 truncate">{{ workflow.name }}</span>
                 <span
-                  v-if="workflow.id === undefined"
+                  v-if="
+                    workflow.id === undefined && workflow.isPersisted !== true
+                  "
                   class="text-xs text-muted-foreground"
                   >{{ t('agent.unsavedWorkflow') }}</span
                 >

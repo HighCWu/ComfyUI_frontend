@@ -31,6 +31,8 @@ import { usePendingTopup } from '@/composables/billing/usePendingTopup'
 import { useAuthDialogs } from '@/composables/auth/useAuthDialogs'
 import { useDialogService } from '@/services/dialogService'
 import { SsoRequiredAuthError, useAuthStore } from '@/stores/authStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
+import { WorkspaceApiError } from '@/platform/workspace/api/workspaceApiError'
 import type {
   BillingPortalTargetTier,
   SocialSignInOptions
@@ -139,9 +141,12 @@ export const useAuthActions = () => {
                 const saved = await workflowService.saveWorkflow(workflow)
                 if (!saved) return
               } catch {
-                throw new Error(
-                  t('auth.signOut.saveFailed', { workflow: workflow.path })
+                reportError(
+                  new Error(
+                    t('auth.signOut.saveFailed', { workflow: workflow.path })
+                  )
                 )
+                return
               }
             }
           }
@@ -150,7 +155,14 @@ export const useAuthActions = () => {
 
       if (beforeSignOut && !(await beforeSignOut())) return
 
-      await authStore.logout()
+      if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+        if (!(await usePrepaidSessionStore().signOut())) {
+          reportError(new Error(t('auth.signOut.failed')))
+          return
+        }
+      } else {
+        await authStore.logout()
+      }
       if (isCloud) {
         prepareWorkflowLogoutTransition()
         clearAllWorkspaceStorage()
@@ -163,7 +175,10 @@ export const useAuthActions = () => {
 
       if (isCloud) {
         try {
-          window.location.href = '/cloud/login'
+          window.location.href =
+            import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
+              ? '/auth/login'
+              : '/cloud/login'
         } catch {
           // needed for local development until we bring in cloud login pages.
           window.location.reload()
@@ -204,7 +219,7 @@ export const useAuthActions = () => {
     })
 
     if (!response.checkout_url) {
-      throw new Error(
+      throw new WorkspaceApiError(
         t('toastMessages.failedToPurchaseCredits', {
           error: 'No checkout URL returned'
         })
@@ -236,7 +251,7 @@ export const useAuthActions = () => {
   ): Promise<boolean> => {
     const response = await authStore.accessBillingPortal(targetTier, options)
     if (!response.billing_portal_url) {
-      throw new Error(
+      throw new WorkspaceApiError(
         t('toastMessages.failedToAccessBillingPortal', {
           error: 'No billing portal URL returned'
         })

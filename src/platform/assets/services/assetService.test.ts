@@ -234,6 +234,66 @@ describe(assetService.getAssetMetadata, () => {
       )
     )
   })
+
+  it('rejects malformed successful metadata', async () => {
+    fetchApiMock.mockResolvedValueOnce(
+      buildResponse({ content_length: 1, final_url: 17 })
+    )
+
+    await expect(
+      assetService.getAssetMetadata('https://example.com/model.safetensors')
+    ).rejects.toThrow()
+  })
+})
+
+describe('asset export response contracts', () => {
+  const taskId = '123e4567-e89b-42d3-a456-426614174000'
+
+  it('accepts a valid export task acknowledgement', async () => {
+    const response = {
+      task_id: taskId,
+      status: 'created' as const,
+      message: 'Export queued'
+    }
+    fetchApiMock.mockResolvedValueOnce(buildResponse(response, { status: 202 }))
+
+    await expect(
+      assetService.createAssetExport({ asset_ids: ['asset-1'] })
+    ).resolves.toEqual(response)
+  })
+
+  it('rejects a malformed export task acknowledgement', async () => {
+    fetchApiMock.mockResolvedValueOnce(
+      buildResponse(
+        { task_id: 'not-a-uuid', status: 'created' },
+        { status: 202 }
+      )
+    )
+
+    await expect(
+      assetService.createAssetExport({ asset_ids: ['asset-1'] })
+    ).rejects.toThrow()
+  })
+
+  it('accepts a valid export download response', async () => {
+    const response = {
+      url: '/api/assets/exports/export-17.zip/download',
+      expires_at: '2026-10-18T10:00:00.000Z'
+    }
+    fetchApiMock.mockResolvedValueOnce(buildResponse(response))
+
+    await expect(
+      assetService.getExportDownloadUrl('export-17.zip')
+    ).resolves.toEqual(response)
+  })
+
+  it('rejects a malformed export download response', async () => {
+    fetchApiMock.mockResolvedValueOnce(buildResponse({ url: 17 }))
+
+    await expect(
+      assetService.getExportDownloadUrl('export-17.zip')
+    ).rejects.toThrow()
+  })
 })
 
 describe(assetService.uploadAssetFromUrl, () => {
@@ -328,9 +388,10 @@ describe(assetService.uploadAssetFromBase64, () => {
 
 describe(assetService.uploadAssetAsync, () => {
   it('returns an async result when the server responds 202', async () => {
+    const taskId = '123e4567-e89b-42d3-a456-426614174001'
     fetchApiMock.mockResolvedValueOnce(
       buildResponse(
-        { task_id: 'task-1', status: 'running' },
+        { task_id: taskId, status: 'running' },
         { ok: true, status: 202 }
       )
     )
@@ -341,7 +402,7 @@ describe(assetService.uploadAssetAsync, () => {
 
     expect(result).toEqual({
       type: 'async',
-      task: { task_id: 'task-1', status: 'running' }
+      task: { task_id: taskId, status: 'running' }
     })
   })
 

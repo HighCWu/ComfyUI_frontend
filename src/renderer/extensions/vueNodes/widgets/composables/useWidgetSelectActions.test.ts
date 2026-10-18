@@ -226,6 +226,35 @@ describe('useWidgetSelectActions', () => {
       )
     })
 
+    it('does not update the widget from a malformed success response', async () => {
+      vi.mocked(api.fetchApi).mockResolvedValue(
+        Response.json({ name: 42, subfolder: 'pasted' })
+      )
+      const modelValue = ref<string | undefined>('original.png')
+      const callback = vi.fn()
+      const widgetValues = ['original.png']
+      const { handleFilesUpdate } = useWidgetSelectActions({
+        modelValue,
+        dropdownItems: computed(() => []),
+        widget: () =>
+          fromPartial<SimplifiedWidget<string | undefined>>({
+            name: 'test',
+            type: 'combo',
+            callback,
+            options: { values: widgetValues }
+          }),
+        uploadFolder: () => 'input',
+        uploadSubfolder: () => undefined
+      })
+
+      await handleFilesUpdate([new File(['test'], 'malformed.png')])
+
+      expect(modelValue.value).toBe('original.png')
+      expect(widgetValues).toEqual(['original.png'])
+      expect(callback).not.toHaveBeenCalled()
+      expect(mockCaptureCanvasState).not.toHaveBeenCalled()
+    })
+
     it('shows a status-derived toast without a dangling separator when statusText is empty', async () => {
       vi.mocked(api.fetchApi).mockResolvedValue(
         fromPartial<Response>({

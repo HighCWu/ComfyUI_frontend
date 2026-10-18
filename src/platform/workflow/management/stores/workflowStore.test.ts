@@ -108,14 +108,12 @@ describe('useWorkflowStore', () => {
     store = useWorkflowStore()
     bookmarkStore = useWorkflowBookmarkStore()
 
-    // Add default mock implementations
-    vi.mocked(api.getUserData).mockResolvedValue({
-      status: 200,
-      json: () => Promise.resolve({ favorites: [] })
-    } as Response)
-    vi.mocked(api.storeUserData).mockResolvedValue({
-      status: 200
-    } as Response)
+    vi.mocked(api.getUserData).mockImplementation(async () =>
+      Response.json({ favorites: [] })
+    )
+    vi.mocked(api.storeUserData).mockImplementation(async () =>
+      Response.json({})
+    )
   })
 
   describe('syncWorkflows', () => {
@@ -137,10 +135,9 @@ describe('useWorkflowStore', () => {
       ])
       const workflow = store.getWorkflowByPath('workflows/a.json')!
 
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
 
       await store.openWorkflow(workflow)
       expect(store.activeWorkflow?.path).toBe('workflows/a.json')
@@ -161,10 +158,9 @@ describe('useWorkflowStore', () => {
       ])
       const workflow = store.getWorkflowByPath('workflows/a.json')!
 
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
 
       await workflow.load()
       expect(workflow.isLoaded).toBe(true)
@@ -181,10 +177,9 @@ describe('useWorkflowStore', () => {
       ])
       const workflow = store.getWorkflowByPath('workflows/a.json')!
 
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
 
       await workflow.load()
       expect(workflow.isLoaded).toBe(true)
@@ -351,10 +346,9 @@ describe('useWorkflowStore', () => {
       expect(workflow.path).toBe('workflows/a.json')
       expect(workflow.isLoaded).toBe(false)
       expect(workflow.isTemporary).toBe(false)
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
       await workflow.load()
 
       expect(workflow.isLoaded).toBe(true)
@@ -384,10 +378,9 @@ describe('useWorkflowStore', () => {
         name: 'a.json'
       })
 
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
 
       await workflow.load()
 
@@ -414,10 +407,9 @@ describe('useWorkflowStore', () => {
         name: 'a.json'
       })
 
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
 
       await workflow.load()
 
@@ -433,10 +425,9 @@ describe('useWorkflowStore', () => {
       expect(workflow).not.toBeNull()
       expect(workflow.path).toBe('workflows/a.json')
       expect(workflow.isLoaded).toBe(false)
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
 
       const loadedWorkflow = await store.openWorkflow(workflow)
 
@@ -466,10 +457,9 @@ describe('useWorkflowStore', () => {
       workflowA = store.getWorkflowByPath('workflows/a.json')!
       workflowB = store.getWorkflowByPath('workflows/b.json')!
       workflowC = store.getWorkflowByPath('workflows/c.json')!
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
     })
 
     it('should open workflows adjacent to the active workflow', async () => {
@@ -764,6 +754,29 @@ describe('useWorkflowStore', () => {
   })
 
   describe('save', () => {
+    it('retains newer workflow edits and its draft while an earlier save completes', async () => {
+      enableWorkflowPersistence()
+      await syncRemoteWorkflows(['test.json'])
+      const workflow = store.getWorkflowByPath('workflows/test.json')!
+      workflow.changeTracker = createMockChangeTracker({ workflow })
+      const draftStore = saveV2Draft(workflow.path)
+      const response = Promise.withResolvers<Response>()
+      vi.mocked(api.storeUserData).mockReturnValue(response.promise)
+      const saving = workflow.save()
+      workflow.changeTracker.activeState = {
+        ...workflow.changeTracker.activeState,
+        extra: { laterEdit: true }
+      }
+      response.resolve(
+        Response.json({ path: workflow.path, modified: 456, size: 2 })
+      )
+      await saving
+      expect(workflow.activeState?.extra?.laterEdit).toBe(true)
+      expect(workflow.isModified).toBe(true)
+      expect(draftStore.getDraft(workflow.path)).not.toBeNull()
+      expect(workflow.changeTracker.reset).not.toHaveBeenCalled()
+    })
+
     it('should save workflow content and reset modification state', async () => {
       await syncRemoteWorkflows(['test.json'])
       const workflow = store.getWorkflowByPath('workflows/test.json')!
@@ -771,15 +784,13 @@ describe('useWorkflowStore', () => {
       workflow.changeTracker = createMockChangeTracker({
         workflow
       })
-      vi.mocked(api.storeUserData).mockResolvedValue({
-        status: 200,
-        json: () =>
-          Promise.resolve({
-            path: 'workflows/test.json',
-            modified: Date.now(),
-            size: 2
-          })
-      } as Response)
+      vi.mocked(api.storeUserData).mockImplementation(async () =>
+        Response.json({
+          path: 'workflows/test.json',
+          modified: Date.now(),
+          size: 2
+        })
+      )
 
       // Save the workflow
       await workflow.save()
@@ -800,15 +811,13 @@ describe('useWorkflowStore', () => {
       workflow.changeTracker = createMockChangeTracker({
         workflow
       })
-      vi.mocked(api.storeUserData).mockResolvedValue({
-        status: 200,
-        json: () =>
-          Promise.resolve({
-            path: 'workflows/test.json',
-            modified: Date.now(),
-            size: 2
-          })
-      } as Response)
+      vi.mocked(api.storeUserData).mockImplementation(async () =>
+        Response.json({
+          path: 'workflows/test.json',
+          modified: Date.now(),
+          size: 2
+        })
+      )
 
       // Save the workflow
       await workflow.save()
@@ -831,15 +840,13 @@ describe('useWorkflowStore', () => {
       workflow.changeTracker = createMockChangeTracker({
         workflow
       })
-      vi.mocked(api.storeUserData).mockResolvedValue({
-        status: 200,
-        json: () =>
-          Promise.resolve({
-            path: 'workflows/new-test.json',
-            modified: Date.now(),
-            size: 2
-          })
-      } as Response)
+      vi.mocked(api.storeUserData).mockImplementation(async () =>
+        Response.json({
+          path: 'workflows/new-test.json',
+          modified: Date.now(),
+          size: 2
+        })
+      )
 
       // Save the workflow with new path
       const newWorkflow = await workflow.saveAs('workflows/new-test.json')
@@ -1238,10 +1245,9 @@ describe('useWorkflowStore', () => {
       workflowA = store.getWorkflowByPath('workflows/a.json')!
       workflowB = store.getWorkflowByPath('workflows/b.json')!
       workflowC = store.getWorkflowByPath('workflows/c.json')!
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
     })
 
     it('should return most recently active workflow', async () => {

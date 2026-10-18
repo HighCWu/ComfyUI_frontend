@@ -1,3 +1,6 @@
+import { zUploadImageResponse } from '@comfyorg/ingest-types/zod'
+import { z } from 'zod'
+
 import { useNodeDragAndDrop } from '@/composables/node/useNodeDragAndDrop'
 import { useNodeFileInput } from '@/composables/node/useNodeFileInput'
 import { useNodePaste } from '@/composables/node/useNodePaste'
@@ -13,6 +16,9 @@ import { getErrorMessage } from '@/utils/errorUtil'
 
 const UPLOAD_TIMEOUT_MS = 120_000
 const BYTES_PER_MB = 1024 * 1024
+const namedUploadImageResponseSchema = zUploadImageResponse.extend({
+  name: z.string().min(1)
+})
 
 function buildUploadErrorMessage(resp: Response) {
   if (resp.status === 413) {
@@ -58,7 +64,7 @@ const uploadFile = async (
     return
   }
 
-  const data = await resp.json()
+  const data = namedUploadImageResponseSchema.parse(await resp.json())
 
   // Update AssetsStore input assets when files are uploaded to input folder
   if (formFields.type === 'input' || !formFields.type) {

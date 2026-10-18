@@ -3,12 +3,7 @@ import { storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
 import { useCurrentUser } from '@/composables/auth/useCurrentUser'
-import { useFeatureFlags } from '@/composables/useFeatureFlags'
 import { useOnboardingTourStore } from '@/platform/onboarding/onboardingTourStore'
-import {
-  authenticatedRemoteConfigState,
-  remoteConfigRevision
-} from '@/platform/remoteConfig/remoteConfig'
 import { useTelemetry } from '@/platform/telemetry'
 import { reportError } from '@/platform/telemetry/reportError'
 import type {
@@ -554,15 +549,16 @@ function setupFlagGate(
   isSignedOut: () => boolean
 ): void {
   const agentPanelStore = useAgentPanelStore()
-  const { flags } = useFeatureFlags()
+  const backendEnabled = import.meta.env.VITE_AGENT_BACKEND_MODE !== 'disabled'
+  const developmentEnabled =
+    backendEnabled && import.meta.env.MODE === 'development'
 
   watch(
     () =>
       [
-        import.meta.env.VITE_AGENT_BACKEND_MODE !== 'disabled' &&
-          (import.meta.env.MODE === 'development' ||
-            flags.agentInAppExperienceEnabled),
-        remoteConfigRevision.value
+        developmentEnabled ||
+          (backendEnabled && agentPanelStore.comfyAgent?.state === 'ready'),
+        agentPanelStore.comfyAgent
       ] as const,
     ([enabled]) => {
       agentPanelStore.enabled = enabled
@@ -590,9 +586,7 @@ function setupFlagGate(
   watch(
     () =>
       [
-        import.meta.env.MODE === 'development' ||
-          authenticatedRemoteConfigState.value === 'authenticated' ||
-          authenticatedRemoteConfigState.value === 'error',
+        !backendEnabled || developmentEnabled || agentPanelStore.flagsSettled,
         isSignedOut()
       ] as const,
     ([decided, signedOut]) => {

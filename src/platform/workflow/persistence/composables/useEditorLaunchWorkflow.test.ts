@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fromPartial } from '@total-typescript/shoehorn'
+
+import type { ComfyApi } from '@/scripts/api'
+import type { ComfyApp } from '@/scripts/app'
 
 const mocks = vi.hoisted(() => ({
   fetchApi: vi.fn(),
@@ -7,23 +11,22 @@ const mocks = vi.hoisted(() => ({
   loadGraphData: vi.fn()
 }))
 
-vi.mock('@/scripts/api', () => ({
-  api: { fetchApi: mocks.fetchApi }
+vi.mock(import('@/scripts/api'), () => ({
+  api: fromPartial<ComfyApi>({ fetchApi: mocks.fetchApi })
 }))
 
-vi.mock('@/scripts/app', () => ({
-  app: {
+vi.mock(import('@/scripts/app'), () => ({
+  app: fromPartial<ComfyApp>({
     isApiJson: mocks.isApiJson,
     loadApiJson: mocks.loadApiJson,
     loadGraphData: mocks.loadGraphData
-  }
+  })
 }))
 
 import { useEditorLaunchWorkflow } from './useEditorLaunchWorkflow'
 
 describe('useEditorLaunchWorkflow', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
     mocks.isApiJson.mockReturnValue(false)
     window.name = ''
   })
@@ -78,6 +81,25 @@ describe('useEditorLaunchWorkflow', () => {
     )
     expect(mocks.isApiJson).toHaveBeenCalledWith(workflow)
     expect(mocks.loadApiJson).toHaveBeenCalledWith(workflow, 'Launch workflow')
+    expect(mocks.loadGraphData).not.toHaveBeenCalled()
+  })
+
+  it.for([
+    null,
+    [],
+    {},
+    { launch: 'workflow' },
+    { launch: { label: 17, workflow: {} } },
+    { launch: { label: null, workflow: null } }
+  ])('refuses a malformed successful launch payload', async (payload) => {
+    window.name = 'eds_malformed'
+    mocks.fetchApi.mockResolvedValue(Response.json(payload))
+
+    expect(await useEditorLaunchWorkflow().loadEditorLaunchWorkflow()).toBe(
+      false
+    )
+    expect(mocks.isApiJson).not.toHaveBeenCalled()
+    expect(mocks.loadApiJson).not.toHaveBeenCalled()
     expect(mocks.loadGraphData).not.toHaveBeenCalled()
   })
 })

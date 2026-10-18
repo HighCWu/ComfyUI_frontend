@@ -96,6 +96,7 @@ import {
 import Button from '@/components/ui/button/Button.vue'
 import { useAuthActions } from '@/composables/auth/useAuthActions'
 import { useFeatureFlags } from '@/composables/useFeatureFlags'
+import { useCloudWebSessionStore } from '@/platform/auth/session/cloudWebSessionStore'
 import { SessionRevokedError } from '@/platform/auth/session/useSessionCookie'
 import { signedInOnWebSession } from '@/platform/auth/session/webSessionFetch'
 import { isCloud } from '@/platform/distribution/types'
@@ -111,6 +112,7 @@ import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspace
 import { useBillingCapabilities } from '@/platform/workspace/composables/useBillingCapabilities'
 import { useApiKeyAuthStore } from '@/stores/apiKeyAuthStore'
 import { useAuthStore } from '@/stores/authStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 
 const FIREBASE_INIT_TIMEOUT_MS = 16_000
 const CONFIG_REFRESH_TIMEOUT_MS = 10_000
@@ -121,6 +123,8 @@ const initializationState = ref<
 const initializationRetryable = ref(true)
 const errorPanel = useTemplateRef<HTMLElement>('errorPanel')
 const billingCapabilities = useBillingCapabilities()
+const prepaid = import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
+const prepaidSession = usePrepaidSessionStore()
 let initializationGeneration = 0
 let initializationController: AbortController | null = null
 let backgroundInitialization: Promise<void> | null = null
@@ -163,6 +167,43 @@ async function initialize(): Promise<void> {
   const { isInitialized, isAuthenticated } = storeToRefs(authStore)
 
   try {
+    if (prepaid) {
+      await prepaidSession.initialize()
+      if (generation !== initializationGeneration) return
+      if (prepaidSession.user) {
+        await refreshRemoteConfig({ useAuth: true, signal: controller.signal })
+        if (generation !== initializationGeneration) return
+        if (remoteConfigState.value !== 'authenticated') {
+          await failInitialization(
+            new Error('Failed to load authenticated remote config'),
+            generation
+          )
+          return
+        }
+        const webSession = useCloudWebSessionStore()
+        if (!webSession.start()) {
+          await failInitialization(
+            new Error('Native cookie session is unavailable'),
+            generation
+          )
+          return
+        }
+        await webSession.whenReady()
+        if (generation !== initializationGeneration) return
+        if (!(await initializeWorkspaceMode())) {
+          await failInitialization(
+            new Error('Failed to initialize workspace context'),
+            generation
+          )
+          return
+        }
+        if (generation !== initializationGeneration) return
+        await billingCapabilities.initialize(controller.signal)
+        if (generation !== initializationGeneration) return
+      }
+      initializationState.value = 'ready'
+      return
+    }
     // Step 1: Wait for Firebase auth to resolve
     // This is shared with router guard - both wait for the same thing,
     // but this gate blocks rendering while router guard blocks navigation
@@ -195,7 +236,11 @@ async function initialize(): Promise<void> {
     ]).finally(() => clearTimeout(timeoutId))
     if (generation !== initializationGeneration) return
     if (remoteConfigState.value !== 'authenticated') {
-      throw new Error('Failed to load authenticated remote config')
+      await failInitialization(
+        new Error('Failed to load authenticated remote config'),
+        generation
+      )
+      return
     }
 
     const workspaceAuthStore = useWorkspaceAuthStore()
@@ -205,38 +250,56 @@ async function initialize(): Promise<void> {
       const authenticated = await workspaceAuthStore.mintAtLogin()
       if (generation !== initializationGeneration) return
       if (await missingUnifiedToken(authenticated)) {
-        throw new Error('Failed to initialize unified cloud auth')
+        await failInitialization(
+          new Error('Failed to initialize unified cloud auth'),
+          generation
+        )
+        return
       }
     }
 
-    await initializeWorkspaceMode()
+    if (!(await initializeWorkspaceMode())) {
+      await failInitialization(
+        new Error('Failed to initialize workspace context'),
+        generation
+      )
+      return
+    }
     if (generation !== initializationGeneration) return
     void billingCapabilities.initialize(controller.signal)
     const hasUnifiedToken = Boolean(workspaceAuthStore.getUnifiedToken())
     if (needsUnifiedToken && (await missingUnifiedToken(hasUnifiedToken))) {
-      throw new Error('Unified cloud auth was cleared during workspace setup')
+      await failInitialization(
+        new Error('Unified cloud auth was cleared during workspace setup'),
+        generation
+      )
+      return
     }
 
     if (generation === initializationGeneration) {
       initializationState.value = 'ready'
     }
   } catch (error) {
-    if (generation !== initializationGeneration) return
-    reportError(error, {
-      surface: 'auth',
-      errorType: 'workspace_auth_gate_initialization_failure'
-    })
-    initializationRetryable.value = isRetryableInitializationError(error)
-    initializationState.value =
-      useFeatureFlags().flags.ssoEnabled &&
-      error instanceof NoWorkspaceAccessError
-        ? 'no_workspace'
-        : 'error'
-    document.getElementById('splash-loader')?.remove()
-    await nextTick()
-    if (generation !== initializationGeneration) return
-    errorPanel.value?.focus()
+    await failInitialization(error, generation)
   }
+}
+
+async function failInitialization(error: unknown, generation: number) {
+  if (generation !== initializationGeneration) return
+  reportError(error, {
+    surface: 'auth',
+    errorType: 'workspace_auth_gate_initialization_failure'
+  })
+  initializationRetryable.value = isRetryableInitializationError(error)
+  initializationState.value =
+    useFeatureFlags().flags.ssoEnabled &&
+    error instanceof NoWorkspaceAccessError
+      ? 'no_workspace'
+      : 'error'
+  document.getElementById('splash-loader')?.remove()
+  await nextTick()
+  if (generation !== initializationGeneration) return
+  errorPanel.value?.focus()
 }
 
 function isRetryableInitializationError(error: unknown): boolean {
@@ -262,7 +325,7 @@ async function handleSignOut(): Promise<void> {
   await useAuthActions().logout()
 }
 
-async function initializeWorkspaceMode(): Promise<void> {
+async function initializeWorkspaceMode(): Promise<boolean> {
   // Initialize the full workspace store which handles:
   // - Restoring workspace token from session (fast path for refresh)
   // - Fetching workspace list
@@ -275,12 +338,10 @@ async function initializeWorkspaceMode(): Promise<void> {
   ) {
     await workspaceStore.initialize()
   }
-  if (
-    workspaceStore.initState !== 'ready' ||
-    !workspaceStore.activeWorkspaceId
-  ) {
-    throw new Error('Failed to initialize workspace context')
-  }
+  return (
+    workspaceStore.initState === 'ready' &&
+    Boolean(workspaceStore.activeWorkspaceId)
+  )
 }
 
 // The local session identity: the Firebase uid, or the validated API key for
@@ -321,7 +382,12 @@ function initializeWorkspacesInBackground(): Promise<void> {
     ) {
       return
     }
-    await initializeWorkspaceMode()
+    if (!(await initializeWorkspaceMode())) {
+      reportError(new Error('Failed to initialize workspace context'), {
+        surface: 'auth',
+        errorType: 'workspace_auth_gate_initialization_failure'
+      })
+    }
   })().catch((error: unknown) => {
     if (generation === initializationGeneration) {
       console.warn(
@@ -347,6 +413,16 @@ function initializeWorkspacesInBackground(): Promise<void> {
 onMounted(() => {
   void initialize()
 })
+
+if (prepaid) {
+  watch(
+    () => prepaidSession.user?.id,
+    () => {
+      initializationState.value = 'initializing'
+      void initialize()
+    }
+  )
+}
 
 if (!isCloud) {
   const sessionIdentity = computed(() => localSessionIdentity())

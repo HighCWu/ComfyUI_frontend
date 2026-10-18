@@ -179,6 +179,13 @@ export const useAgentWorkflowTabBindingStore = defineStore(
         previous
           .filter(({ tab }) => !open.some((entry) => entry.tab === tab))
           .forEach(releaseClosedTab)
+        for (const { tab, path } of open) {
+          const prior = previous.find((entry) => entry.tab === tab)
+          if (prior === undefined || prior.path === path) continue
+          const workflowId = recordIdFor(prior.path)
+          if (workflowId !== undefined && isVerifiedOwner(workflowId, tab))
+            bind(workflowId, path)
+        }
         open.forEach(adoptOpenTab)
       },
       { immediate: true }

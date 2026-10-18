@@ -1,12 +1,112 @@
+import {
+  zMoveUserdataFileResponse,
+  zPostUserdataFileResponse
+} from '@comfyorg/ingest-types/zod'
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, toRaw } from 'vue'
+import { z } from 'zod'
+import type { ZodType } from 'zod'
 
-import type { UserDataFullInfo } from '@/platform/remote/comfyui/types'
+import { reportError } from '@/platform/telemetry/reportError'
 import { api } from '@/scripts/api'
 import type { TreeExplorerNode } from '@/types/treeExplorerTypes'
 import { getPathDetails } from '@/utils/formatUtil'
 import { syncEntities } from '@/utils/syncUtil'
 import { buildTree } from '@/utils/treeUtil'
+
+const remoteFileValidators = new WeakMap<UserFile, string>()
+const storedUserDataResponseSchema = zPostUserdataFileResponse.extend({
+  modified: z.number(),
+  size: z.number()
+})
+const movedUserDataResponseSchema = zMoveUserdataFileResponse.extend({
+  modified: z.number(),
+  size: z.number()
+})
+type UserDataMutationResponse = z.output<typeof storedUserDataResponseSchema>
+
+async function readUserDataMutationResponse(
+  response: Response,
+  schema: ZodType<UserDataMutationResponse>,
+  operation: 'save' | 'rename'
+): Promise<UserDataMutationResponse | undefined> {
+  let raw: unknown
+  try {
+    raw = await response.json()
+  } catch (cause) {
+    reportError(cause, {
+      errorType: 'userdata_mutation_invalid_response',
+      surface: 'platform',
+      tags: { operation, status: response.status }
+    })
+    return undefined
+  }
+  const parsed = schema.safeParse(raw)
+  if (!parsed.success) {
+    reportError(parsed.error, {
+      errorType: 'userdata_mutation_invalid_response',
+      surface: 'platform',
+      tags: { operation, status: response.status }
+    })
+    return undefined
+  }
+  return parsed.data
+}
+
+export async function refreshNativeFileValidator(
+  file: UserFile,
+  path: string,
+  expectedContent: string
+): Promise<boolean> {
+  const expected = canonicalFileJson(expectedContent)
+  if (file.path !== path || expected === undefined) return false
+  const response = await api.getUserData(path)
+  if (!response.ok || !isNativeFileValidator(response.headers.get('ETag'))) {
+    await response.body?.cancel()
+    return false
+  }
+  const current = canonicalFileJson(await response.text())
+  if (file.path !== path || current !== expected) return false
+  retainFileValidator(file, response)
+  return true
+}
+
+function isNativeFileValidator(value: string | null | undefined): boolean {
+  return /^"native-v\d+-[a-f0-9]{64}(?:-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})?"$/.test(
+    value ?? ''
+  )
+}
+
+function retainFileValidator(file: UserFile, response: Response) {
+  const etag = response.headers.get('ETag')
+  remoteFileValidators.delete(toRaw(file))
+  if (etag && /^"[^"\r\n]*"$/.test(etag))
+    remoteFileValidators.set(toRaw(file), etag)
+}
+
+function canonicalFileJson(text: string): string | undefined {
+  const canonical = (value: unknown, depth = 0): unknown => {
+    if (depth > 40) return undefined
+    if (Array.isArray(value)) {
+      const items = value.map((item) => canonical(item, depth + 1))
+      return items.includes(undefined) ? undefined : items
+    }
+    if (value !== null && typeof value === 'object') {
+      const entries = Object.entries(value)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([key, item]) => [key, canonical(item, depth + 1)] as const)
+      return entries.some(([, item]) => item === undefined)
+        ? undefined
+        : Object.fromEntries(entries)
+    }
+    return value
+  }
+  try {
+    return JSON.stringify(canonical(JSON.parse(text)))
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * Normalizes a timestamp value that may be either a number (milliseconds)
@@ -65,6 +165,7 @@ export class UserFile {
   }
 
   updatePath(newPath: string) {
+    if (this.path !== newPath) remoteFileValidators.delete(toRaw(this))
     const details = getPathDetails(newPath)
     this.path = newPath
     this.directory = details.directory
@@ -107,22 +208,27 @@ export class UserFile {
       return this as LoadedUserFile
 
     this.isLoading = true
-    const resp = await api.getUserData(this.path)
-    if (resp.status !== 200) {
-      throw new Error(
-        `Failed to load file '${this.path}': ${resp.status} ${resp.statusText}`
-      )
+    try {
+      const resp = await api.getUserData(this.path)
+      if (resp.status !== 200) {
+        throw new Error(
+          `Failed to load file '${this.path}': ${resp.status} ${resp.statusText}`
+        )
+      }
+      this.content = await resp.text()
+      this.originalContent = this.content
+      retainFileValidator(this, resp)
+      return this as LoadedUserFile
+    } finally {
+      this.isLoading = false
     }
-    this.content = await resp.text()
-    this.originalContent = this.content
-    this.isLoading = false
-    return this as LoadedUserFile
   }
 
   /**
    * Unloads the file content from memory
    */
   unload(): void {
+    remoteFileValidators.delete(toRaw(this))
     this.content = null
     this.originalContent = null
     this.isLoading = false
@@ -142,27 +248,56 @@ export class UserFile {
   async save({ force = false }: { force?: boolean } = {}): Promise<UserFile> {
     if (this.isPersisted && !this.isModified && !force) return this
 
-    const resp = await api.storeUserData(this.path, this.content, {
+    const submittedContent = this.content
+    const submittedPath = this.path
+    if (
+      (this.path.startsWith('workflows/.native-agent/') ||
+        isNativeFileValidator(remoteFileValidators.get(toRaw(this)))) &&
+      submittedContent !== null
+    ) {
+      const path = this.path
+      const latest = await api.getUserData(path)
+      const submittedJson = canonicalFileJson(submittedContent)
+      if (
+        this.path === path &&
+        latest.status === 200 &&
+        submittedJson !== undefined &&
+        canonicalFileJson(await latest.text()) === submittedJson &&
+        isNativeFileValidator(latest.headers.get('ETag'))
+      )
+        retainFileValidator(this, latest)
+    }
+    if (this.path !== submittedPath) return this
+    const etag = remoteFileValidators.get(toRaw(this))
+    const resp = await api.storeUserData(submittedPath, submittedContent, {
       overwrite: this.isPersisted,
       throwOnError: true,
-      full_info: true
+      full_info: true,
+      ...(etag ? { headers: { 'If-Match': etag } } : {})
     })
 
-    // Note: Backend supports full_info=true feature after
-    // https://github.com/comfyanonymous/ComfyUI/pull/5446
-    const updatedFile = (await resp.json()) as string | UserDataFullInfo
-    if (typeof updatedFile === 'object') {
+    const updatedFile = await readUserDataMutationResponse(
+      resp,
+      storedUserDataResponseSchema,
+      'save'
+    )
+    if (this.path !== submittedPath) return this
+    if (updatedFile !== undefined) {
       this.lastModified = normalizeTimestamp(updatedFile.modified)
       this.size = updatedFile.size
     }
-    this.originalContent = this.content
+    retainFileValidator(this, resp)
+    this.originalContent = submittedContent
     return this
   }
 
   async delete(): Promise<void> {
     if (this.isTemporary) return
 
-    const resp = await api.deleteUserData(this.path)
+    const etag = remoteFileValidators.get(toRaw(this))
+    const resp = etag
+      ? await api.deleteUserData(this.path, { headers: { 'If-Match': etag } })
+      : await api.deleteUserData(this.path)
     if (resp.status !== 204) {
       throw new Error(
         `Failed to delete file '${this.path}': ${resp.status} ${resp.statusText}`
@@ -176,6 +311,7 @@ export class UserFile {
       return this
     }
 
+    const previousValidator = remoteFileValidators.get(toRaw(this))
     const resp = await api.moveUserData(this.path, newPath)
     if (resp.status !== 200) {
       throw new Error(
@@ -183,10 +319,18 @@ export class UserFile {
       )
     }
     this.updatePath(newPath)
-    // Note: Backend supports full_info=true feature after
-    // https://github.com/comfyanonymous/ComfyUI/pull/5446
-    const updatedFile = (await resp.json()) as string | UserDataFullInfo
-    if (typeof updatedFile === 'object') {
+    if (isNativeFileValidator(resp.headers.get('ETag'))) {
+      if (previousValidator)
+        remoteFileValidators.set(toRaw(this), previousValidator)
+    } else {
+      retainFileValidator(this, resp)
+    }
+    const updatedFile = await readUserDataMutationResponse(
+      resp,
+      movedUserDataResponseSchema,
+      'rename'
+    )
+    if (updatedFile !== undefined) {
       this.lastModified = normalizeTimestamp(updatedFile.modified)
       this.size = updatedFile.size
     }

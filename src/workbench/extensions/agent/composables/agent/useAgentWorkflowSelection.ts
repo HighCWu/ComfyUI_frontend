@@ -7,6 +7,8 @@ import type { AgentWorkflowBindSource } from '@/platform/telemetry/types'
 import { useWorkflowService } from '@/platform/workflow/core/services/workflowService'
 import type { ComfyWorkflow } from '@/platform/workflow/management/stores/comfyWorkflow'
 import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
+import { refreshNativeFileValidator } from '@/stores/userFileStore'
+import type { AgentRestClient } from '../../services/agent/agentRestClient'
 
 import { useAgentComposerStore } from '../../stores/agent/agentComposerStore'
 import { useAgentPanelStore } from '../../stores/agent/agentPanelStore'
@@ -39,6 +41,7 @@ function restorationOutcomeFor(
 }
 
 interface WorkflowSelectionOptions {
+  adoptSavedWorkflow?: AgentRestClient['adoptSavedWorkflow']
   resolver: ReturnType<typeof useAgentWorkflowResolver>
   canSelectTarget: () => boolean
   warnWorkflowUnavailable: () => void
@@ -51,6 +54,7 @@ interface WorkflowSelectionOptions {
 }
 
 export function useAgentWorkflowSelection({
+  adoptSavedWorkflow,
   resolver,
   canSelectTarget,
   warnWorkflowUnavailable,
@@ -141,6 +145,31 @@ export function useAgentWorkflowSelection({
         if (!isCurrent()) return
         workflowId = cloudIdFor(tab)
       }
+      if (workflowId === undefined && adoptSavedWorkflow && !tab.isTemporary) {
+        await tab.load()
+        if (!isCurrent()) return
+        const path = tab.path
+        const content = JSON.stringify(tab.activeState)
+        const adopted = await adoptSavedWorkflow(path, tab.activeState)
+        if (
+          !isCurrent() ||
+          tab.path !== path ||
+          JSON.stringify(tab.activeState) !== content
+        )
+          return
+        if (!(await refreshNativeFileValidator(tab, path, content)))
+          return fail()
+        if (
+          !isCurrent() ||
+          tab.path !== path ||
+          JSON.stringify(tab.activeState) !== content
+        )
+          return
+        if (!(await refreshCloudWorkflowIds())) return fail()
+        if (!isCurrent()) return
+        workflowId = cloudIdFor(tab)
+        if (workflowId !== adopted.id) return fail()
+      }
       if (workflowId === undefined) warnWorkflowUnavailable()
       return workflowId
     } catch (error) {
@@ -198,12 +227,18 @@ export function useAgentWorkflowSelection({
       return option
     }
     const tab = workflowStore.getWorkflowByPath(option.tabPath)
-    if (!tab || !workflowStore.openWorkflows.includes(tab)) return undefined
+    if (!tab) return undefined
+    const wasOpen = workflowStore.openWorkflows.includes(tab)
+    if (!wasOpen && (!adoptSavedWorkflow || tab.isTemporary)) return undefined
+    const selectedPath = tab.path
     workflowSelection.value = { purpose: 'reference', workflow: tab }
     const generation = composerContextGeneration
     const isCurrent = () =>
       generation === composerContextGeneration &&
-      workflowStore.openWorkflows.includes(tab)
+      (wasOpen
+        ? workflowStore.openWorkflows.includes(tab)
+        : tab.path === selectedPath &&
+          workflowStore.getWorkflowByPath(selectedPath) === tab)
     try {
       const workflowId = await prepareWorkflowSelection(tab, isCurrent)
       if (workflowId === undefined || !isCurrent()) return undefined
@@ -228,8 +263,16 @@ export function useAgentWorkflowSelection({
     }
   }
 
-  function onRequestWorkflowReferences(): void {
-    if (!workflowSelection.value) void refreshCloudWorkflowIds()
+  async function onRequestWorkflowReferences(): Promise<void> {
+    if (workflowSelection.value) return
+    try {
+      if (adoptSavedWorkflow) await workflowStore.syncWorkflows()
+      await refreshCloudWorkflowIds()
+    } catch (error) {
+      warnWorkflowSelectionFailed(
+        error instanceof Error ? error.message : undefined
+      )
+    }
   }
 
   /**

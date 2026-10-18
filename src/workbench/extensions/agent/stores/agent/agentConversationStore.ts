@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
+import type { AgentAnswerRequest } from '@comfyorg/ingest-types'
 
 import type { AgentMessages, TurnId } from '../../schemas/agentApiSchema'
 import { toTurnId } from '../../schemas/agentApiSchema'
@@ -8,8 +9,15 @@ import type {
   AgentEventTransport
 } from '../../services/agent/agentEventTransport'
 import { createAgentEventTransport } from '../../services/agent/agentEventTransport'
-import type { AssistantMessage } from '../../services/agent/agentMessageParts'
-import { createAssistantMessage } from '../../services/agent/agentMessageParts'
+import type {
+  AgentAskResolution,
+  AssistantMessage
+} from '../../services/agent/agentMessageParts'
+import {
+  createAssistantMessage,
+  retireAskParts,
+  settleAskResolution
+} from '../../services/agent/agentMessageParts'
 import {
   normalizeAgentTranscript,
   settleLiveMessage
@@ -398,41 +406,26 @@ export const useAgentConversationStore = defineStore(
       return true
     }
 
-    /**
-     * PM-1658: retires a run-approval card that must never be offered again,
-     * the way an `agent_ask_resolved` frame would. `ingest` cannot serve this:
-     * it routes only to the active turn, and the cases this exists for are
-     * exactly the ones where that turn is gone. Every holder of the message
-     * has to be told, or whichever one is asked to republish next puts the
-     * card back.
-     */
-    function retireAsk(askId: string, owner?: string): void {
+    function retireAsk(
+      askId: string,
+      owner?: string,
+      resolution: AgentAskResolution = { status: 'retired' }
+    ): void {
       const key = threadKey(owner)
-      const withoutAsk = (parts: AssistantMessage['parts']) =>
-        parts.filter(
-          (part) => part.type !== 'runApproval' || part.askId !== askId
-        )
-      // Everything below the stash belongs to whichever thread is on screen,
-      // so it is only the right target when this ask belongs to that thread
-      // too. An answer that settles after the user moved on must reach back to
-      // the thread it was given on, not edit the one now in front of them.
       if (key === threadKey()) {
         messages.value = messages.value.map((message) => {
-          const parts = withoutAsk(message.parts)
-          return parts.length === message.parts.length
-            ? message
-            : { ...message, parts }
+          const parts = retireAskParts(message.parts, askId, resolution)
+          return parts === message.parts ? message : { ...message, parts }
         })
-        activeSlot.value?.transport.dropAskPart(askId)
+        activeSlot.value?.transport.retireAskPart(askId, resolution)
         for (const settledTransport of settledActiveTransports)
-          settledTransport.dropAskPart(askId)
+          settledTransport.retireAskPart(askId, resolution)
       }
-      // The stashed turn IS that reach-back: a thread the user has left keeps
-      // its message here, and resumeBackgroundTurn would put the card back on
-      // screen if this did not strip it.
       for (const entry of backgroundTurns.values())
-        if (entry.threadId === key) entry.transport.dropAskPart(askId)
-      retiredAsksFor(key).add(askId)
+        if (entry.threadId === key)
+          entry.transport.retireAskPart(askId, resolution)
+      const retired = retiredAsksFor(key)
+      retired.set(askId, settleAskResolution(retired.get(askId), resolution))
       clearAskResolutionWatchdog(askId)
       submittedAskSelections.delete(askId)
       setAskAnswering(askId, false)
@@ -450,30 +443,37 @@ export const useAgentConversationStore = defineStore(
      * Keyed by thread so that loading another one cannot prune these, and so
      * nothing here rests on an ask id being unique across threads.
      */
-    const resolvedAskIds = new Map<string, Set<string>>()
+    const resolvedAskIds = new Map<string, Map<string, AgentAskResolution>>()
 
     const threadKey = (owner?: string) => owner ?? threadId.value ?? ''
 
-    function retiredAsksFor(owner?: string): Set<string> {
+    function retiredAsksFor(owner?: string): Map<string, AgentAskResolution> {
       const key = threadKey(owner)
-      const retired = resolvedAskIds.get(key) ?? new Set<string>()
+      const retired =
+        resolvedAskIds.get(key) ?? new Map<string, AgentAskResolution>()
       resolvedAskIds.set(key, retired)
       return retired
     }
-    /**
-     * PM-1658: which way this client answered each ask. The server takes a
-     * second answer from anywhere with 202 while committing only the FIRST, so
-     * without a record of what we sent, a resolution naming someone else's
-     * choice is indistinguishable from confirmation of our own.
-     */
-    const submittedAskSelections = new Map<string, AskSelection>()
+    const submittedAskSelections = new Map<string, AgentAnswerRequest>()
 
-    function recordAskSelection(askId: string, selection: AskSelection): void {
-      submittedAskSelections.set(askId, selection)
+    function recordAskSelection(
+      askId: string,
+      selection: AskSelection | AgentAnswerRequest
+    ): void {
+      submittedAskSelections.set(
+        askId,
+        typeof selection === 'string'
+          ? { selected: [selection] }
+          : { ...selection, selected: [...selection.selected] }
+      )
     }
 
-    function submittedAskSelection(askId: string): AskSelection | undefined {
-      return submittedAskSelections.get(askId)
+    function submittedAskSelection(
+      askId: string
+    ): AgentAnswerRequest | undefined {
+      const answer = submittedAskSelections.get(askId)
+      submittedAskSelections.delete(askId)
+      return answer
     }
 
     const askResolutionWatchdogs = new Map<
@@ -497,26 +497,23 @@ export const useAgentConversationStore = defineStore(
       answeringAskIds.value = next
     }
 
-    /**
-     * Records that the server accepted this answer. A card whose turn is still
-     * attached keeps waiting for the canonical frame; a detached one has none
-     * coming, so it is retired now.
-     *
-     * The wait is bounded either way. A frame can be lost outright, and a turn
-     * re-adopted by `hydrate` between the click and the response looks
-     * attached while owning no socket that will ever deliver one — both leave
-     * the card disabled with nothing to release it.
-     */
-    function commitAsk(askId: string, owner?: string): void {
+    function commitAsk(
+      askId: string,
+      owner?: string,
+      committed: AgentAskResolution = { status: 'retired' }
+    ): void {
       const key = threadKey(owner)
       if (!activeTurnOwnsAsk(askId) || key !== threadKey()) {
-        retireAsk(askId, key)
+        retireAsk(askId, key, committed)
         return
       }
       clearAskResolutionWatchdog(askId)
       askResolutionWatchdogs.set(
         askId,
-        setTimeout(() => retireAsk(askId, key), ASK_RESOLUTION_GRACE_MS)
+        setTimeout(
+          () => retireAsk(askId, key, committed),
+          ASK_RESOLUTION_GRACE_MS
+        )
       )
     }
 
@@ -1101,11 +1098,11 @@ export const useAgentConversationStore = defineStore(
           )
         )
       )
-      for (const askId of retired) if (!named.has(askId)) retired.delete(askId)
+      for (const askId of retired.keys())
+        if (!named.has(askId)) retired.delete(askId)
       for (const message of transcript.messages)
-        message.parts = message.parts.filter(
-          (part) => part.type !== 'runApproval' || !retired.has(part.askId)
-        )
+        for (const [askId, resolution] of retired)
+          message.parts = retireAskParts(message.parts, askId, resolution)
     }
 
     function hydrate(history: AgentMessages): void {
@@ -1256,7 +1253,10 @@ export const useAgentConversationStore = defineStore(
     function activeTurnOwnsAsk(askId: string): boolean {
       return (
         activeMessage.value?.parts.some(
-          (part) => part.type === 'runApproval' && part.askId === askId
+          (part) =>
+            part.type === 'runApproval' &&
+            part.askId === askId &&
+            part.resolution === undefined
         ) ?? false
       )
     }

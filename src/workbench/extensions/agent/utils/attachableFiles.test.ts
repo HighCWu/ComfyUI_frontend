@@ -1,98 +1,75 @@
 import { describe, expect, it } from 'vitest'
 
+import { nativeAcceptedAttachmentPolicy } from '../schemas/nativeRunPlan.generated'
 import {
   AGENT_ATTACH_ACCEPT,
-  attachableClipboardFiles,
-  isAgentAttachable
+  agentAttachCapability,
+  agentAttachRefVerdict,
+  agentAttachVerdict,
+  isAgentAttachable,
+  isValidAgentAttachment
 } from './attachableFiles'
 
-/* Dragged files often carry no MIME (glb, md) or a generic one, so the
-   predicate must hold with an empty type. */
-function fileNamed(name: string): File {
-  return new File(['x'], name, { type: '' })
+const acceptedExtensions = Object.values(nativeAcceptedAttachmentPolicy).flat()
+
+function fileNamed(name: string, bytes = 'x'): File {
+  return new File([bytes], name, { type: '' })
 }
 
-function clipboardOf(...files: File[]): DataTransfer {
-  const clipboard = new DataTransfer()
-  for (const file of files) clipboard.items.add(file)
-  return clipboard
-}
+describe('Agent attachment policy', () => {
+  it.for(acceptedExtensions)(
+    'accepts backend-supported %s files',
+    (extension) => {
+      const name = `attachment${extension}`
 
-describe('isAgentAttachable', () => {
-  it.for([
-    'clip.mp4',
-    'voice.m4a',
-    'movie.mov',
-    'song.mp3',
-    'sound.wav',
-    'mesh.glb',
-    'notes.md',
-    'prompt.txt'
-  ])('accepts %s regardless of MIME type', (name) => {
-    expect(isAgentAttachable(fileNamed(name))).toBe(true)
+      expect(isAgentAttachable(fileNamed(name))).toBe(true)
+      expect(agentAttachVerdict(name)).toBe('accepted')
+      expect(agentAttachCapability(name)).toBeDefined()
+    }
+  )
+
+  it.for(['.tif', '.tiff', '.heic', '.heif'])(
+    'rejects deliberately unsupported %s files',
+    (extension) => {
+      const name = `attachment${extension}`
+
+      expect(isAgentAttachable(fileNamed(name))).toBe(false)
+      expect(agentAttachVerdict(name)).toBe('rejected')
+      expect(agentAttachRefVerdict(`input/${name}`)).toBe('rejected')
+    }
+  )
+
+  it('keeps unknown extensionless references distinct from rejected files', () => {
+    expect(agentAttachVerdict('README')).toBe('unknown')
+    expect(agentAttachRefVerdict('content-addressed-reference')).toBe('unknown')
   })
 
-  it('accepts every image and audio kind, not only the named extensions', () => {
-    expect(isAgentAttachable(fileNamed('picture.webp'))).toBe(true)
-    expect(isAgentAttachable(fileNamed('music.flac'))).toBe(true)
-  })
-
-  it('rejects unsupported formats', () => {
-    expect(isAgentAttachable(fileNamed('archive.zip'))).toBe(false)
-    expect(isAgentAttachable(fileNamed('binary.exe'))).toBe(false)
-    expect(isAgentAttachable(fileNamed('noextension'))).toBe(false)
-  })
-
-  it('names every approved extension in the picker accept list', () => {
+  it('generates the picker accept list from the backend policy without wildcards', () => {
     const accepted = AGENT_ATTACH_ACCEPT.split(',')
 
-    expect(new Set(accepted)).toEqual(
-      new Set([
-        'image/*',
-        'video/*',
-        'audio/*',
-        '.mp4',
-        '.m4a',
-        '.mov',
-        '.mp3',
-        '.wav',
-        '.glb',
-        '.md',
-        '.txt',
-        '.json',
-        'application/json'
-      ])
-    )
-    expect(accepted).toHaveLength(13)
-  })
-
-  it('rejects .json despite it being in the picker accept list, so a dropped workflow file still falls through to the graph loader', () => {
-    expect(isAgentAttachable(fileNamed('workflow.json'))).toBe(false)
+    expect(new Set(accepted)).toEqual(new Set(acceptedExtensions))
+    expect(accepted).toHaveLength(38)
+    expect(accepted.every((value) => value.startsWith('.'))).toBe(true)
   })
 })
 
-describe('attachableClipboardFiles', () => {
-  /* Chromium hands a pasted screenshot over as image.png; the name, not the
-     MIME type, is what the attachable check reads. */
-  it('takes the screenshot a clipboard carries', () => {
-    const screenshot = new File(['x'], 'image.png', { type: 'image/png' })
-    expect(attachableClipboardFiles(clipboardOf(screenshot))).toEqual([
-      screenshot
-    ])
+describe('isValidAgentAttachment', () => {
+  it('accepts an MP4 with an ISO base media header', async () => {
+    const bytes = new Uint8Array(12)
+    bytes.set([0x66, 0x74, 0x79, 0x70], 4)
+
+    await expect(
+      isValidAgentAttachment(new File([bytes], 'clip.mp4'))
+    ).resolves.toBe(true)
   })
 
-  it('drops clipboard files the composer cannot attach', () => {
-    expect(
-      attachableClipboardFiles(
-        clipboardOf(
-          new File(['x'], 'archive.zip', { type: 'application/zip' }),
-          new File(['x'], 'workflow.json', { type: 'application/json' })
-        )
-      )
-    ).toEqual([])
+  it('rejects a video whose bytes do not match its container extension', async () => {
+    await expect(
+      isValidAgentAttachment(fileNamed('clip.mp4', 'not a video'))
+    ).resolves.toBe(false)
   })
 
-  it('is empty for a text-only clipboard, leaving the paste to the editor', () => {
-    expect(attachableClipboardFiles(clipboardOf())).toEqual([])
+  it('does not require a container signature for non-video attachments', () => {
+    expect(isValidAgentAttachment(fileNamed('workflow.json'))).toBe(true)
   })
 })

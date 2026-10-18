@@ -3,7 +3,10 @@ import type {
   ImportPublishedAssetsRequest,
   AssetInfo
 } from '@comfyorg/ingest-types'
-import { zGetHubWorkflowResponse } from '@comfyorg/ingest-types/zod'
+import {
+  zGetHubWorkflowResponse,
+  zImportPublishedAssetsResponse
+} from '@comfyorg/ingest-types/zod'
 
 import type {
   PublishPrefill,
@@ -103,10 +106,10 @@ function decodePublishRecord(payload: unknown) {
   const r = result.data
   return {
     workflowId: r.workflow_id,
-    shareId: r.share_id ?? undefined,
+    shareId: r.share_id,
     listed: r.listed,
     publishedAt: parsePublishedAt(r.publish_time),
-    shareUrl: r.share_id ? normalizeShareUrl(r.share_id) : undefined,
+    shareUrl: normalizeShareUrl(r.share_id),
     prefill: null
   }
 }
@@ -295,6 +298,7 @@ export function useWorkflowShareService() {
       throw new Error(`Failed to import assets: ${response.status}`)
     }
 
+    zImportPublishedAssetsResponse.parse(await response.json())
     await useAssetsStore().inputAssets.invalidate()
   }
 

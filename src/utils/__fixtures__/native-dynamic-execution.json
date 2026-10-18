@@ -1,0 +1,45 @@
+{
+  "object_info": {
+    "DynamicExample": {
+      "input": {
+        "required": {
+          "mode": ["COMFY_DYNAMICCOMBO_V3", {"options": [
+            {"key": "text", "inputs": {"required": {"steps": ["INT", {"default": 7, "min": 1, "max": 30}]}, "optional": {"suffix": ["STRING", {"default": "tail"}]}}},
+            {"key": "image", "inputs": {"required": {"image": ["IMAGE"]}}}
+          ]}]
+        }
+      },
+      "output_node": true
+    }
+  },
+  "metadata": {
+    "widget_order": ["mode", "mode.steps", "mode.suffix"],
+    "dynamic_combos": {"mode": {"default": "text", "options": {
+      "text": {"widgets": ["mode.steps", "mode.suffix"], "defaults": {"mode.steps": 7, "mode.suffix": "tail"}},
+      "image": {"widgets": [], "defaults": {}}
+    }}}
+  },
+  "variants": [
+    {
+      "selection": "text",
+      "widget_order": ["mode", "mode.steps", "mode.suffix"],
+      "widgets_values": ["text", 7, "tail"],
+      "inputs": [
+        {"name": "mode", "type": "COMFY_DYNAMICCOMBO_V3", "widget": {"name": "mode"}, "link": null},
+        {"name": "mode.steps", "type": "INT", "widget": {"name": "mode.steps"}, "link": null},
+        {"name": "mode.suffix", "type": "STRING", "widget": {"name": "mode.suffix"}, "shape": 7, "link": null}
+      ],
+      "expected_api_inputs": {"mode": "text", "mode.steps": 7, "mode.suffix": "tail"}
+    },
+    {
+      "selection": "image",
+      "widget_order": ["mode"],
+      "widgets_values": ["image"],
+      "inputs": [
+        {"name": "mode", "type": "COMFY_DYNAMICCOMBO_V3", "widget": {"name": "mode"}, "link": null},
+        {"name": "mode.image", "type": "IMAGE", "link": null}
+      ],
+      "expected_api_inputs": {"mode": "image"}
+    }
+  ]
+}

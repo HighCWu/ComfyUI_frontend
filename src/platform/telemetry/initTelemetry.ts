@@ -16,7 +16,8 @@ let _initPromise: Promise<void> | null = null
  * Safe to call multiple times - only initializes once.
  */
 export async function initTelemetry(): Promise<void> {
-  if (!IS_CLOUD_BUILD) return
+  if (!IS_CLOUD_BUILD || import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid')
+    return
   if (_initPromise) return _initPromise
 
   _initPromise = (async () => {

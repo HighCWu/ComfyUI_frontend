@@ -4,10 +4,11 @@ import type {
   WidgetCatalog,
   WorkflowJSON
 } from '@comfyorg/comfy-multi-player'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished } from 'vitest'
 import * as Y from 'yjs'
 
 import { LGraph, LGraphNode, LiteGraph } from '@/lib/litegraph/src/litegraph'
+import { enableSubgraphNodeCreation } from '@/lib/litegraph/src/subgraph/__fixtures__/subgraphHelpers'
 import type { ISerialisedGraph } from '@/lib/litegraph/src/types/serialisation'
 import { useNodeDataStore } from '@/stores/nodeDataStore'
 import { graphScopeOf } from '@/types/graphScopeId'
@@ -197,6 +198,60 @@ beforeEach(() => {
 })
 
 describe('AgentCrdtProjection after a tab return', () => {
+  it('preserves an unsent conversion without cloning its interior node on a fresh subscription', () => {
+    const { graph, source } = buildLiveGraph()
+    const saved = structuredClone(graph.serialize())
+    onTestFinished(enableSubgraphNodeCreation(graph))
+    const { node, subgraph } = graph.convertToSubgraph(new Set([source]))
+    const follower = bindFollower(graph, saved)
+    onTestFinished(follower.destroy)
+
+    expect(graph._nodes.map((item) => item.id)).toEqual([node.id])
+    expect(subgraph._nodes.map((item) => item.id)).toEqual([source.id])
+    expect(subgraph._nodes[0].widgets?.[0].value).toBe(20)
+    follower.tabReturn()
+    expect(graph.serialize().nodes.map((item) => String(item.id))).toEqual([
+      String(node.id)
+    ])
+  })
+
+  it('restores the original node identity when a subgraph conversion is rejected', () => {
+    const { graph, source } = buildLiveGraph()
+    const originalId = source.id
+    const saved = structuredClone(graph.serialize())
+    const follower = bindFollower(graph, saved)
+    onTestFinished(follower.destroy)
+    onTestFinished(enableSubgraphNodeCreation(graph))
+    const { node } = graph.convertToSubgraph(new Set([source]))
+    const rejected: Op[] = [
+      {
+        op: 'delete_node',
+        op_id: 'conversion-delete',
+        actor: HUMAN_ACTOR,
+        base_version: 1,
+        stamp: [2, HUMAN_ACTOR],
+        node_id: originalId,
+        removed_links: []
+      },
+      addNodeOp(node, [])
+    ]
+
+    follower.hostRejects(rejected)
+
+    expect(nodeIds(graph)).toEqual({
+      live: [String(originalId)],
+      records: [String(originalId)],
+      serialized: [String(originalId)]
+    })
+    expect(graph.subgraphs.size).toBe(0)
+    expect(graph.getNodeById(originalId)?.widgets?.[0].value).toBe(20)
+    follower.hostRejects(rejected)
+    follower.tabReturn()
+    expect(graph.serialize().nodes.map((item) => String(item.id))).toEqual([
+      String(originalId)
+    ])
+  })
+
   it('keeps a node the user added whose add_node has not reached the doc', () => {
     const { graph, source } = buildLiveGraph()
     const saved = structuredClone(graph.serialize())

@@ -189,6 +189,59 @@ describe('useAgentConsent', () => {
     expect(onOpen).toHaveBeenCalledOnce()
   })
 
+  it('continues the panel request when the same prepaid identity returns after the consent read', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    vi.mocked(fetch).mockResolvedValue(savedResponse())
+    const authState = reactive<{ identity: string | null }>({
+      identity: 'account-a'
+    })
+    useCurrentUser().resolvedUserInfo = computed(() =>
+      authState.identity ? { id: authState.identity } : null
+    )
+    const consentStore = useAgentConsentStore()
+    vi.spyOn(consentStore, 'load').mockImplementationOnce(async () => {
+      authState.identity = null
+      return false
+    })
+    const onOpen = vi.fn()
+
+    const request = useAgentConsent().withConsent('button_click', onOpen)
+    await vi.waitFor(() => expect(consentStore.load).toHaveBeenCalledOnce())
+    expect(useDialogStore().dialogStack).toHaveLength(0)
+    authState.identity = 'account-a'
+    const dialog = await waitForConsentDialog()
+    const accept = dialog.contentProps.onAccept
+    if (typeof accept !== 'function') throw new Error('Missing consent action')
+    accept()
+    await request
+
+    expect(onOpen).toHaveBeenCalledOnce()
+  })
+
+  it('does not continue a panel request when a different account replaces the missing identity', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const authState = reactive<{ identity: string | null }>({
+      identity: 'account-a'
+    })
+    useCurrentUser().resolvedUserInfo = computed(() =>
+      authState.identity ? { id: authState.identity } : null
+    )
+    const consentStore = useAgentConsentStore()
+    vi.spyOn(consentStore, 'load').mockImplementationOnce(async () => {
+      authState.identity = null
+      return false
+    })
+    const onOpen = vi.fn()
+
+    const request = useAgentConsent().withConsent('button_click', onOpen)
+    await vi.waitFor(() => expect(consentStore.load).toHaveBeenCalledOnce())
+    authState.identity = 'account-b'
+    await request
+
+    expect(onOpen).not.toHaveBeenCalled()
+    expect(useDialogStore().dialogStack).toHaveLength(0)
+  })
+
   it('reports no outcome while a failed save leaves the card open', async () => {
     fetchWithUnifiedRemint
       .mockResolvedValueOnce(settingResponse(false))

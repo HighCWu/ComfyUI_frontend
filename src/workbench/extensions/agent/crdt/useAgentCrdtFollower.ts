@@ -9,6 +9,7 @@ import {
 } from 'vue'
 import type { Ref } from 'vue'
 
+import { SCHEMA_VERSION } from '@comfyorg/comfy-multi-player'
 import type { Op } from '@comfyorg/comfy-multi-player'
 
 import type { LGraph } from '@/lib/litegraph/src/litegraph'
@@ -23,9 +24,11 @@ import { useAgentPanelStore } from '@/workbench/extensions/agent/stores/agent/ag
 
 import {
   AgentCrdtDocLifecycle,
+  isPermanentSubscribeRefusalCode,
   STALE_AFTER_MS,
   SUBSCRIBE_CATCHUP_GRACE_MS
 } from './agentCrdtDocLifecycle'
+import type { SubscribeGiveUpReason } from './agentCrdtDocLifecycle'
 import { AgentCrdtProjection } from './agentCrdtProjection'
 import type { DocNodeDelta, FrameOutcome } from './agentCrdtProjection'
 import { apiTransport, createLoggedTransport } from './agentCrdtTransport'
@@ -35,6 +38,7 @@ import { readCrdtSnapshot } from './crdtSnapshot'
 import { DocFrameClient } from './docFrameClient'
 import { RESEED_CONFLICT, isRetryableReseedCode } from './docFrameCodes'
 import type { GraphOperation } from './graphOperations'
+import { createHumanNodeIncarnationBinder } from './humanNodeIncarnation'
 import type { ClassifiedDocUpdate } from './layoutFollowerBridge'
 import { LayoutFollowerBridge } from './layoutFollowerBridge'
 import type { LiveGraphApplierDeps } from './liveGraphApplier'
@@ -222,6 +226,7 @@ export interface AgentCrdtStatus {
   enabled: boolean
   connected: boolean
   workflowId: string | null
+  terminal: SubscribeGiveUpReason | 'schema_error' | null
   /**
    * Mirror of `bridge.follower.updatesApplied` (Yjs merges, reset to 0 on
    * `doc_reset` / `follower_replaced`). Not interchangeable with
@@ -334,6 +339,7 @@ export function useAgentCrdtFollower(
     enabled: false,
     connected: false,
     workflowId: null,
+    terminal: null,
     updatesApplied: 0,
     lastFrameType: null,
     outcomes: {
@@ -391,7 +397,8 @@ export function useAgentCrdtFollower(
       follower.value?.docPromotedWidgets(nodeId) ?? null,
     mayWritePromotedHost: (nodeId: NodeId) =>
       follower.value?.mayWritePromotedHost(nodeId) ?? false,
-    notifyWidgetWriteRefused: () => follower.value?.notifyWidgetWriteRefused()
+    notifyWidgetWriteRefused: () => follower.value?.notifyWidgetWriteRefused(),
+    subscriptionSent: () => follower.value?.subscriptionSent() ?? false
   }
 }
 
@@ -405,6 +412,7 @@ function startAgentCrdtFollower(
   canvasFor: (workflowId: string) => Record<string, unknown> | null
 ) {
   const connected = ref(false)
+  const terminal = ref<SubscribeGiveUpReason | 'schema_error' | null>(null)
   const updatesApplied = ref(0)
   const lastFrameType = ref<string | null>(null)
   const subscribedWorkflowId = ref<string | null>(null)
@@ -424,8 +432,9 @@ function startAgentCrdtFollower(
   const lifecycle = new AgentCrdtDocLifecycle(
     () => subscribedWorkflowId.value,
     () => bridge.resubscribe(),
-    () => {
+    (reason) => {
       connected.value = false
+      terminal.value = reason
     }
   )
   const tabId = createUuidv4()
@@ -444,6 +453,20 @@ function startAgentCrdtFollower(
   }
   const projection = new AgentCrdtProjection(getGraph, applierDeps)
   const pendingRejected = new Map<string, Op[]>()
+  const incompleteProjectionWorkflows = new Set<string>()
+  const notifyIncompleteProjection = (
+    workflowId: string,
+    outcome: FrameOutcome
+  ): void => {
+    if (
+      !outcome.applied ||
+      outcome.failureCount === 0 ||
+      incompleteProjectionWorkflows.has(workflowId)
+    )
+      return
+    incompleteProjectionWorkflows.add(workflowId)
+    events.onSyncError?.(undefined, 'local_projection_incomplete')
+  }
 
   const applyRejectedOps = (
     workflowId: string,
@@ -452,6 +475,7 @@ function startAgentCrdtFollower(
   ): boolean => {
     if (getGraph() === null) return false
     const projectionOutcome = projection.revertRejected(workflowId, rejected)
+    notifyIncompleteProjection(workflowId, projectionOutcome)
     if (!projectionOutcome.applied) return true
     reportMaterialized(workflowId, projectionOutcome.createdNodeIds)
     reportAgentProjection(
@@ -507,12 +531,21 @@ function startAgentCrdtFollower(
       ])
   }
 
+  let notifiedUnconfirmedEdits = false
   const settleHumanOps = (outcome: BatchOutcome) => {
     if (outcome.state === 'acknowledged') trackAcknowledgedDeletes(outcome)
     recordDevEvent('human_ops_settled', outcome)
-    projection.settleLocalWrites(outcome.ops)
+    if (outcome.state === 'acknowledged') {
+      const accepted = new Set(outcome.result.applied)
+      const rejected = outcome.ops.filter((op) => !accepted.has(op.op_id))
+      if (rejected.length) projection.settleLocalWrites(rejected)
+    }
     if (outcome.state === 'acknowledged' && !outcome.result.ok)
       revertRejectedOps(outcome)
+    if (outcome.state !== 'acknowledged' && !notifiedUnconfirmedEdits) {
+      notifiedUnconfirmedEdits = true
+      events.onSyncError?.(undefined, 'local_edits_unconfirmed')
+    }
   }
 
   const sender = createOpSender({
@@ -536,6 +569,7 @@ function startAgentCrdtFollower(
     onBatchSettled: settleHumanOps
   })
   const coalescer = createOpCoalescer(sender.admit, sender.flush)
+  const bindHumanNodeIncarnations = createHumanNodeIncarnationBinder()
 
   const pendingLiveNodeIds = new Set<NodeId>()
   const pendingProjectionFrames = new Map<string, ProjectionFrameId[]>()
@@ -590,6 +624,7 @@ function startAgentCrdtFollower(
   }
   const applyCollected = (workflowId: string): void => {
     const outcome = projection.applyCollected(workflowId)
+    notifyIncompleteProjection(workflowId, outcome)
     if (!outcome.applied) return
     reportMaterialized(workflowId, outcome.createdNodeIds)
     reportPendingFrames(workflowId, 'applied_deferred', outcome)
@@ -613,10 +648,14 @@ function startAgentCrdtFollower(
   const applyFrame = (update: ClassifiedDocUpdate): FrameOutcome => {
     if (isOwnEcho(update) && getGraph() !== null) {
       const nodes = projection.discardPending(update.workflowId)
+      const deferred = projection.retryDeferred(update.workflowId)
+      notifyIncompleteProjection(update.workflowId, deferred)
       incrementOutcome('skipped')
+      if (deferred.applied) return { ...deferred, nodes }
       return { applied: false, nodes }
     }
     const outcome = projection.applyFrame(update)
+    notifyIncompleteProjection(update.workflowId, outcome)
     incrementOutcome(outcome.applied ? 'applied' : 'skipped')
     if (outcome.applied && !update.catchUp) incrementOutcome('appliedLive')
     return outcome
@@ -645,6 +684,7 @@ function startAgentCrdtFollower(
     if (detail.ok === true || code === RESEED_CONFLICT) return
     if (isRetryableReseedCode(code)) lifecycle.onSubscribeRefused(code)
     else lifecycle.stopProbing()
+    if (lifecycle.refusalIsFinal()) terminal.value = 'refused'
   }
 
   function handleRejectedSubscription(
@@ -655,9 +695,18 @@ function startAgentCrdtFollower(
       message?: unknown
     } | null
   ) {
-    const refusal = tryReseed()
+    const code = typeof detail?.code === 'string' ? detail.code : undefined
+    // Reseeding can repair an absent or transiently unavailable document, but
+    // it cannot make an incompatible client/server schema readable. Starting
+    // a reseed for a permanent refusal also arms an ack timeout, accidentally
+    // turning a fail-closed result into an unbounded subscribe loop.
+    const reseeding =
+      (code === undefined || !isPermanentSubscribeRefusalCode(code)) &&
+      tryReseed()
+    const refusal = reseeding
       ? { shouldNotify: false }
       : handleSubscribeRefusal(detail, lifecycle)
+    if (!reseeding && lifecycle.refusalIsFinal()) terminal.value = 'refused'
     releaseHeldOps()
     sender.abortIfUnbound()
     if (refusal.shouldNotify)
@@ -677,6 +726,7 @@ function startAgentCrdtFollower(
     lastFrameType.value = event.type
     recordDevEvent('doc_subscribed', event.detail ?? null)
     if (ok) {
+      terminal.value = null
       lifecycle.onSubscribeConfirmed()
       resumeHeldOpsIfSubscribed()
     } else {
@@ -748,6 +798,7 @@ function startAgentCrdtFollower(
     sender.abortAll()
     events.onReset?.(detail.workflowId)
     connected.value = false
+    terminal.value = null
     updatesApplied.value = 0
     lastFrameType.value = event.type
     lifecycle.clearStaleProbe()
@@ -778,16 +829,31 @@ function startAgentCrdtFollower(
       projection.bind(workflowId, bridge.follower)
     }
   }
+  const staleClientNotified = new Set<string>()
+  const notifyStaleClient = (
+    detail: { workflowId?: string; found?: unknown } | null
+  ): void => {
+    const found = newerDocSchema(detail?.found)
+    const workflowId = detail?.workflowId
+    if (found === null || workflowId === undefined) return
+    if (staleClientNotified.has(workflowId)) return
+    staleClientNotified.add(workflowId)
+    events.onSyncError?.(
+      `document schema v${found} is newer than this page reads (v${SCHEMA_VERSION})`,
+      'stale_client_schema'
+    )
+  }
   const onSchemaError: EventListener = (event) => {
     // KA-11 fail-closed: the bridge refused to propagate an unreadable doc, so
     // nothing was projected. Surface it as its own status rather than as a
     // generic "disconnected", which is indistinguishable from "never connected".
     connected.value = false
+    terminal.value = 'schema_error'
     lastFrameType.value = event.type
     lifecycle.clearStaleProbe()
     const detail =
       event instanceof CustomEvent
-        ? (event.detail as { workflowId?: string } | null)
+        ? (event.detail as { workflowId?: string; found?: unknown } | null)
         : null
     if (detail?.workflowId !== undefined) {
       projection.discardPending(detail.workflowId)
@@ -798,6 +864,7 @@ function startAgentCrdtFollower(
       'schema_error',
       event instanceof CustomEvent ? (event.detail ?? null) : null
     )
+    notifyStaleClient(detail)
   }
   const onGap: EventListener = (event) => {
     outcomes.value = { ...outcomes.value, gap: outcomes.value.gap + 1 }
@@ -821,6 +888,7 @@ function startAgentCrdtFollower(
   }
   const onReconnected: EventListener = () => {
     connected.value = false
+    terminal.value = null
     lifecycle.onReconnected()
     recordDevEvent('reconnected', null)
     bridge.reconnect()
@@ -992,6 +1060,7 @@ function startAgentCrdtFollower(
       if (acknowledgesFollowedDoc(next, active, justActivated)) return
       lifecycle.clearForRetarget()
       connected.value = false
+      terminal.value = null
       pendingLiveNodeIds.clear()
       if (!active) {
         deactivateTarget(next, previous?.[0] ?? null)
@@ -1041,6 +1110,7 @@ function startAgentCrdtFollower(
     enabled: true,
     connected: connected.value,
     workflowId: subscribedWorkflowId.value,
+    terminal: terminal.value,
     updatesApplied: updatesApplied.value,
     lastFrameType: lastFrameType.value,
     outcomes: outcomes.value
@@ -1058,11 +1128,15 @@ function startAgentCrdtFollower(
     status: readonly(status),
     debugSnapshot,
     enqueueHumanOperations: (operations: GraphOperation[]) => {
+      const boundOperations = bindHumanNodeIncarnations(
+        operations,
+        bridge.follower.doc
+      )
       const sentAdds = sentAddsToCurrentDoc()
-      for (const operation of operations)
+      for (const operation of boundOperations)
         if (operation.op === 'add_node') sentAdds.add(String(operation.node_id))
-      projection.noteLocalWrites(operations)
-      coalescer.enqueue(operations)
+      projection.noteLocalWrites(boundOperations)
+      coalescer.enqueue(boundOperations)
     },
     docInputNames: (nodeId: NodeId) =>
       readDocSlotNames(bridge.follower.doc, String(nodeId), 'inputs'),
@@ -1073,6 +1147,13 @@ function startAgentCrdtFollower(
       (sentAddsToCurrentDoc().has(String(nodeId)) &&
         readDocPromotedWidgets(bridge.follower.doc, String(nodeId)) === null),
     notifyWidgetWriteRefused: () =>
-      rejectedOpNotifier.notifyWidgetWriteRefused()
+      rejectedOpNotifier.notifyWidgetWriteRefused(),
+    subscriptionSent: () =>
+      bridge.subscribedWorkflowId !== null &&
+      bridge.subscribedWorkflowId === subscribedWorkflowId.value
   }
+}
+
+function newerDocSchema(found: unknown): number | null {
+  return typeof found === 'number' && found > SCHEMA_VERSION ? found : null
 }

@@ -3,11 +3,14 @@ import axios from 'axios'
 import { ref, watch } from 'vue'
 
 import { getComfyApiBaseUrl } from '@/config/comfyApi'
+import { reportError } from '@/platform/telemetry/reportError'
 import type { components, operations } from '@/types/comfyRegistryTypes'
 import { isAbortError } from '@/utils/typeGuardUtil'
 
-// Use generated types from OpenAPI spec
-export type ReleaseNote = components['schemas']['ReleaseNote']
+import type { ReleaseNote } from './releaseSchema'
+import { releaseNotesResponseSchema } from './releaseSchema'
+
+export type { ReleaseNote }
 type GetReleasesParams = operations['getReleaseNotes']['parameters']['query']
 
 // Use generated error response type
@@ -110,6 +113,9 @@ export const useReleaseService = () => {
     const apiResponse = await executeApiRequest(
       () =>
         releaseApiClient.get<ReleaseNote[]>(endpoint, {
+          ...(import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
+            ? { baseURL: '' }
+            : {}),
           params,
           signal,
           headers: deployEnvironment
@@ -120,7 +126,17 @@ export const useReleaseService = () => {
       routeSpecificErrors
     )
 
-    return apiResponse
+    if (apiResponse === null) return null
+    const parsed = releaseNotesResponseSchema.safeParse(apiResponse)
+    if (!parsed.success) {
+      error.value = `${errorContext}: Invalid response`
+      reportError(parsed.error, {
+        errorType: 'release_notes_invalid_response',
+        surface: 'platform'
+      })
+      return null
+    }
+    return parsed.data
   }
 
   return {

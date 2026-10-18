@@ -197,10 +197,7 @@ function createCloudIdentity(
   })
 }
 
-/**
- * The cloud app's side of the shared web session. `unified_web_session` is
- * read once, on the first `start()`, and decides the whole page load.
- */
+/** The cloud app's side of the shared web session. */
 export const useCloudWebSessionStore = defineStore('cloudWebSession', () => {
   let decided = false
   let identity: WebSessionIdentity | null = null
@@ -294,7 +291,11 @@ export const useCloudWebSessionStore = defineStore('cloudWebSession', () => {
 
   /** Decides the flag for this page load; true when the session is on. */
   function start(): boolean {
-    if (decided) return identity !== null
+    if (
+      decided &&
+      (identity !== null || !useFeatureFlags().flags.unifiedWebSessionEnabled)
+    )
+      return identity !== null
     decided = true
     if (!useFeatureFlags().flags.unifiedWebSessionEnabled) return false
     const session = createCloudIdentity((change) => {

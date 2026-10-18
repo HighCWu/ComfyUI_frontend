@@ -21,6 +21,7 @@ function useConsentedAgentPanelStore() {
 describe('agentPanelStore engagement telemetry', () => {
   beforeEach(() => {
     localStorage.clear()
+    api.serverFeatureFlags.value = {}
     api.serverFeatureFlagsSettled.value = false
   })
 
@@ -31,6 +32,21 @@ describe('agentPanelStore engagement telemetry', () => {
     api.serverFeatureFlagsSettled.value = true
     await nextTick()
     expect(store.flagsSettled).toBe(true)
+  })
+
+  it('accepts only the official Agent server-feature states', async () => {
+    const store = useAgentPanelStore()
+    expect(store.comfyAgent).toBeUndefined()
+
+    api.serverFeatureFlags.value = {
+      agent: { state: 'starting', reason: 'warming' }
+    }
+    await nextTick()
+    expect(store.comfyAgent).toEqual({ state: 'starting', reason: 'warming' })
+
+    api.serverFeatureFlags.value = { agent: { state: 'unknown' } }
+    await nextTick()
+    expect(store.comfyAgent).toBeUndefined()
   })
 
   it('emits a restored open only once the rehydrated panel actually docks', async () => {

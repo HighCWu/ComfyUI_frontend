@@ -62,6 +62,18 @@ describe('Load3dUtils upload failures', () => {
     ])
   })
 
+  it('warns without returning a path for a malformed upload response', async () => {
+    vi.mocked(api.fetchApi).mockResolvedValue(
+      Response.json({ name: 42, subfolder: '3d' })
+    )
+
+    await expect(
+      Load3dUtils.uploadFile(new File(['x'], 'mesh.glb'), '3d')
+    ).resolves.toBeUndefined()
+
+    expect(useToast().warning).toHaveBeenCalledOnce()
+  })
+
   it('warns with a localized title and throws when the temp image upload is rejected', async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(new Blob()))
     vi.mocked(api.fetchApi).mockResolvedValue(serverError())

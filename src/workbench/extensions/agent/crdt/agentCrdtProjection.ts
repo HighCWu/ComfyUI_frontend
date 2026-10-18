@@ -17,12 +17,18 @@ import type {
   RemoteApplyContext
 } from './liveGraphApplier'
 import { LocalWidgetWrites } from './localWidgetWrites'
+import { liveInteriorWidgetKey } from './interiorWidgetTarget'
+import {
+  allSubgraphDefinitions,
+  readSubgraphDefinitions
+} from './agentSubgraphDefinitions'
 import { changesForRejectedOps } from './rejectedOpChanges'
 
 interface BoundTarget {
   follower: FollowerDoc
   collector: DocChangeCollector
   reportedPendingNodes: Map<string, NodeChange>
+  deferredInteriorTopology: Set<string>
 }
 
 /**
@@ -104,12 +110,16 @@ export class AgentCrdtProjection {
    * `LocalWidgetWrites`.
    */
   noteLocalWrites(operations: readonly GraphOperation[]): void {
-    this.localWrites.note(operations)
+    this.localWrites.note(operations, (path) =>
+      liveInteriorWidgetKey(this.getGraph(), path)
+    )
   }
 
   /** The host has answered for these ops, or they will never reach it. */
   settleLocalWrites(operations: readonly GraphOperation[]): void {
-    this.localWrites.settle(operations)
+    this.localWrites.settle(operations, (path) =>
+      liveInteriorWidgetKey(this.getGraph(), path)
+    )
   }
 
   /** Binding the same follower again keeps its collected, unapplied changes. */
@@ -119,7 +129,8 @@ export class AgentCrdtProjection {
     this.targets.set(workflowId, {
       follower,
       collector: new DocChangeCollector(follower.doc),
-      reportedPendingNodes: new Map()
+      reportedPendingNodes: new Map(),
+      deferredInteriorTopology: new Set()
     })
   }
 
@@ -205,6 +216,7 @@ export class AgentCrdtProjection {
   replaceOnNextFrame(workflowId: string): void {
     this.targets.get(workflowId)?.collector.discard()
     this.targets.get(workflowId)?.reportedPendingNodes.clear()
+    this.targets.get(workflowId)?.deferredInteriorTopology.clear()
     this.replacedLineages.add(workflowId)
     this.localWrites.clear()
   }
@@ -229,6 +241,23 @@ export class AgentCrdtProjection {
     return docNodeDelta(changes)
   }
 
+  retryDeferred(workflowId: string): FrameOutcome {
+    const target = this.targets.get(workflowId)
+    if (!target?.deferredInteriorTopology.size || !this.getGraph())
+      return { applied: false, nodes: EMPTY_DELTA }
+    return this.apply(
+      workflowId,
+      target,
+      {
+        nodes: new Map(),
+        widgets: new Map(),
+        resyncNodes: new Set(),
+        links: new Set()
+      },
+      { actor: 'agent-deferred', opIds: [] }
+    )
+  }
+
   destroy(): void {
     for (const workflowId of Array.from(this.targets.keys()))
       this.unbind(workflowId)
@@ -243,12 +272,34 @@ export class AgentCrdtProjection {
     context: RemoteApplyContext,
     mode: ApplyMode = 'merge'
   ): Extract<FrameOutcome, { applied: true }> {
-    const { createdNodeIds, failureCount } = this.applier.applyChanges(
-      target.follower.doc,
-      changes,
-      context,
-      mode
-    )
+    const interiorWidgets = new Map(changes.interiorWidgets)
+    const deferredDefinitions = target.deferredInteriorTopology.size
+      ? allSubgraphDefinitions(readSubgraphDefinitions(target.follower.doc))
+      : []
+    for (const definition of deferredDefinitions) {
+      if (!target.deferredInteriorTopology.has(definition.id)) continue
+      interiorWidgets.set(
+        definition.id,
+        new Map(
+          (definition.nodes ?? []).map((node) => [String(node.id), 'all'])
+        )
+      )
+    }
+    const { createdNodeIds, failureCount, deferredInteriorTopology } =
+      this.applier.applyChanges(
+        target.follower.doc,
+        {
+          ...changes,
+          interiorWidgets,
+          interiorTopology: new Set([
+            ...target.deferredInteriorTopology,
+            ...(changes.interiorTopology ?? [])
+          ])
+        },
+        context,
+        mode
+      )
+    target.deferredInteriorTopology = new Set(deferredInteriorTopology)
     if (createdNodeIds.length > 0) {
       recordDevEvent('agent_node_adapters_materialized', {
         workflowId,

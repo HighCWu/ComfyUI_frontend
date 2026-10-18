@@ -1,4 +1,5 @@
 import type { NodeReplacementResponse } from './types'
+import { nodeReplacementResponseSchema } from './types'
 
 import { api } from '@/scripts/api'
 
@@ -9,5 +10,5 @@ export async function fetchNodeReplacements(): Promise<NodeReplacementResponse> 
       `Failed to fetch node replacements: ${response.status} ${response.statusText}`
     )
   }
-  return response.json()
+  return nodeReplacementResponseSchema.parse(await response.json())
 }

@@ -5,7 +5,11 @@ import { useCurrentUser } from '@/composables/auth/useCurrentUser'
 import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
 import { api } from '@/scripts/api'
 
-import { listSkillPacks, SkillPacksApiError } from '../api/skillsApi'
+import {
+  listSkillPacks,
+  nativeSkillPacksEnabled,
+  SkillPacksApiError
+} from '../api/skillsApi'
 import type { SkillPack } from '../types'
 import { useSkillPacksStore } from './skillPacksStore'
 
@@ -57,6 +61,83 @@ describe('skillPacksStore', () => {
   beforeEach(() => {
     vi.mocked(listSkillPacks).mockResolvedValue([])
     mocks.isFeatureEnabled.mockReturnValue(true)
+  })
+
+  it.for([true, false, undefined])(
+    'uses the native server capability %s without upstream flags',
+    async (available) => {
+      vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+      Object.assign(useCurrentUser(), {
+        resolvedUserInfo: ref({ id: 'native-user' })
+      })
+      vi.mocked(nativeSkillPacksEnabled).mockResolvedValue(available)
+      const store = useSkillPacksStore()
+      await store.startFlagGate({ fetch: false })
+      expect(store.enabled).toBe(available === true)
+      expect(listSkillPacks).not.toHaveBeenCalled()
+      expect(mocks.isFeatureEnabled).not.toHaveBeenCalled()
+    }
+  )
+
+  it('retries a missing native capability and shares catalogue loading', async () => {
+    vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+    Object.assign(useCurrentUser(), {
+      resolvedUserInfo: ref({ id: 'native-user' })
+    })
+    vi.mocked(nativeSkillPacksEnabled)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValue(true)
+    vi.mocked(listSkillPacks).mockResolvedValue([makePack()])
+    const store = useSkillPacksStore()
+    await store.startFlagGate({ fetch: false })
+    expect(store.enabled).toBe(false)
+    await Promise.all([store.startFlagGate(), store.startFlagGate()])
+    expect(store.enabled).toBe(true)
+    expect(store.packs).toEqual([makePack()])
+    expect(listSkillPacks).toHaveBeenCalledOnce()
+  })
+
+  it('does not enable another account with a stale native capability response', async () => {
+    vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+    const user = ref({ id: 'native-user' })
+    Object.assign(useCurrentUser(), { resolvedUserInfo: user })
+    const nextUser = { id: 'next-native-user' }
+    let resolve!: (value: boolean) => void
+    vi.mocked(nativeSkillPacksEnabled)
+      .mockReturnValueOnce(
+        new Promise((settle) => {
+          resolve = settle
+        })
+      )
+      .mockResolvedValue(false)
+    const store = useSkillPacksStore()
+    const previous = store.startFlagGate({ fetch: false })
+    user.value = nextUser
+    await store.startFlagGate({ fetch: false })
+    resolve(true)
+    await previous
+    expect(store.enabled).toBe(false)
+    expect(store.packs).toEqual([])
+  })
+
+  it('clears native skills immediately on logout and rechecks on login', async () => {
+    vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+    const user = ref<{ id: string } | null>({ id: 'native-user' })
+    Object.assign(useCurrentUser(), { resolvedUserInfo: user })
+    vi.mocked(nativeSkillPacksEnabled)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValue(false)
+    vi.mocked(listSkillPacks).mockResolvedValue([makePack()])
+    const store = useSkillPacksStore()
+    await store.startFlagGate()
+    expect(store.packs).toEqual([makePack()])
+    user.value = null
+    expect(store.enabled).toBe(false)
+    expect(store.packs).toEqual([])
+    user.value = { id: 'next-native-user' }
+    await store.startFlagGate()
+    expect(store.enabled).toBe(false)
+    expect(store.packs).toEqual([])
   })
 
   it.for(['refreshPacks', 'refreshPacksInBackground'] as const)(

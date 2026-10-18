@@ -19,6 +19,7 @@ import { readOnRail } from '@/platform/workspace/composables/readOnRail'
 import { useBillingReadRail } from '@/platform/workspace/composables/useBillingReadRail'
 import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
 import { useAuthStore } from '@/stores/authStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 
 type CapabilityReadState =
   | { status: 'idle' }
@@ -81,6 +82,11 @@ function readCapabilitiesResponse(
 
 function useBillingCapabilitiesInternal() {
   const authStore = useAuthStore()
+  const prepaidSession = usePrepaidSessionStore()
+  const prepaid = import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
+  const currentUserId = computed(() =>
+    prepaid ? prepaidSession.user?.id : authStore.userId
+  )
   const workspaceStore = useTeamWorkspaceStore()
   const readState = shallowRef<CapabilityReadState>({ status: 'idle' })
   let initialized = false
@@ -91,7 +97,7 @@ function useBillingCapabilitiesInternal() {
   let invalidatedRequestId = 0
 
   const capabilities = computed(() => {
-    const userId = authStore.userId
+    const userId = currentUserId.value
     const workspaceId = workspaceStore.activeWorkspaceId
     const state = readState.value
     if (
@@ -100,7 +106,8 @@ function useBillingCapabilitiesInternal() {
       state.status !== 'resolved' ||
       state.authUid !== userId ||
       state.workspaceId !== workspaceId ||
-      state.response.resolved_for.workspace_id !== workspaceId
+      state.response.resolved_for.workspace_id !== workspaceId ||
+      (prepaid && state.response.resolved_for.user_id !== userId)
     ) {
       return null
     }
@@ -108,25 +115,11 @@ function useBillingCapabilitiesInternal() {
     return state.response.capabilities
   })
   const hasResolvedCapabilities = computed(() => capabilities.value !== null)
-  const readUnavailableForCurrentScope = computed(() => {
-    const state = readState.value
-    return (
-      state.status === 'unavailable' &&
-      state.authUid === authStore.userId &&
-      state.workspaceId === workspaceStore.activeWorkspaceId
-    )
-  })
-  const canTopUp = computed(() => {
-    if (!isCloud) return workspaceStore.activeWorkspace?.role !== 'member'
-    // An unreadable capability keeps top-up available only for owners, so a
-    // transient outage does not strand the one role that can actually top up.
-    // Every other role - including an unresolved one - fails closed.
-    return (
-      capabilities.value?.can_top_up ??
-      (readUnavailableForCurrentScope.value &&
-        workspaceStore.activeWorkspace?.role === 'owner')
-    )
-  })
+  // Entitlements come from the capability response. In particular, never
+  // infer top-up access from workspace role when that read is unavailable:
+  // Laimon's prepaid portal and upstream subscription billing intentionally
+  // use different policies behind this one frontend contract.
+  const canTopUp = computed(() => capabilities.value?.can_top_up ?? false)
   const canSubscribeSelfServe = computed(
     () => capabilities.value?.can_subscribe_self_serve ?? false
   )
@@ -157,7 +150,7 @@ function useBillingCapabilitiesInternal() {
     const state = readState.value
     if (state.status === 'idle' || state.status === 'pending') return false
     return (
-      state.authUid === authStore.userId &&
+      state.authUid === currentUserId.value &&
       state.workspaceId === workspaceStore.activeWorkspaceId
     )
   })
@@ -167,7 +160,7 @@ function useBillingCapabilitiesInternal() {
     const state = readState.value
     if (state.status !== 'resolved' && state.status !== 'denied') return false
     return (
-      state.authUid === authStore.userId &&
+      state.authUid === currentUserId.value &&
       state.workspaceId === workspaceStore.activeWorkspaceId
     )
   })
@@ -281,7 +274,7 @@ function useBillingCapabilitiesInternal() {
   }
 
   async function fetchCapabilities(signal?: AbortSignal): Promise<void> {
-    const userId = authStore.userId
+    const userId = currentUserId.value
     const workspaceId = workspaceStore.activeWorkspaceId
     if (!userId || !workspaceId) {
       resetRead()
@@ -334,7 +327,7 @@ function useBillingCapabilitiesInternal() {
         )
         if (
           requestId !== latestRequestId ||
-          userId !== authStore.userId ||
+          userId !== currentUserId.value ||
           workspaceId !== workspaceStore.activeWorkspaceId
         ) {
           return
@@ -376,7 +369,7 @@ function useBillingCapabilitiesInternal() {
       } catch (error) {
         if (
           requestId !== latestRequestId ||
-          userId !== authStore.userId ||
+          userId !== currentUserId.value ||
           workspaceId !== workspaceStore.activeWorkspaceId
         ) {
           return
@@ -451,7 +444,7 @@ function useBillingCapabilitiesInternal() {
       await fetchCapabilities(signal)
     } while (
       !signal?.aborted &&
-      !!authStore.userId &&
+      !!currentUserId.value &&
       !!workspaceStore.activeWorkspaceId &&
       !isReady.value
     )
@@ -463,7 +456,7 @@ function useBillingCapabilitiesInternal() {
 
   watch(
     [
-      () => authStore.userId,
+      () => currentUserId.value,
       () => workspaceStore.activeWorkspaceId,
       () => workspaceStore.activeWorkspace?.role
     ],

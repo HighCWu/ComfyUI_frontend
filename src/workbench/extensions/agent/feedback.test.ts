@@ -29,6 +29,21 @@ describe('openFeedbackDialog (agent)', () => {
     vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel')
   })
 
+  it.for([true, false])(
+    'uses first-party feedback in prepaid mode when Agent enabled is %s',
+    (enabled) => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      useAgentPanelStore().enabled = enabled
+
+      openFeedbackDialog('agent-panel')
+
+      expect(openGeneralFeedbackDialog).toHaveBeenCalledWith('agent-panel')
+      expect(openTypeformDialog).not.toHaveBeenCalled()
+      expect(useCurrentUser).not.toHaveBeenCalled()
+      expect(useTelemetry).not.toHaveBeenCalled()
+    }
+  )
+
   it('falls back to the general feedback dialog when Agent is disabled', () => {
     useAgentPanelStore().enabled = false
 

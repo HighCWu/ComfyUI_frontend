@@ -18,6 +18,7 @@ import InsufficientCreditsMemberDialog from '@/platform/workspace/components/Ins
 import TopUpCreditsDialogContentWorkspace from '@/platform/workspace/components/TopUpCreditsDialogContentWorkspace.vue'
 import { useBillingCapabilities } from '@/platform/workspace/composables/useBillingCapabilities'
 import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
+import type { DialogInstance } from '@/stores/dialogStore'
 import { useDialogStore } from '@/stores/dialogStore'
 import { getErrorMessage } from '@/utils/errorUtil'
 
@@ -31,7 +32,9 @@ function topUpFallbackReason(
 export function useBillingDialogs() {
   const dialogStore = useDialogStore()
 
-  async function showTopUpCreditsDialog(options?: TopUpCreditsDialogOptions) {
+  async function showTopUpCreditsDialog(
+    options?: TopUpCreditsDialogOptions
+  ): Promise<DialogInstance | undefined> {
     useTelemetry()?.trackBillingEvent({
       operation: 'entry',
       stage: 'add_credits_clicked',
@@ -43,16 +46,18 @@ export function useBillingDialogs() {
     const { type } = useBillingContext()
     const { canTopUp, canSubscribeSelfServe, isReady, initialize } =
       useBillingCapabilities()
-    // A capability read still in flight has to be awaited here, or a top-up
-    // triggered during that window is silently dropped with no recovery UI.
     if (!isReady.value) await initialize()
-    if (!isReady.value) return
+    if (!isReady.value) return undefined
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+      if (canTopUp.value) window.location.assign('/billing/')
+      return undefined
+    }
     if (!canTopUp.value && canSubscribeSelfServe.value) {
       await showSubscriptionRequiredDialog({
         reason: topUpFallbackReason(options),
         paymentIntentSource: options?.source
       })
-      return
+      return undefined
     }
 
     if (!canTopUp.value && type.value === 'workspace') {
@@ -68,9 +73,8 @@ export function useBillingDialogs() {
         }
       })
     }
-    if (!canTopUp.value) return
+    if (!canTopUp.value) return undefined
 
-    // Unknown never selects the legacy content, which buys credits directly.
     const isWorkspaceRail = type.value !== 'legacy'
 
     return dialogStore.showDialog({
@@ -87,14 +91,14 @@ export function useBillingDialogs() {
 
   async function showSubscriptionRequiredDialog(
     options?: SubscriptionDialogOptions
-  ) {
+  ): Promise<void> {
     if (!isCloud) return
-
-    // A caller (e.g. the agent panel's paywall card) can fire this before the
-    // bootstrap /features fetch resolves, most likely right after a fresh
-    // load. window.__CONFIG__ is then still empty and the flag check below
-    // would silently swallow the click. Await one fresh fetch before
-    // deciding, rather than trusting a config snapshot that was never taken.
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+      await showTopUpCreditsDialog({
+        source: options?.paymentIntentSource ?? options?.reason
+      })
+      return
+    }
     if (!window.__CONFIG__?.subscription_required) {
       const { remoteConfigState } =
         await import('@/platform/remoteConfig/remoteConfig')
@@ -106,10 +110,6 @@ export function useBillingDialogs() {
     }
 
     if (!window.__CONFIG__?.subscription_required) {
-      // This gate closing is never expected to be reachable from a cloud
-      // surface with subscriptions enabled. Report it instead of returning
-      // silently, so a caller's "Subscribe" button failing to do anything
-      // shows up in telemetry rather than only in a user's bug report.
       const { reportError } = await import('@/platform/telemetry/reportError')
       reportError(
         new Error(

@@ -1,8 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { applyOps, mint, project } from '@comfyorg/comfy-multi-player'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi
+} from 'vitest'
 
 import { LGraph, LGraphNode, LiteGraph } from '@/lib/litegraph/src/litegraph'
+import { reportError } from '@/platform/telemetry/reportError'
+
+vi.mock(import('@/platform/telemetry/reportError'))
 
 import type { GraphOperation } from './graphOperations'
+import { wireNodeSnapshot } from './docOpMinter'
+import { mintWireOps } from './opEnvelope'
 import {
   attachRestoreOpMinter,
   notifyRestoreMintersAfterGraphConfigure,
@@ -154,6 +168,155 @@ describe('attachRestoreOpMinter', () => {
 
   it.for([
     {
+      name: 'title',
+      change: (node: LGraphNode) => {
+        node.title = 'Restored title'
+      },
+      field: 'title',
+      value: 'Restored title'
+    },
+    {
+      name: 'execution mode',
+      change: (node: LGraphNode) => {
+        node.mode = 4
+      },
+      field: 'mode',
+      value: 4
+    },
+    {
+      name: 'collapsed state',
+      change: (node: LGraphNode) => {
+        node.flags.collapsed = true
+      },
+      field: 'flags.collapsed',
+      value: true
+    },
+    {
+      name: 'pinned state',
+      change: (node: LGraphNode) => {
+        node.flags.pinned = true
+      },
+      field: 'flags.pinned',
+      value: true
+    }
+  ])(
+    'mints the restored $name without replacing the node or its widgets',
+    ({ change, field, value }) => {
+      restoreThrough(() => change(source))
+
+      expect(minted).toEqual([
+        { op: 'set_node_field', node_id: String(source.id), field, value }
+      ])
+    }
+  )
+
+  it('deletes restored absent flags without changing unrelated flags or widgets', () => {
+    source.flags.collapsed = true
+    source.flags.pinned = true
+    source.flags.keepAllLinksOnBypass = false
+
+    restoreThrough(() => {
+      delete source.flags.collapsed
+      delete source.flags.pinned
+    })
+
+    expect(minted).toEqual([
+      {
+        op: 'set_node_field',
+        node_id: String(source.id),
+        field: 'flags.collapsed',
+        value: null
+      },
+      {
+        op: 'set_node_field',
+        node_id: String(source.id),
+        field: 'flags.pinned',
+        value: null
+      }
+    ])
+  })
+
+  it('mints the full undo and redo scalar sequence on a surviving node', () => {
+    restoreThrough(() => {
+      source.mode = 4
+    })
+    restoreThrough(() => {
+      source.mode = 0
+    })
+    restoreThrough(() => {
+      source.mode = 4
+    })
+
+    expect(minted).toEqual([
+      {
+        op: 'set_node_field',
+        node_id: String(source.id),
+        field: 'mode',
+        value: 4
+      },
+      {
+        op: 'set_node_field',
+        node_id: String(source.id),
+        field: 'mode',
+        value: 0
+      },
+      {
+        op: 'set_node_field',
+        node_id: String(source.id),
+        field: 'mode',
+        value: 4
+      }
+    ])
+  })
+
+  it('applies restored fields through the original document protocol without overwriting a concurrent widget edit', () => {
+    source.disconnectOutput(0)
+    const catalog = { types: { TestSource: { widget_order: ['image'] } } }
+    const node = wireNodeSnapshot(source)!
+    const doc = mint({ nodes: [node], links: [] }, catalog)
+    onTestFinished(() => doc.destroy())
+    applyOps(
+      doc,
+      mintWireOps(
+        [
+          {
+            op: 'set_widget',
+            node_id: source.id,
+            widget: 'image',
+            value: 'remote.png'
+          }
+        ],
+        { actor: 'agent:owner:turn', baseVersion: 2 }
+      ),
+      catalog
+    )
+
+    restoreThrough(() => {
+      source.title = 'Restored'
+      source.mode = 4
+      source.flags.pinned = true
+    })
+    const result = applyOps(
+      doc,
+      mintWireOps(minted, { actor: 'human:owner:tab', baseVersion: 3 }),
+      catalog
+    )
+
+    expect(result.outcomes.map((entry) => entry.outcome)).toEqual([
+      'applied',
+      'applied',
+      'applied'
+    ])
+    expect(project(doc, catalog).nodes[0]).toMatchObject({
+      title: 'Restored',
+      mode: 4,
+      flags: { pinned: true },
+      widgets_values: ['remote.png']
+    })
+  })
+
+  it.for([
+    {
       reason: 'an ordinary (non-undo) graph load',
       restoring: false,
       bound: true
@@ -200,15 +363,38 @@ describe('attachRestoreOpMinter', () => {
     )
   })
 
-  it('surfaces a link removed without its node instead of dropping it silently', () => {
+  it('mints a standalone undone link as disconnect instead of leaving the document connected', () => {
     const linkId = sink.inputs[0].link
 
     restoreThrough(() => sink.disconnectInput(0))
 
+    expect(minted).toEqual([
+      { op: 'disconnect', link_id: linkId, to_node: sink.id, to_slot: 0 }
+    ])
+    expect(console.error).not.toHaveBeenCalled()
+  })
+
+  it('resolves an undone disconnect through the stable document input names', () => {
+    const linkId = sink.inputs[0].link
+    docInputs = ['other', 'image']
+    restoreThrough(() => sink.disconnectInput(0))
+    expect(minted).toEqual([
+      { op: 'disconnect', link_id: linkId, to_node: sink.id, to_slot: 1 }
+    ])
+  })
+
+  it('refuses the whole restore diff when a removed link input cannot be represented', () => {
+    docInputs = ['other']
+    restoreThrough(() => {
+      source.widgets![0].value = 'changed.png'
+      sink.disconnectInput(0)
+    })
     expect(minted).toEqual([])
-    expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('removed link without its node'),
-      String(linkId)
+    expect(reportError).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        errorType: 'failure_restoring_agent_removed_link_input'
+      })
     )
   })
 })

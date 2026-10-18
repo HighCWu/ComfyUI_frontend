@@ -236,6 +236,23 @@ describe('Comfy.UploadAudio AUDIOUPLOAD widget', () => {
     expect(node.graph?.setDirtyCanvas).toHaveBeenCalledWith(true)
   })
 
+  it('rolls back the widget value when the upload response is malformed', async () => {
+    const AUDIOUPLOAD = await loadAudioUploadWidget()
+    const { audioWidget, node } = createAudioNode()
+    AUDIOUPLOAD(node, 'upload')
+    vi.mocked(api.fetchApi).mockResolvedValueOnce(
+      Response.json({ name: 42, subfolder: 'pasted' })
+    )
+
+    await capturedPaste!([createFile()])
+
+    expect(node.isUploading).toBe(false)
+    expect(audioWidget.value).toBe('previous.mp3')
+    expect(audioWidget.options.values).toEqual(['previous.mp3'])
+    expect(useToast().warning).toHaveBeenCalledWith('g.uploadFailed')
+    expect(node.onWidgetChanged).not.toHaveBeenCalled()
+  })
+
   it('rolls back the widget value and clears isUploading when upload throws synchronously', async () => {
     const AUDIOUPLOAD = await loadAudioUploadWidget()
     const { audioWidget, node } = createAudioNode()

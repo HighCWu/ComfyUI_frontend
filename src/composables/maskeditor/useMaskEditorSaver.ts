@@ -1,4 +1,4 @@
-import type { UploadImageResponse } from '@comfyorg/ingest-types'
+import { zUploadImageResponse } from '@comfyorg/ingest-types/zod'
 
 import { writeImageWidgetValue } from '@/composables/maskeditor/imageWidgetAdapter'
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
@@ -235,9 +235,9 @@ export function useMaskEditorSaver() {
       )
     }
 
-    let data: UploadImageResponse
+    let data
     try {
-      data = await response.json()
+      data = zUploadImageResponse.parse(await response.json())
     } catch (error) {
       throw new Error(
         `Invalid upload response for ${layer.ref.filename}: ${

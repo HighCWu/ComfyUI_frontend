@@ -51,6 +51,41 @@ describe('showTopUpCreditsDialog', () => {
     mockIsCloud.value = true
   })
 
+  it.for([true, false])(
+    'routes to the prepaid balance portal only when the server allows top-up (%s)',
+    async (allowed) => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      const navigate = vi
+        .spyOn(window.location, 'assign')
+        .mockImplementation(() => {})
+      useBillingCapabilities().canTopUp = computed(() => allowed)
+
+      await useBillingDialogs().showTopUpCreditsDialog({
+        source: 'agent_paywall'
+      })
+
+      if (allowed) expect(navigate).toHaveBeenCalledExactlyOnceWith('/billing/')
+      else expect(navigate).not.toHaveBeenCalled()
+      expect(useDialogStore().showDialog).not.toHaveBeenCalled()
+      expect(useSubscriptionDialog().show).not.toHaveBeenCalled()
+    }
+  )
+
+  it('maps the inherited agent paywall signal to the prepaid balance portal', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const navigate = vi
+      .spyOn(window.location, 'assign')
+      .mockImplementation(() => {})
+
+    await useBillingDialogs().showSubscriptionRequiredDialog({
+      reason: 'agent_paywall'
+    })
+
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/billing/')
+    expect(useDialogStore().showDialog).not.toHaveBeenCalled()
+    expect(useSubscriptionDialog().show).not.toHaveBeenCalled()
+  })
+
   it('shows the purchase dialog to users who can top up', async () => {
     await useBillingDialogs().showTopUpCreditsDialog({
       isInsufficientCredits: true

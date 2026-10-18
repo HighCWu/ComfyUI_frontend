@@ -520,6 +520,28 @@ describe('usePainter', () => {
       ).rejects.toThrow(/painter\.uploadError/)
     })
 
+    it('does not cache a malformed upload response', async () => {
+      makePaintNode([{ name: 'mask', type: 'string', value: '' }])
+      vi.mocked(api.fetchApi).mockResolvedValueOnce(
+        Response.json({ name: 42, subfolder: 'painter', type: 'input' })
+      )
+      const fakeCanvas = fromPartial<HTMLCanvasElement>({
+        width: 4,
+        height: 4,
+        toBlob: (cb: BlobCallback) => cb(new Blob(['x']))
+      })
+      const painter = mountPainter(toNodeId('test-node'), '')
+      painter.canvasEl.value = fakeCanvas
+      await nextTick()
+
+      await expect(
+        widgetOf('mask').serializeValue!(paintNode(), 0)
+      ).rejects.toThrow(/painter\.uploadError/)
+
+      expect(painter.modelValue.value).toBe('')
+      expect(storedValue('mask')).toBe('')
+    })
+
     it('returns existing modelValue when canvas element is unmounted at serialize time', async () => {
       makePaintNode([{ name: 'mask', type: 'string', value: '' }])
 

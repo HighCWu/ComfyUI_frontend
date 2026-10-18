@@ -673,7 +673,7 @@ describe('verifyMediaCandidates', () => {
     {
       source: 'output store',
       name: 'photo.png [output]',
-      output: [makeAsset('photo.png')],
+      output: [{ ...makeAsset('photo.png'), tags: ['output'] }],
       isMissing: false,
       fetched: false
     },
@@ -729,7 +729,10 @@ describe('verifyMediaCandidates', () => {
     await verifyMediaCandidates(candidates, { signal })
 
     expect(hashLookups()).toEqual([
-      ['/assets?hash=photo.png&limit=1', { signal }]
+      [
+        '/assets?hash=photo.png&include_tags=input&limit=1&subfolder=',
+        { signal }
+      ]
     ])
     expect(candidates.map((c) => c.isMissing)).toEqual([true, true])
   })

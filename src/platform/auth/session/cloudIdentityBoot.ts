@@ -7,6 +7,8 @@ import {
 } from '@/platform/auth/session/cloudWebSessionStore'
 import { useApiKeyAuthStore } from '@/stores/apiKeyAuthStore'
 import { useAuthStore } from '@/stores/authStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
+import { refreshRemoteConfig } from '@/platform/remoteConfig/refreshRemoteConfig'
 
 export type CloudSignIn = 'signed_in' | 'signed_out' | 'pending'
 
@@ -23,6 +25,10 @@ async function storedApiKeyIsTheLogin(): Promise<boolean> {
 }
 
 async function bootOnce(): Promise<void> {
+  if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+    await usePrepaidSessionStore().initialize()
+    await refreshRemoteConfig({ useAuth: false })
+  }
   const auth = useAuthStore()
   if (auth.currentUser === null && (await storedApiKeyIsTheLogin())) return
   const webSession = useCloudWebSessionStore()
@@ -45,6 +51,11 @@ export function bootCloudIdentity(): Promise<void> {
 }
 
 export async function cloudSignIn(): Promise<CloudSignIn> {
+  if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+    const session = usePrepaidSessionStore()
+    await session.initialize()
+    return session.user ? 'signed_in' : 'signed_out'
+  }
   const auth = useAuthStore()
   const hasTokenLogin = async () => (await auth.getAuthHeader()) !== null
   await bootCloudIdentity()

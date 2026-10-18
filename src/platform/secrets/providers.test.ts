@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   DEFAULT_PROVIDER_IDS,
@@ -20,6 +20,14 @@ describe('secret provider registry', () => {
     expect(getProviderLogo('civitai')).toBe('/assets/images/civitai.svg')
     expect(getProviderLogo('runway')).toBe('/assets/images/runway.svg')
     expect(getProviderLogo('gemini')).toBe('/assets/images/gemini.svg')
+  })
+
+  it.for([
+    { base: '/comfy/', expected: '/comfy/assets/images/hf-logo.svg' },
+    { base: '', expected: '/assets/images/hf-logo.svg' }
+  ])('resolves public logos with base "$base"', ({ base, expected }) => {
+    vi.stubEnv('BASE_URL', base)
+    expect(getProviderLogo('huggingface')).toBe(expected)
   })
 
   it('exposes per-provider help keys for the BYOK providers', () => {

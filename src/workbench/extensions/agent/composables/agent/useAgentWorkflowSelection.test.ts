@@ -1,16 +1,20 @@
 import { render, waitFor } from '@testing-library/vue'
 import type { WorkflowResponse } from '@comfyorg/ingest-types'
 import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent } from 'vue'
+import { defineComponent, toRaw } from 'vue'
 
 import { i18n } from '@/i18n'
+import { api } from '@/scripts/api'
 import { useWorkflowService } from '@/platform/workflow/core/services/workflowService'
 import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
 import { createMockLoadedWorkflow } from '@/utils/__tests__/litegraphTestUtils'
 
 import type { CloudWorkflowEntry } from '../../schemas/agentApiSchema'
 import { AgentApiError } from '../../services/agent/agentRestClient'
-import type { CloudWorkflowListing } from '../../services/agent/agentRestClient'
+import type {
+  AgentRestClient,
+  CloudWorkflowListing
+} from '../../services/agent/agentRestClient'
 import { useAgentPanelStore } from '../../stores/agent/agentPanelStore'
 import { useAgentWorkflowTabBindingStore } from '../../stores/agent/agentWorkflowTabBindingStore'
 import { useAgentWorkflowResolver } from './useAgentWorkflowResolver'
@@ -18,7 +22,7 @@ import { useAgentWorkflowSelection } from './useAgentWorkflowSelection'
 
 vi.mock(import('@/platform/workflow/core/services/workflowService'))
 
-function setup() {
+function setup(adoptSavedWorkflow?: AgentRestClient['adoptSavedWorkflow']) {
   const workflows = useWorkflowStore()
   const bindings = useAgentWorkflowTabBindingStore()
   const panel = useAgentPanelStore()
@@ -54,16 +58,35 @@ function setup() {
     workflows,
     bindings,
     listCloudWorkflows,
-    getCloudWorkflow
+    getCloudWorkflow,
+    includeUnboundSaved: adoptSavedWorkflow !== undefined
   })
   const current = createMockLoadedWorkflow({
     path: 'workflows/current.json',
     filename: 'current',
-    isTemporary: false
+    isTemporary: false,
+    activeState: {
+      last_node_id: 0,
+      last_link_id: 0,
+      nodes: [],
+      links: [],
+      groups: [],
+      config: {},
+      version: 0.4
+    }
   })
   workflows.attachWorkflow(current)
   workflows.openWorkflowsInBackground({ right: [current.path] })
   workflows.activeWorkflow = current
+  if (adoptSavedWorkflow)
+    vi.spyOn(api, 'getUserData').mockImplementation(
+      async () =>
+        new Response(JSON.stringify(current.activeState), {
+          headers: {
+            ETag: `"native-v1-${'a'.repeat(64)}-11111111-1111-4111-8111-111111111111"`
+          }
+        })
+    )
   vi.mocked(workflows.syncWorkflows).mockResolvedValue(undefined)
   vi.mocked(useWorkflowService().openWorkflow).mockImplementation(
     async (workflow) => {
@@ -77,6 +100,7 @@ function setup() {
     defineComponent({
       setup() {
         selection = useAgentWorkflowSelection({
+          adoptSavedWorkflow,
           resolver,
           canSelectTarget: () => true,
           warnWorkflowUnavailable: vi.fn(),
@@ -111,6 +135,208 @@ function listing(
 
 describe('historical workflow restoration', () => {
   beforeEach(() => localStorage.clear())
+
+  it('refreshes closed saved files without adopting them, then adopts a selected reference without opening it', async () => {
+    const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>()
+    const {
+      selection,
+      current,
+      workflows,
+      resolver,
+      listCloudWorkflows,
+      panel
+    } = setup(adopt)
+    const reference = createMockLoadedWorkflow({
+      path: 'workflows/reference/Closed.json',
+      filename: 'Closed',
+      suffix: 'json',
+      isTemporary: false,
+      activeState: current.activeState
+    })
+    reference.load = vi.fn(async () => reference)
+    listCloudWorkflows.mockResolvedValue(listing([]))
+    vi.mocked(workflows.syncWorkflows).mockImplementation(async () => {
+      workflows.attachWorkflow(reference)
+    })
+    await selection.requestReferences()
+    expect(resolver.availableWorkflowReferences.value).toContainEqual({
+      tabPath: reference.path,
+      name: 'reference/Closed',
+      isPersisted: true
+    })
+    expect(adopt).not.toHaveBeenCalled()
+    adopt.mockImplementation(async (path) => {
+      listCloudWorkflows.mockResolvedValue(
+        listing([{ id: 'wf-closed', name: 'Closed', editor_path: path }])
+      )
+      return {
+        id: 'wf-closed',
+        latest_version: 1,
+        created_by: 'user-1',
+        created_at: '2026-10-16T00:00:00Z',
+        updated_at: '2026-10-16T00:00:00Z'
+      }
+    })
+    expect(
+      await selection.selectReference({
+        tabPath: reference.path,
+        name: 'reference/Closed'
+      })
+    ).toEqual({ id: 'wf-closed', name: 'Closed' })
+    expect(adopt).toHaveBeenCalledWith(reference.path, reference.activeState)
+    expect(workflows.openWorkflows.map(({ path }) => path)).toEqual([
+      current.path
+    ])
+    expect(toRaw(workflows.activeWorkflow)).toBe(toRaw(current))
+    expect(panel.selectedWorkflow).toBeNull()
+  })
+
+  it('refuses a closed saved file outside native adoption mode', async () => {
+    const { selection, workflows } = setup()
+    const reference = createMockLoadedWorkflow({
+      path: 'workflows/Closed.json',
+      filename: 'Closed',
+      isTemporary: false
+    })
+    workflows.attachWorkflow(reference)
+    expect(
+      await selection.selectReference({
+        tabPath: reference.path,
+        name: 'Closed'
+      })
+    ).toBeUndefined()
+  })
+
+  it('does not adopt a closed reference removed from the store during its load', async () => {
+    const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>()
+    const { selection, workflows, current, listCloudWorkflows } = setup(adopt)
+    listCloudWorkflows.mockResolvedValue(listing([]))
+    const reference = createMockLoadedWorkflow({
+      path: 'workflows/Closed.json',
+      filename: 'Closed',
+      isTemporary: false,
+      activeState: current.activeState
+    })
+    vi.spyOn(reference, 'delete').mockResolvedValue(undefined)
+    reference.load = vi.fn(async () => {
+      await workflows.deleteWorkflow(reference)
+      return reference
+    })
+    workflows.attachWorkflow(reference)
+    expect(
+      await selection.selectReference({
+        tabPath: reference.path,
+        name: 'Closed'
+      })
+    ).toBeUndefined()
+    expect(adopt).not.toHaveBeenCalled()
+  })
+
+  it('adopts an ordinary saved target only after explicit selection', async () => {
+    const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>(async () => ({
+      id: 'wf-adopted',
+      latest_version: 1,
+      created_by: 'user-1',
+      created_at: '2026-10-16T00:00:00Z',
+      updated_at: '2026-10-16T00:00:00Z'
+    }))
+    const {
+      selection,
+      workflows,
+      current,
+      resolver,
+      listCloudWorkflows,
+      bindings
+    } = setup(adopt)
+    listCloudWorkflows.mockResolvedValue(listing([]))
+    current.load = vi.fn(async () => current)
+    await resolver.refreshCloudWorkflowIds()
+    expect(resolver.availableWorkflowReferences.value).toEqual([
+      { tabPath: current.path, name: 'current', isPersisted: true }
+    ])
+    expect(adopt).not.toHaveBeenCalled()
+    adopt.mockImplementation(async (path) => {
+      listCloudWorkflows.mockResolvedValue(
+        listing([{ id: 'wf-adopted', name: 'current', editor_path: path }])
+      )
+      return {
+        id: 'wf-adopted',
+        latest_version: 1,
+        created_by: 'user-1',
+        created_at: '2026-10-16T00:00:00Z',
+        updated_at: '2026-10-16T00:00:00Z'
+      }
+    })
+    expect(await selection.selectTarget(current.path)).toBe(true)
+    expect(adopt).toHaveBeenCalledWith(current.path, current.activeState)
+    expect(bindings.workflowIdFor(current.path)).toBe('wf-adopted')
+    expect(toRaw(workflows.activeWorkflow)).toBe(toRaw(current))
+  })
+
+  it('adopts an explicitly chosen saved reference without changing the active target', async () => {
+    const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>()
+    const { selection, current, panel, listCloudWorkflows, bindings } =
+      setup(adopt)
+    listCloudWorkflows.mockResolvedValue(listing([]))
+    current.load = vi.fn(async () => current)
+    adopt.mockImplementation(async (path) => {
+      listCloudWorkflows.mockResolvedValue(
+        listing([{ id: 'wf-reference', name: 'current', editor_path: path }])
+      )
+      return {
+        id: 'wf-reference',
+        latest_version: 1,
+        created_by: 'user-1',
+        created_at: '2026-10-16T00:00:00Z',
+        updated_at: '2026-10-16T00:00:00Z'
+      }
+    })
+    expect(
+      await selection.selectReference({
+        tabPath: current.path,
+        name: 'current'
+      })
+    ).toEqual({ id: 'wf-reference', name: 'current' })
+    expect(panel.selectedWorkflow).toBeNull()
+    expect(bindings.workflowIdFor(current.path)).toBe('wf-reference')
+  })
+
+  it('does not bind a target renamed while its adoption request is pending', async () => {
+    let complete: ((response: WorkflowResponse) => void) | undefined
+    const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve
+        })
+    )
+    const { selection, current, listCloudWorkflows, bindings } = setup(adopt)
+    listCloudWorkflows.mockResolvedValue(listing([]))
+    current.load = vi.fn(async () => current)
+    const selecting = selection.selectTarget(current.path)
+    await waitFor(() => expect(adopt).toHaveBeenCalledOnce())
+    current.path = 'workflows/renamed.json'
+    assert.exists(complete)
+    complete({
+      id: 'wf-late',
+      latest_version: 1,
+      created_by: 'user-1',
+      created_at: '2026-10-16T00:00:00Z',
+      updated_at: '2026-10-16T00:00:00Z'
+    })
+    expect(await selecting).toBe(false)
+    expect(bindings.workflowIdFor(current.path)).toBeUndefined()
+  })
+
+  it('keeps an ordinary saved file unbound after the server rejects adoption', async () => {
+    const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>(async () => {
+      throw new AgentApiError('Save first', 409, null)
+    })
+    const { selection, current, listCloudWorkflows, bindings } = setup(adopt)
+    listCloudWorkflows.mockResolvedValue(listing([]))
+    current.load = vi.fn(async () => current)
+    expect(await selection.selectTarget(current.path)).toBe(false)
+    expect(bindings.workflowIdFor(current.path)).toBeUndefined()
+  })
 
   it.for([false, true])(
     'switches to a known open target without refreshing Cloud metadata (bound: %s)',

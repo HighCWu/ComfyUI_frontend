@@ -31,6 +31,8 @@ const DOC_ID_TTL_MS = 5 * 60 * 1000
 // does not turn every frame into a sessionStorage write.
 const DOC_ID_REFRESH_INTERVAL_MS = DOC_ID_TTL_MS / 2
 
+export type SubscribeGiveUpReason = 'refused' | 'timeout'
+
 // FE-1901 (poc-2): a `doc_subscribed {ok:false}` is a SERVER refusal - e.g.
 // the subscribe raced the doc-host before the turn ack minted the doc. The
 // bridge's transport-level reconcile can never repair it: the frame WAS
@@ -43,15 +45,21 @@ const SUBSCRIBE_RETRY_MAX_ATTEMPTS = 6
 // document this build can never read back - unlike every other refusal
 // reason, no amount of backoff retry changes that outcome, so these codes
 // skip the retry ladder entirely and latch the same give-up exit an
-// unanswered ack times out into. `schema_version_mismatch` and
-// `catalog_mismatch` are cloud's `socketDocCode()` sibling arms sharing the
+// unanswered ack times out into. `stale_client_schema`,
+// `schema_version_mismatch` and `catalog_mismatch` are cloud's
+// `socketDocCode()` sibling arms sharing the
 // same "retrying will not help" contract; `unsupported` (`docSurfaceOffReason`)
 // is permanent for the life of the connection.
 const PERMANENT_SUBSCRIBE_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  'stale_client_schema',
   'schema_version_mismatch',
   'catalog_mismatch',
   'unsupported'
 ])
+
+export function isPermanentSubscribeRefusalCode(code: string): boolean {
+  return PERMANENT_SUBSCRIBE_REFUSAL_CODES.has(code)
+}
 
 // `unsupported` means the doc surface is off for this whole deployment, so
 // every user hits it - latching it must not paint an "incompatible document
@@ -217,7 +225,7 @@ export class AgentCrdtDocLifecycle {
   constructor(
     private readonly workflowId: () => string | null,
     private readonly resubscribe: () => void,
-    private readonly onGaveUp: () => void
+    private readonly onGaveUp: (reason: SubscribeGiveUpReason) => void
   ) {}
 
   readPersistedDocId(): string | null {
@@ -249,7 +257,7 @@ export class AgentCrdtDocLifecycle {
 
   /** Returns whether this refusal newly triggered a give-up notification. */
   onSubscribeRefused(code?: string): boolean {
-    if (code !== undefined && PERMANENT_SUBSCRIBE_REFUSAL_CODES.has(code)) {
+    if (code !== undefined && isPermanentSubscribeRefusalCode(code)) {
       // See `confirmedSinceLastSend`: bail out before touching any timer,
       // so a stale straggler can't clear the probe/backoff state the
       // confirm it raced behind already armed.
@@ -269,6 +277,10 @@ export class AgentCrdtDocLifecycle {
     this.clearSubscribeRetry()
     this.clearStaleProbe()
     this.gaveUp = true
+  }
+
+  refusalIsFinal(): boolean {
+    return !this.confirmedSinceLastSend && this.subscribeRetryTimer === null
   }
 
   onSubscribeSent(workflowId: string): void {
@@ -423,7 +435,7 @@ export class AgentCrdtDocLifecycle {
       level: 'warning',
       tags: { feature_area: 'agent', operation: 'sync', outcome: 'gave_up' }
     })
-    this.onGaveUp()
+    this.onGaveUp('refused')
     return true
   }
 
@@ -444,7 +456,7 @@ export class AgentCrdtDocLifecycle {
         tags: { feature_area: 'agent', operation: 'sync', outcome: 'gave_up' }
       }
     )
-    this.onGaveUp()
+    this.onGaveUp('timeout')
   }
 
   private clearSubscribeRetry(): void {
@@ -465,7 +477,10 @@ export class AgentCrdtDocLifecycle {
     this.subscribeRetryAttempt += 1
     this.subscribeRetryTimer = setTimeout(() => {
       this.subscribeRetryTimer = null
-      if (this.workflowId() !== target) return
+      // A permanent refusal may arrive in the same timer turn after this
+      // callback was already queued. Clearing the timer is the primary
+      // cancellation; the latch check keeps even that race fail-closed.
+      if (this.gaveUp || this.workflowId() !== target) return
       recordDevEvent('subscribe_retry', {
         attempt: this.subscribeRetryAttempt,
         workflowId: target

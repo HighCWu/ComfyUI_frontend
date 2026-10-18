@@ -3,12 +3,13 @@ import userEvent from '@testing-library/user-event'
 import { render, screen } from '@testing-library/vue'
 import { fromPartial } from '@total-typescript/shoehorn'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { nextTick } from 'vue'
+import { nextTick, ref } from 'vue'
 import { createI18n } from 'vue-i18n'
 
 import { useNodeDragToCanvas } from '@/composables/node/useNodeDragToCanvas'
 import { useFeatureFlags } from '@/composables/useFeatureFlags'
 import { useSettingStore } from '@/platform/settings/settingStore'
+import { api } from '@/scripts/api'
 
 import { useAssetDownloadStore } from '@/stores/assetDownloadStore'
 import { useModelStore } from '@/stores/modelStore'
@@ -194,6 +195,44 @@ describe('ModelLibrarySidebarTab', () => {
     await nextTick()
 
     expect(load).toHaveBeenCalledOnce()
+  })
+
+  it('reloads only visible model metadata when the server capability arrives late', async () => {
+    const capability = ref<unknown>(undefined)
+    vi.spyOn(api, 'getServerFeature').mockImplementation(() => capability.value)
+    const visibleLoad = vi.fn()
+    const collapsedLoad = vi.fn()
+    Object.assign(useModelStore(), {
+      models: [
+        fromPartial<ComfyModelDef>({
+          key: 'checkpoints/model.safetensors',
+          directory: 'checkpoints',
+          searchable: 'checkpoints/model.safetensors',
+          load: visibleLoad
+        }),
+        fromPartial<ComfyModelDef>({
+          key: 'vae/vae.safetensors',
+          directory: 'vae',
+          searchable: 'vae/vae.safetensors',
+          load: collapsedLoad
+        })
+      ]
+    })
+    renderComponent()
+    await nextTick()
+    const folder = getRoot().children?.find(
+      (node) => node.label === 'checkpoints'
+    )
+    expect(folder).toBeDefined()
+    getExpandedKeys()[folder?.key ?? ''] = true
+    await nextTick()
+    expect(visibleLoad).toHaveBeenCalledTimes(1)
+
+    capability.value = true
+    await nextTick()
+
+    expect(visibleLoad).toHaveBeenCalledTimes(2)
+    expect(collapsedLoad).not.toHaveBeenCalled()
   })
 
   it('toggles folder expansion on click', async () => {

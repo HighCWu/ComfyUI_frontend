@@ -10,6 +10,7 @@ import { useCloudWebSessionStore } from '@/platform/auth/session/cloudWebSession
 import { SessionRevokedError } from '@/platform/auth/session/useSessionCookie'
 import { useApiKeyAuthStore } from '@/stores/apiKeyAuthStore'
 import { useAuthStore } from '@/stores/authStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 import { NoWorkspaceAccessError } from '@/platform/workspace/api/workspaceApiError'
 import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
 import { useWorkspaceAuthStore } from '@/platform/workspace/stores/workspaceAuthStore'
@@ -98,6 +99,10 @@ describe('WorkspaceAuthGate', () => {
       activeWorkspaceId: 'workspace-123'
     })
     mockRefreshRemoteConfig.mockResolvedValue(undefined)
+    vi.spyOn(useCloudWebSessionStore(), 'start').mockReturnValue(true)
+    vi.spyOn(useCloudWebSessionStore(), 'whenReady').mockResolvedValue(
+      undefined
+    )
     vi.mocked(useBillingCapabilities().initialize).mockResolvedValue(undefined)
     vi.mocked(useTeamWorkspaceStore().initialize).mockImplementation(
       async () => {
@@ -128,6 +133,124 @@ describe('WorkspaceAuthGate', () => {
         default: '<div data-testid="slot-content">App Content</div>'
       }
     })
+
+  it('initializes prepaid workspace and capabilities without waiting for Firebase', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const session = usePrepaidSessionStore()
+    session.initialized = true
+    session.user = {
+      id: 'prepaid-owner',
+      name: 'QA',
+      email: 'qa@example.test',
+      emailVerified: true
+    }
+    vi.spyOn(session, 'initialize').mockResolvedValue(undefined)
+
+    mountComponent()
+    await flushPromises()
+
+    expect(screen.getByTestId('slot-content')).toBeInTheDocument()
+    expect(useTeamWorkspaceStore().initialize).toHaveBeenCalledOnce()
+    expect(useBillingCapabilities().initialize).toHaveBeenCalledOnce()
+    expect(useWorkspaceAuthStore().mintAtLogin).not.toHaveBeenCalled()
+    expect(mockRefreshRemoteConfig).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ useAuth: true })
+    )
+  })
+
+  it('keeps prepaid Run gated until the native cookie session is ready', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const session = usePrepaidSessionStore()
+    session.initialized = true
+    session.user = {
+      id: 'prepaid-owner',
+      name: 'QA',
+      email: 'qa@example.test',
+      emailVerified: true
+    }
+    const pending = Promise.withResolvers<void>()
+    const webSession = useCloudWebSessionStore()
+    vi.spyOn(webSession, 'start').mockReturnValue(true)
+    vi.spyOn(webSession, 'whenReady').mockReturnValue(pending.promise)
+
+    mountComponent()
+    await flushPromises()
+
+    expect(screen.queryByTestId('slot-content')).not.toBeInTheDocument()
+    expect(useTeamWorkspaceStore().initialize).not.toHaveBeenCalled()
+
+    pending.resolve()
+    await flushPromises()
+
+    expect(screen.getByTestId('slot-content')).toBeInTheDocument()
+    expect(useTeamWorkspaceStore().initialize).toHaveBeenCalledOnce()
+  })
+
+  it('keeps prepaid content closed when the native session cannot start', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const session = usePrepaidSessionStore()
+    session.initialized = true
+    session.user = {
+      id: 'prepaid-owner',
+      name: 'QA',
+      email: 'qa@example.test',
+      emailVerified: true
+    }
+    vi.mocked(useCloudWebSessionStore().start).mockReturnValue(false)
+
+    mountComponent()
+    await flushPromises()
+
+    expect(screen.queryByTestId('slot-content')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(useTeamWorkspaceStore().initialize).not.toHaveBeenCalled()
+  })
+
+  it('does not render prepaid content until its own session read resolves', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const session = usePrepaidSessionStore()
+    const pending = Promise.withResolvers<void>()
+    vi.spyOn(session, 'initialize').mockReturnValue(pending.promise)
+
+    mountComponent()
+    await flushPromises()
+    expect(screen.queryByTestId('slot-content')).not.toBeInTheDocument()
+
+    session.user = {
+      id: 'prepaid-owner',
+      name: 'QA',
+      email: 'qa@example.test',
+      emailVerified: true
+    }
+    pending.resolve()
+    await flushPromises()
+
+    expect(screen.getByTestId('slot-content')).toBeInTheDocument()
+    expect(useTeamWorkspaceStore().initialize).toHaveBeenCalledOnce()
+    expect(useWorkspaceAuthStore().mintAtLogin).not.toHaveBeenCalled()
+  })
+
+  it('keeps prepaid content gated when workspace initialization fails', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const session = usePrepaidSessionStore()
+    session.user = {
+      id: 'prepaid-owner',
+      name: 'QA',
+      email: 'qa@example.test',
+      emailVerified: true
+    }
+    vi.spyOn(session, 'initialize').mockResolvedValue(undefined)
+    vi.mocked(useTeamWorkspaceStore().initialize).mockRejectedValue(
+      new Error('Workspace read failed')
+    )
+
+    mountComponent()
+    await flushPromises()
+
+    expect(screen.queryByTestId('slot-content')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(useBillingCapabilities().initialize).not.toHaveBeenCalled()
+  })
 
   describe('non-cloud builds', () => {
     it('renders slot immediately when isCloud is false', async () => {

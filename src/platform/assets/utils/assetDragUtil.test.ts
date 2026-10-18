@@ -99,6 +99,7 @@ describe('asset drag media sources', () => {
         display_name: 'My clip',
         tags: ['input'],
         created_at: '2026-10-05T00:00:00Z',
+        size: 123456,
         updated_at: '2026-10-05T00:00:00Z',
         preview_id,
         thumbnail_url,
@@ -107,6 +108,7 @@ describe('asset drag media sources', () => {
       expect(drag(asset)).toMatchObject({
         name: 'My clip',
         kind: 'video',
+        sizeBytes: 123456,
         mediaUrl: media,
         previewUrl: poster
       })

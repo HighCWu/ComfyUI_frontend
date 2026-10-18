@@ -1,0 +1,770 @@
+{
+  "catalogue": {
+    "image": "ghcr.io/highcwu/comfy-complete-pod:dddddddddddddddddddddddddddddddddddddddd",
+    "types": {
+      "Source": {
+        "widget_order": [],
+        "execution_output": false,
+        "execution_widgets": [],
+        "execution_inputs": {},
+        "node_template": {
+          "type": "Source",
+          "size": [
+            100,
+            100
+          ],
+          "flags": {},
+          "mode": 0,
+          "properties": {},
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "image",
+              "type": "IMAGE",
+              "links": null
+            }
+          ],
+          "widgets_values": []
+        }
+      },
+      "DynamicExample": {
+        "widget_order": [
+          "mode",
+          "mode.steps",
+          "mode.suffix"
+        ],
+        "execution_output": true,
+        "execution_widgets": [
+          {
+            "name": "mode",
+            "serialize": true,
+            "serializer": "value",
+            "encoding": "auto"
+          }
+        ],
+        "execution_dynamic_selection": {
+          "mode": "image"
+        },
+        "execution_inputs": {
+          "mode": {
+            "required": true,
+            "type": "COMBO",
+            "choices": [
+              "image"
+            ]
+          },
+          "mode.image": {
+            "required": true,
+            "type": "IMAGE"
+          },
+          "tail": {
+            "required": true,
+            "type": "IMAGE"
+          }
+        },
+        "execution_variants": [
+          {
+            "node_template": {
+              "type": "DynamicExample",
+              "size": [
+                200,
+                100
+              ],
+              "flags": {},
+              "mode": 0,
+              "properties": {},
+              "inputs": [
+                {
+                  "name": "mode",
+                  "type": "COMFY_DYNAMICCOMBO_V3",
+                  "link": null,
+                  "widget": {
+                    "name": "mode"
+                  }
+                },
+                {
+                  "name": "mode.steps",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "mode.steps"
+                  }
+                },
+                {
+                  "name": "mode.suffix",
+                  "type": "STRING",
+                  "link": null,
+                  "shape": 7,
+                  "widget": {
+                    "name": "mode.suffix"
+                  }
+                },
+                {
+                  "name": "tail",
+                  "type": "IMAGE",
+                  "link": null
+                }
+              ],
+              "outputs": [],
+              "widgets_values": [
+                "text",
+                7,
+                "tail"
+              ]
+            },
+            "execution_widgets": [
+              {
+                "name": "mode",
+                "serialize": true,
+                "serializer": "value",
+                "encoding": "auto"
+              },
+              {
+                "name": "mode.steps",
+                "serialize": true,
+                "serializer": "value",
+                "encoding": "auto"
+              },
+              {
+                "name": "mode.suffix",
+                "serialize": true,
+                "serializer": "value",
+                "encoding": "auto"
+              }
+            ],
+            "execution_dynamic_selection": {
+              "mode": "text"
+            },
+            "execution_inputs": {
+              "mode": {
+                "required": true,
+                "type": "COMBO",
+                "choices": [
+                  "text"
+                ]
+              },
+              "mode.steps": {
+                "required": true,
+                "type": "INT",
+                "min": 1,
+                "max": 30
+              },
+              "mode.suffix": {
+                "required": false,
+                "type": "STRING"
+              },
+              "tail": {
+                "required": true,
+                "type": "IMAGE"
+              }
+            },
+            "execution_output": true
+          }
+        ],
+        "node_template": {
+          "type": "DynamicExample",
+          "size": [
+            200,
+            100
+          ],
+          "flags": {},
+          "mode": 0,
+          "properties": {},
+          "inputs": [
+            {
+              "name": "mode",
+              "type": "COMFY_DYNAMICCOMBO_V3",
+              "link": null,
+              "widget": {
+                "name": "mode"
+              }
+            },
+            {
+              "name": "mode.image",
+              "type": "IMAGE",
+              "link": null
+            },
+            {
+              "name": "tail",
+              "type": "IMAGE",
+              "link": null
+            }
+          ],
+          "outputs": [],
+          "widgets_values": [
+            "image"
+          ]
+        },
+        "dynamic_combos": {
+          "mode": {
+            "default": "text",
+            "options": {
+              "text": {
+                "widgets": [
+                  "mode.steps",
+                  "mode.suffix"
+                ],
+                "defaults": {
+                  "mode.steps": 7,
+                  "mode.suffix": "tail"
+                }
+              },
+              "image": {
+                "widgets": [],
+                "defaults": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "revision": "baa7dee9a0295fab98ad7f6d8207a7d0e498556d2cb1bda9c147641c0f4031ce"
+  },
+  "initialGraph": {
+    "nodes": [
+      {
+        "type": "Source",
+        "size": [
+          100,
+          100
+        ],
+        "mode": 0,
+        "flags": {},
+        "properties": {},
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "image",
+            "type": "IMAGE",
+            "links": [
+              1,
+              2
+            ]
+          }
+        ],
+        "widgets_values": [],
+        "id": 1
+      },
+      {
+        "type": "DynamicExample",
+        "size": [
+          200,
+          100
+        ],
+        "mode": 0,
+        "flags": {},
+        "properties": {},
+        "inputs": [
+          {
+            "name": "mode",
+            "type": "COMFY_DYNAMICCOMBO_V3",
+            "widget": {
+              "name": "mode"
+            },
+            "link": null
+          },
+          {
+            "name": "mode.image",
+            "type": "IMAGE",
+            "link": 1
+          },
+          {
+            "name": "tail",
+            "type": "IMAGE",
+            "link": 2
+          }
+        ],
+        "outputs": [],
+        "widgets_values": [
+          "image"
+        ],
+        "id": 2
+      }
+    ],
+    "links": [
+      [
+        1,
+        1,
+        0,
+        2,
+        1,
+        "IMAGE"
+      ],
+      [
+        2,
+        1,
+        0,
+        2,
+        2,
+        "IMAGE"
+      ]
+    ]
+  },
+  "initialSnapshot": "AS+Zr52FBgAoAQRtZXRhDnNjaGVtYV92ZXJzaW9uAX0FKAEEbWV0YQ9jYXRhbG9nX3ZlcnNpb24Bd0BiYWE3ZGVlOWEwMjk1ZmFiOThhZDdmNmQ4MjA3YTdkMGU0OTg1NTZkMmNiMWJkYTljMTQ3NjQxYzBmNDAzMWNlJwEFbm9kZXMBMQEnAJmvnYUGAgVmbGFncwEoAJmvnYUGAgJpZAF9AScAma+dhQYCBmlucHV0cwAoAJmvnYUGAgRtb2RlAX0AJwCZr52FBgIHb3V0cHV0cwAHAJmvnYUGBwEnAJmvnYUGCAVsaW5rcwAIAJmvnYUGCQJ9AX0CKACZr52FBggEbmFtZQF3BWltYWdlKACZr52FBggEdHlwZQF3BUlNQUdFKACZr52FBgIKcHJvcGVydGllcwF2ACgAma+dhQYCBHNpemUBdQJ9pAF9pAEoAJmvnYUGAgR0eXBlAXcGU291cmNlJwCZr52FBgIHd2lkZ2V0cwEoAJmvnYUGAg1fX2luY2FybmF0aW9uAXcBMCcBBW5vZGVzATIBJwCZr52FBhMFZmxhZ3MBKACZr52FBhMCaWQBfQInAJmvnYUGEwZpbnB1dHMABwCZr52FBhYBKACZr52FBhcEbGluawF+KACZr52FBhcEbmFtZQF3BG1vZGUoAJmvnYUGFwR0eXBlAXcVQ09NRllfRFlOQU1JQ0NPTUJPX1YzKACZr52FBhcGd2lkZ2V0AXYBBG5hbWV3BG1vZGWHma+dhQYXASgAma+dhQYcBGxpbmsBfQEoAJmvnYUGHARuYW1lAXcKbW9kZS5pbWFnZSgAma+dhQYcBHR5cGUBdwVJTUFHRYeZr52FBhwBKACZr52FBiAEbGluawF9AigAma+dhQYgBG5hbWUBdwR0YWlsKACZr52FBiAEdHlwZQF3BUlNQUdFKACZr52FBhMEbW9kZQF9ACcAma+dhQYTB291dHB1dHMAKACZr52FBhMKcHJvcGVydGllcwF2ACgAma+dhQYTBHNpemUBdQJ9iAN9pAEoAJmvnYUGEwR0eXBlAXcORHluYW1pY0V4YW1wbGUnAJmvnYUGEwd3aWRnZXRzASgAma+dhQYpBG1vZGUBdwVpbWFnZSgAma+dhQYTDV9faW5jYXJuYXRpb24BdwEwKAEFbGlua3MBMQF1Bn0BfQF9AH0CfQF3BUlNQUdFKAEMX19saW5rX3N0YXRlATEBdgQHdmVyc2lvbn0BCWF1dGhvcml0eXcIaW1wb3J0ZWQFdHVwbGV1Bn0BfQF9AH0CfQF3BUlNQUdFC2Rlc3RpbmF0aW9udgMEa2luZHcIY29uY3JldGUHdG9fc2xvdH0BBHNsb3R2AwRsaW5rfQEEbmFtZXcKbW9kZS5pbWFnZQR0eXBldwVJTUFHRSgBBWxpbmtzATIBdQZ9An0BfQB9An0CdwVJTUFHRSgBDF9fbGlua19zdGF0ZQEyAXYEB3ZlcnNpb259AQlhdXRob3JpdHl3CGltcG9ydGVkBXR1cGxldQZ9An0BfQB9An0CdwVJTUFHRQtkZXN0aW5hdGlvbnYDBGtpbmR3CGNvbmNyZXRlB3RvX3Nsb3R9AgRzbG90dgMEbGlua30CBG5hbWV3BHRhaWwEdHlwZXcFSU1BR0UA",
+  "frames": [
+    {
+      "seq": 2,
+      "op": {
+        "op": "set_widget",
+        "widget": "mode",
+        "value": "text",
+        "node_id": 2,
+        "op_id": "11111111111111111111111111111111",
+        "actor": "agent:thread:turn",
+        "base_version": 1,
+        "stamp": [
+          2,
+          "agent:thread:turn"
+        ]
+      },
+      "update": "AiCkmfHRCgCnma+dhQYHAAcApJnx0QoAAScApJnx0QoBBWxpbmtzAAgApJnx0QoCAX0CKACkmfHRCgEEbmFtZQF3BWltYWdlKACkmfHRCgEEdHlwZQF3BUlNQUdFp5mvnYUGFgAHAKSZ8dEKBgEoAKSZ8dEKBwRuYW1lAXcEbW9kZSgApJnx0QoHBHR5cGUBdxVDT01GWV9EWU5BTUlDQ09NQk9fVjMoAKSZ8dEKBwRsaW5rAX4oAKSZ8dEKBwZ3aWRnZXQBdgEEbmFtZXcEbW9kZYekmfHRCgcBKACkmfHRCgwEbmFtZQF3Cm1vZGUuc3RlcHMoAKSZ8dEKDAR0eXBlAXcDSU5UKACkmfHRCgwEbGluawF+KACkmfHRCgwGd2lkZ2V0AXYBBG5hbWV3Cm1vZGUuc3RlcHOHpJnx0QoMASgApJnx0QoRBG5hbWUBdwttb2RlLnN1ZmZpeCgApJnx0QoRBHR5cGUBdwZTVFJJTkcoAKSZ8dEKEQRsaW5rAX4oAKSZ8dEKEQVzaGFwZQF9BygApJnx0QoRBndpZGdldAF2AQRuYW1ldwttb2RlLnN1ZmZpeIekmfHRChEBKACkmfHRChcEbmFtZQF3BHRhaWwoAKSZ8dEKFwR0eXBlAXcFSU1BR0UoAKSZ8dEKFwRsaW5rAX0CqNT06M0HAAF3BHRleHQoAJmvnYUGKQptb2RlLnN0ZXBzAX0HKACZr52FBikLbW9kZS5zdWZmaXgBdwR0YWlsqJmvnYUGLgF1Bn0CfQF9AH0CfQN3BUlNQUdFqJmvnYUGLwF2BAd2ZXJzaW9ufQEJYXV0aG9yaXR5dwhpbXBvcnRlZAV0dXBsZXUGfQJ9AX0AfQJ9A3cFSU1BR0ULZGVzdGluYXRpb252AwRraW5kdwhjb25jcmV0ZQd0b19zbG90fQMEc2xvdHYDBG5hbWV3BHRhaWwEdHlwZXcFSU1BR0UEbGlua30CA9T06M0HAKGZr52FBioBKAEIX19zdGFtcHMZWyJ3aWRnZXQiLCIyIiwiMCIsIm1vZGUiXQF1A30CdxFhZ2VudDp0aHJlYWQ6dHVybncgMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEoAQlfX2FwcGxpZWQgMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEBd0A4ODAzMzY3YTQxYzhhMjE3MWZjZjIxYWFhMTY5OTM3NTU2NmEzOTM1OGIwN2ZiOWIxMzQzMTJhMDllYjQ2ZGQ1AtT06M0HAQABma+dhQYEBwcWDioBLAQ=",
+      "graph": {
+        "links": [
+          [
+            2,
+            1,
+            0,
+            2,
+            3,
+            "IMAGE"
+          ]
+        ],
+        "nodes": [
+          {
+            "flags": {},
+            "id": 1,
+            "inputs": [],
+            "mode": 0,
+            "outputs": [
+              {
+                "links": [
+                  2
+                ],
+                "name": "image",
+                "type": "IMAGE"
+              }
+            ],
+            "properties": {},
+            "size": [
+              100,
+              100
+            ],
+            "type": "Source",
+            "widgets_values": []
+          },
+          {
+            "flags": {},
+            "id": 2,
+            "inputs": [
+              {
+                "link": null,
+                "name": "mode",
+                "type": "COMFY_DYNAMICCOMBO_V3",
+                "widget": {
+                  "name": "mode"
+                }
+              },
+              {
+                "link": null,
+                "name": "mode.steps",
+                "type": "INT",
+                "widget": {
+                  "name": "mode.steps"
+                }
+              },
+              {
+                "link": null,
+                "name": "mode.suffix",
+                "shape": 7,
+                "type": "STRING",
+                "widget": {
+                  "name": "mode.suffix"
+                }
+              },
+              {
+                "link": 2,
+                "name": "tail",
+                "type": "IMAGE"
+              }
+            ],
+            "mode": 0,
+            "outputs": [],
+            "properties": {},
+            "size": [
+              200,
+              100
+            ],
+            "type": "DynamicExample",
+            "widgets_values": [
+              "text",
+              7,
+              "tail"
+            ]
+          }
+        ]
+      },
+      "api": {
+        "1": {
+          "class_type": "Source",
+          "inputs": {}
+        },
+        "2": {
+          "class_type": "DynamicExample",
+          "inputs": {
+            "mode": "text",
+            "mode.steps": 7,
+            "mode.suffix": "tail",
+            "tail": [
+              "1",
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "seq": 3,
+      "op": {
+        "op": "set_widget",
+        "widget": "mode.steps",
+        "value": 11,
+        "node_id": 2,
+        "op_id": "22222222222222222222222222222222",
+        "actor": "agent:thread:turn",
+        "base_version": 2,
+        "stamp": [
+          3,
+          "agent:thread:turn"
+        ]
+      },
+      "update": "AQPWrrvoCwCopJnx0QocAX0LKAEIX19zdGFtcHMfWyJ3aWRnZXQiLCIyIiwiMCIsIm1vZGUuc3RlcHMiXQF1A30DdxFhZ2VudDp0aHJlYWQ6dHVybncgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIoAQlfX2FwcGxpZWQgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIBd0AwNzkyZDc3MjliYmU4NTk4MzUzMGY4NTBiMWZlNWVmZGE1NWRkMDAyNTU2ZTEyNDI2NWY3YTg2MDQzNDZkNjFhA6SZ8dEKARwB1PTozQcBAAGZr52FBgQHBxYOKgEsBA==",
+      "graph": {
+        "links": [
+          [
+            2,
+            1,
+            0,
+            2,
+            3,
+            "IMAGE"
+          ]
+        ],
+        "nodes": [
+          {
+            "flags": {},
+            "id": 1,
+            "inputs": [],
+            "mode": 0,
+            "outputs": [
+              {
+                "links": [
+                  2
+                ],
+                "name": "image",
+                "type": "IMAGE"
+              }
+            ],
+            "properties": {},
+            "size": [
+              100,
+              100
+            ],
+            "type": "Source",
+            "widgets_values": []
+          },
+          {
+            "flags": {},
+            "id": 2,
+            "inputs": [
+              {
+                "link": null,
+                "name": "mode",
+                "type": "COMFY_DYNAMICCOMBO_V3",
+                "widget": {
+                  "name": "mode"
+                }
+              },
+              {
+                "link": null,
+                "name": "mode.steps",
+                "type": "INT",
+                "widget": {
+                  "name": "mode.steps"
+                }
+              },
+              {
+                "link": null,
+                "name": "mode.suffix",
+                "shape": 7,
+                "type": "STRING",
+                "widget": {
+                  "name": "mode.suffix"
+                }
+              },
+              {
+                "link": 2,
+                "name": "tail",
+                "type": "IMAGE"
+              }
+            ],
+            "mode": 0,
+            "outputs": [],
+            "properties": {},
+            "size": [
+              200,
+              100
+            ],
+            "type": "DynamicExample",
+            "widgets_values": [
+              "text",
+              11,
+              "tail"
+            ]
+          }
+        ]
+      },
+      "api": {
+        "1": {
+          "class_type": "Source",
+          "inputs": {}
+        },
+        "2": {
+          "class_type": "DynamicExample",
+          "inputs": {
+            "mode": "text",
+            "mode.steps": 11,
+            "mode.suffix": "tail",
+            "tail": [
+              "1",
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "seq": 4,
+      "op": {
+        "op": "set_widget",
+        "widget": "mode",
+        "value": "image",
+        "node_id": 2,
+        "op_id": "33333333333333333333333333333333",
+        "actor": "agent:thread:turn",
+        "base_version": 3,
+        "stamp": [
+          4,
+          "agent:thread:turn"
+        ]
+      },
+      "update": "AhH3/8zeDQCnpJnx0QoGAAcA9//M3g0AASgA9//M3g0BBG5hbWUBdwRtb2RlKAD3/8zeDQEEdHlwZQF3FUNPTUZZX0RZTkFNSUNDT01CT19WMygA9//M3g0BBGxpbmsBfigA9//M3g0BBndpZGdldAF2AQRuYW1ldwRtb2Rlh/f/zN4NAQEoAPf/zN4NBgRuYW1lAXcKbW9kZS5pbWFnZSgA9//M3g0GBHR5cGUBdwVJTUFHRSgA9//M3g0GBGxpbmsBfof3/8zeDQYBKAD3/8zeDQoEbmFtZQF3BHRhaWwoAPf/zN4NCgR0eXBlAXcFSU1BR0UoAPf/zN4NCgRsaW5rAX0CqKvr3+UJAAF3BWltYWdlqKSZ8dEKHgF1Bn0CfQF9AH0CfQJ3BUlNQUdFqKSZ8dEKHwF2BAd2ZXJzaW9ufQEJYXV0aG9yaXR5dwhpbXBvcnRlZAV0dXBsZXUGfQJ9AX0AfQJ9AncFSU1BR0ULZGVzdGluYXRpb252AwRraW5kdwhjb25jcmV0ZQd0b19zbG90fQIEc2xvdHYDBG5hbWV3BHRhaWwEdHlwZXcFSU1BR0UEbGlua30CA6vr3+UJAKGkmfHRChsBqNT06M0HAQF1A30EdxFhZ2VudDp0aHJlYWQ6dHVybncgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMoAQlfX2FwcGxpZWQgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMBd0A5OGJlOGNiMWY0MTdkNjAyOTA1Njc3MDY3MDAwYTVjN2IwYjUxYjliMDJkNWY1OTU5OTQwZWRmNWFiZjE3MjBkBKSZ8dEKAgYXHgKr69/lCQEAAdT06M0HAQACma+dhQYEBwcWDioBLAQ=",
+      "graph": {
+        "links": [
+          [
+            2,
+            1,
+            0,
+            2,
+            2,
+            "IMAGE"
+          ]
+        ],
+        "nodes": [
+          {
+            "flags": {},
+            "id": 1,
+            "inputs": [],
+            "mode": 0,
+            "outputs": [
+              {
+                "links": [
+                  2
+                ],
+                "name": "image",
+                "type": "IMAGE"
+              }
+            ],
+            "properties": {},
+            "size": [
+              100,
+              100
+            ],
+            "type": "Source",
+            "widgets_values": []
+          },
+          {
+            "flags": {},
+            "id": 2,
+            "inputs": [
+              {
+                "link": null,
+                "name": "mode",
+                "type": "COMFY_DYNAMICCOMBO_V3",
+                "widget": {
+                  "name": "mode"
+                }
+              },
+              {
+                "link": null,
+                "name": "mode.image",
+                "type": "IMAGE"
+              },
+              {
+                "link": 2,
+                "name": "tail",
+                "type": "IMAGE"
+              }
+            ],
+            "mode": 0,
+            "outputs": [],
+            "properties": {},
+            "size": [
+              200,
+              100
+            ],
+            "type": "DynamicExample",
+            "widgets_values": [
+              "image"
+            ]
+          }
+        ]
+      },
+      "api": {
+        "1": {
+          "class_type": "Source",
+          "inputs": {}
+        },
+        "2": {
+          "class_type": "DynamicExample",
+          "inputs": {
+            "mode": "image",
+            "tail": [
+              "1",
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "seq": 5,
+      "op": {
+        "op": "set_widget",
+        "widget": "mode",
+        "value": "text",
+        "node_id": 2,
+        "op_id": "44444444444444444444444444444444",
+        "actor": "agent:thread:turn",
+        "base_version": 4,
+        "stamp": [
+          5,
+          "agent:thread:turn"
+        ]
+      },
+      "update": "AhqF5uuNBACn9//M3g0AAAcAhebrjQQAASgAhebrjQQBBG5hbWUBdwRtb2RlKACF5uuNBAEEdHlwZQF3FUNPTUZZX0RZTkFNSUNDT01CT19WMygAhebrjQQBBGxpbmsBfigAhebrjQQBBndpZGdldAF2AQRuYW1ldwRtb2Rlh4Xm640EAQEoAIXm640EBgRuYW1lAXcKbW9kZS5zdGVwcygAhebrjQQGBHR5cGUBdwNJTlQoAIXm640EBgRsaW5rAX4oAIXm640EBgZ3aWRnZXQBdgEEbmFtZXcKbW9kZS5zdGVwc4eF5uuNBAYBKACF5uuNBAsEbmFtZQF3C21vZGUuc3VmZml4KACF5uuNBAsEdHlwZQF3BlNUUklORygAhebrjQQLBGxpbmsBfigAhebrjQQLBXNoYXBlAX0HKACF5uuNBAsGd2lkZ2V0AXYBBG5hbWV3C21vZGUuc3VmZml4h4Xm640ECwEoAIXm640EEQRuYW1lAXcEdGFpbCgAhebrjQQRBHR5cGUBdwVJTUFHRSgAhebrjQQRBGxpbmsBfQKo/KGEMQABdwR0ZXh0qNauu+gLAAF9C6ikmfHRCh0BdwR0YWlsqPf/zN4NDwF1Bn0CfQF9AH0CfQN3BUlNQUdFqPf/zN4NEAF2BAd2ZXJzaW9ufQEJYXV0aG9yaXR5dwhpbXBvcnRlZAV0dXBsZXUGfQJ9AX0AfQJ9A3cFSU1BR0ULZGVzdGluYXRpb252AwRraW5kdwhjb25jcmV0ZQd0b19zbG90fQMEc2xvdHYDBG5hbWV3BHRhaWwEdHlwZXcFSU1BR0UEbGlua30CA/yhhDEAoff/zN4NDgGoq+vf5QkBAXUDfQV3EWFnZW50OnRocmVhZDp0dXJudyA0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCgBCV9fYXBwbGllZCA0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NAF3QGE0OTAwZGYwYmI1N2IzMGJmNzk2MDA2NmY5ZDI0MDFjODhlODhmM2NkNzQ3NWUwMzJkYmVmYzlkNmI2NTUyYWQH9//M3g0BABHWrrvoCwEAAaSZ8dEKAQYaq+vf5QkBAALU9OjNBwEAApmvnYUGBAcHFg4qASwE/KGEMQEAAQ==",
+      "graph": {
+        "links": [
+          [
+            2,
+            1,
+            0,
+            2,
+            3,
+            "IMAGE"
+          ]
+        ],
+        "nodes": [
+          {
+            "flags": {},
+            "id": 1,
+            "inputs": [],
+            "mode": 0,
+            "outputs": [
+              {
+                "links": [
+                  2
+                ],
+                "name": "image",
+                "type": "IMAGE"
+              }
+            ],
+            "properties": {},
+            "size": [
+              100,
+              100
+            ],
+            "type": "Source",
+            "widgets_values": []
+          },
+          {
+            "flags": {},
+            "id": 2,
+            "inputs": [
+              {
+                "link": null,
+                "name": "mode",
+                "type": "COMFY_DYNAMICCOMBO_V3",
+                "widget": {
+                  "name": "mode"
+                }
+              },
+              {
+                "link": null,
+                "name": "mode.steps",
+                "type": "INT",
+                "widget": {
+                  "name": "mode.steps"
+                }
+              },
+              {
+                "link": null,
+                "name": "mode.suffix",
+                "shape": 7,
+                "type": "STRING",
+                "widget": {
+                  "name": "mode.suffix"
+                }
+              },
+              {
+                "link": 2,
+                "name": "tail",
+                "type": "IMAGE"
+              }
+            ],
+            "mode": 0,
+            "outputs": [],
+            "properties": {},
+            "size": [
+              200,
+              100
+            ],
+            "type": "DynamicExample",
+            "widgets_values": [
+              "text",
+              11,
+              "tail"
+            ]
+          }
+        ]
+      },
+      "api": {
+        "1": {
+          "class_type": "Source",
+          "inputs": {}
+        },
+        "2": {
+          "class_type": "DynamicExample",
+          "inputs": {
+            "mode": "text",
+            "mode.steps": 11,
+            "mode.suffix": "tail",
+            "tail": [
+              "1",
+              0
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

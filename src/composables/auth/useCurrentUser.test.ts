@@ -12,6 +12,8 @@ import {
 } from '@/platform/auth/desktopHost/desktopHostSession'
 
 import { useCurrentUser } from './useCurrentUser'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
+import { useCommandStore } from '@/stores/commandStore'
 
 vi.mock(import('firebase/auth'))
 vi.mock(import('@/composables/useFeatureFlags'))
@@ -21,6 +23,41 @@ let mockAuthState: ReturnType<typeof useAuthStore>
 let mockApiKeyState: ReturnType<typeof useApiKeyAuthStore>
 
 describe('useCurrentUser', () => {
+  it('keeps prepaid sign-out on the original unsaved-workflow command path', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    usePrepaidSessionStore().initialized = true
+    vi.spyOn(useCommandStore(), 'execute').mockResolvedValue(undefined)
+
+    await useCurrentUser().handleSignOut()
+
+    expect(useCommandStore().execute).toHaveBeenCalledExactlyOnceWith(
+      'Comfy.User.SignOut'
+    )
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it('uses the verified backend session in prepaid mode without a Firebase identity', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    vi.mocked(fetch).mockResolvedValue(
+      Response.json({
+        user: {
+          id: 'prepaid-owner',
+          name: 'Native QA',
+          email: 'qa@example.test',
+          emailVerified: true
+        }
+      })
+    )
+    const current = useCurrentUser()
+    await usePrepaidSessionStore().initialize()
+    expect(current.isLoggedIn.value).toBe(true)
+    expect(current.resolvedUserInfo.value).toEqual({ id: 'prepaid-owner' })
+    expect(current.userDisplayName.value).toBe('Native QA')
+    expect(current.needsFirebaseSignIn.value).toBe(false)
+    vi.mocked(fetch).mockResolvedValue(Response.json(null))
+    await usePrepaidSessionStore().refresh()
+    expect(current.isLoggedIn.value).toBe(false)
+    expect(current.resolvedUserInfo.value).toBeNull()
+  })
   beforeEach(() => {
     mockAuthState = useAuthStore()
     mockApiKeyState = useApiKeyAuthStore()

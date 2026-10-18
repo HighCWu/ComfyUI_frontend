@@ -91,6 +91,7 @@ export function startAssetDrag(
           display_name: asset.display_name ?? undefined
         }),
     attachment_ref: getAssetUrlFilename(asset),
+    size_bytes: asset.size,
     ...assetMediaSources(asset)
   }
   dataTransfer.setData(MIME_ASSET_INFO, JSON.stringify(assetInfo))

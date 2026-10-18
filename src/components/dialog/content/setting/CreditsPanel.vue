@@ -87,6 +87,10 @@ watch(balance, (next, previous) => {
 })
 
 const handleCreditsHistoryClick = async () => {
+  if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+    window.location.assign('/billing/')
+    return
+  }
   await manageSubscription()
 }
 

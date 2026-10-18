@@ -1,7 +1,8 @@
-import type {
-  SecretListResponse,
-  SecretProvidersResponse
-} from '@comfyorg/ingest-types'
+import {
+  zSecretListResponse,
+  zSecretProvidersResponse,
+  zSecretResponse
+} from '@comfyorg/ingest-types/zod'
 
 import { parseErrorResponse } from '@/platform/remote/comfyui/errors'
 import { api } from '@/scripts/api'
@@ -15,6 +16,11 @@ import type {
 } from '../types'
 import { SECRET_ERROR_CODES } from '../types'
 
+const secretMetadataResponseSchema = zSecretResponse.strict()
+const secretListResponseSchema = zSecretListResponse
+  .extend({ data: secretMetadataResponseSchema.array() })
+  .strict()
+
 export class SecretsApiError extends Error {
   constructor(
     message: string,
@@ -26,7 +32,7 @@ export class SecretsApiError extends Error {
   }
 }
 
-async function handleResponse<T>(response: Response): Promise<T> {
+async function handleResponse(response: Response): Promise<unknown> {
   if (!response.ok) {
     const errorData = await parseErrorResponse(response)
     const code = SECRET_ERROR_CODES.includes(
@@ -39,16 +45,29 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return response.json()
 }
 
+function invalidSuccessResponse(status: number): SecretsApiError {
+  return new SecretsApiError(
+    'Secret request returned an invalid response',
+    status
+  )
+}
+
 export async function listSecrets(): Promise<SecretMetadata[]> {
   const response = await api.fetchApi('/secrets')
-  const data = await handleResponse<SecretListResponse>(response)
-  return Array.isArray(data.data) ? data.data : []
+  const data = secretListResponseSchema.safeParse(
+    await handleResponse(response)
+  )
+  if (!data.success) throw invalidSuccessResponse(response.status)
+  return data.data.data
 }
 
 export async function listSecretProviders(): Promise<SecretProviderInfo[]> {
   const response = await api.fetchApi('/secrets/providers')
-  const data = await handleResponse<SecretProvidersResponse>(response)
-  return Array.isArray(data.data) ? data.data : []
+  const data = zSecretProvidersResponse.safeParse(
+    await handleResponse(response)
+  )
+  if (!data.success) throw invalidSuccessResponse(response.status)
+  return data.data.data
 }
 
 export async function createSecret(
@@ -59,7 +78,11 @@ export async function createSecret(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
-  return handleResponse<SecretMetadata>(response)
+  const data = secretMetadataResponseSchema.safeParse(
+    await handleResponse(response)
+  )
+  if (!data.success) throw invalidSuccessResponse(response.status)
+  return data.data
 }
 
 export async function updateSecret(
@@ -71,7 +94,11 @@ export async function updateSecret(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
-  return handleResponse<SecretMetadata>(response)
+  const data = secretMetadataResponseSchema.safeParse(
+    await handleResponse(response)
+  )
+  if (!data.success) throw invalidSuccessResponse(response.status)
+  return data.data
 }
 
 export async function deleteSecret(id: string): Promise<void> {
@@ -79,6 +106,6 @@ export async function deleteSecret(id: string): Promise<void> {
     method: 'DELETE'
   })
   if (!response.ok) {
-    await handleResponse<void>(response)
+    await handleResponse(response)
   }
 }

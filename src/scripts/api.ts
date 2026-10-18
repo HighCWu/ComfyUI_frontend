@@ -5,17 +5,34 @@ import type {
   PostAssetsFromWorkflowResponse
 } from '@comfyorg/ingest-types'
 import {
+  zGetAllSettingsResponse,
   zGetEmbeddingsResponse,
   zGetExtensionsResponse,
+  zGetGlobalSubgraphResponse,
+  zGetGlobalSubgraphsResponse,
+  zGetI18nResponse,
+  zGetInternalLogsRawResponse,
+  zGetPromptInfoResponse,
+  zGetSystemStatsResponse,
+  zGetUsersInfoResponse,
+  zGetUserdataResponse,
+  zGetWorkflowTemplatesResponse,
+  zNodeInfo,
+  zPromptResponse,
   zPostAssetsFromWorkflowResponse
 } from '@comfyorg/ingest-types/zod'
 import axios from 'axios'
 import { get } from 'es-toolkit/compat'
 import { trimEnd } from 'es-toolkit'
 import { ref } from 'vue'
+import { z } from 'zod'
 
 import defaultClientFeatureFlags from '@/config/clientFeatureFlags.json' with { type: 'json' }
-import { appendEditorSession } from '@/scripts/editorSessionUrl'
+import {
+  appendEditorSession,
+  editorSessionFromNavigation,
+  updateEditorSessionNavigation
+} from '@/scripts/editorSessionUrl'
 import type { ApiAuthProvider } from '@/platform/auth/apiAuthProvider'
 import { anonymousApiAuthProvider } from '@/platform/auth/apiAuthProvider'
 import {
@@ -31,6 +48,10 @@ import type {
   ModelFile,
   ModelFolderInfo
 } from '@/platform/assets/schemas/assetSchema'
+import {
+  modelFolderInfosSchema,
+  modelFilesResponseSchema
+} from '@/platform/assets/schemas/assetSchema'
 import { useToast } from '@/components/ui/toast/toastStore'
 import { t } from '@/i18n'
 import { isCloud } from '@/platform/distribution/types'
@@ -39,6 +60,7 @@ import { useTelemetry } from '@/platform/telemetry'
 import { reportError } from '@/platform/telemetry/reportError'
 import type { components as ManagerComponents } from '@/workbench/extensions/manager/types/generatedManagerTypes'
 import type {
+  AgentStatusWsMessage,
   AssetDownloadWsMessage,
   AssetExportWsMessage,
   ExecutedWsMessage,
@@ -80,7 +102,6 @@ import type {
   JobDetail,
   JobListItem
 } from '@/platform/remote/comfyui/jobs/jobTypes'
-import type { ComfyNodeDef } from '@/schemas/nodeDefSchema'
 import type { AuthCredential, AuthScheme } from '@/types/authTypes'
 import type { NodeExecutionId } from '@/types/nodeIdentification'
 import {
@@ -91,6 +112,62 @@ import {
 } from '@/platform/remote/comfyui/jobs/fetchJobs'
 
 const SERVER_FEATURE_FLAGS_TIMEOUT_MS = 5_000
+const workflowTemplatesResponseSchema = zGetWorkflowTemplatesResponse.pipe(
+  z.record(z.string(), z.array(z.string()))
+)
+const nodeInfoResponseSchema = z.record(
+  z.string(),
+  zNodeInfo.passthrough().extend({
+    display_name: z.string().nullish(),
+    output: z.array(z.union([z.string(), z.array(z.string())])).optional(),
+    output_is_list: z.array(z.boolean().nullable()).optional(),
+    output_name: z.union([z.array(z.string()), z.string()]).optional(),
+    output_tooltips: z.array(z.string().nullable()).optional()
+  })
+)
+const coreWorkflowTemplatesResponseSchema = z.array(
+  z
+    .object({
+      moduleName: z.string(),
+      templates: z.array(
+        z
+          .object({
+            description: z.string(),
+            mediaSubtype: z.string(),
+            mediaType: z.string(),
+            name: z.string()
+          })
+          .passthrough()
+      ),
+      title: z.string()
+    })
+    .passthrough()
+)
+const logsRawResponseSchema = zGetInternalLogsRawResponse.transform(
+  ({ entries = [], size }) => ({
+    entries: entries.map(({ m = '', t }) => ({
+      m,
+      ...(t === undefined ? {} : { t })
+    })),
+    size: {
+      cols: size?.cols ?? 80,
+      rows: size?.rows ?? 24
+    }
+  })
+)
+const userDataFullInfoResponseSchema = z.array(
+  zGetUserdataResponse.element.extend({
+    modified: z.number(),
+    path: z.string(),
+    size: z.number()
+  })
+)
+const userConfigResponseSchema = zGetUsersInfoResponse
+  .extend({
+    storage: z.literal('server'),
+    users: z.record(z.string(), z.string()).optional()
+  })
+  .passthrough()
 
 interface QueuePromptRequestBody {
   client_id: string
@@ -268,6 +345,7 @@ interface BackendApiCalls {
   progress_text: ProgressTextWsMessage
   progress_state: ProgressStateWsMessage
   feature_flags: FeatureFlagsWsMessage
+  agent_status: AgentStatusWsMessage
   asset_download: AssetDownloadWsMessage
   asset_export: AssetExportWsMessage
 }
@@ -339,6 +417,7 @@ type ComplexApiEvents = keyof NeverNever<ApiEventTypes>
 
 export type GlobalSubgraphData = {
   name: string
+  source: string
   info: {
     node_pack: string
     category?: string
@@ -538,6 +617,8 @@ export class ComfyApi extends EventTarget {
 
   constructor() {
     super()
+    const editorSession = editorSessionFromNavigation(location.search)
+    if (isCloud && editorSession) window.name = editorSession
     this.user = ''
     this.api_host = location.host
     this.api_base = isCloud
@@ -562,7 +643,7 @@ export class ComfyApi extends EventTarget {
     const url = route.startsWith('/api')
       ? this.api_base + route
       : this.api_base + '/api' + route
-    return appendEditorSession(url, window.name)
+    return route ? appendEditorSession(url, window.name) : url
   }
 
   fileURL(route: string): string {
@@ -890,14 +971,15 @@ export class ComfyApi extends EventTarget {
     return super.dispatchEvent(event)
   }
 
-  /**
-   * Poll status  for colab and other things that don't support websockets.
-   */
   private _pollQueue() {
-    setInterval(async () => {
+    const poller = setInterval(async () => {
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        clearInterval(poller)
+        return
+      }
       try {
         const resp = await this.fetchApi('/prompt')
-        const status = (await resp.json()) as StatusWsMessageStatus
+        const status = zGetPromptInfoResponse.parse(await resp.json())
         this.dispatchCustomEvent('status', status)
       } catch {
         this.dispatchCustomEvent('status', null)
@@ -1145,6 +1227,13 @@ export class ComfyApi extends EventTarget {
               this.serverFeatureFlagsSettled.value = true
               this.dispatchCustomEvent('feature_flags', msg.data)
               break
+            case 'agent_status':
+              this.serverFeatureFlags.value = {
+                ...this.serverFeatureFlags.value,
+                agent: msg.data
+              }
+              this.dispatchCustomEvent('agent_status', msg.data)
+              break
             default:
               if (this._registered.has(msg.type)) {
                 // Fallback for custom types - calls super direct.
@@ -1177,12 +1266,12 @@ export class ComfyApi extends EventTarget {
    * events over a handshake that was authenticated as that account.
    */
   async resetSocket(): Promise<void> {
-    // Clear every handshake identity source: createSocket() reads the client id
-    // from window.name (mirrored in session storage), not this.clientId, so the
-    // next connect must not inherit the prior account's id.
     this.clientId = undefined
     window.name = ''
+    updateEditorSessionNavigation('')
     sessionStorage.removeItem('clientId')
+    const { agent: _previousAgent, ...features } = this.serverFeatureFlags.value
+    this.serverFeatureFlags.value = features
     await this.replaceSocket()
   }
 
@@ -1232,7 +1321,7 @@ export class ComfyApi extends EventTarget {
     [customNodesName: string]: string[]
   }> {
     const res = await this.fetchApi('/workflow_templates')
-    return await res.json()
+    return workflowTemplatesResponseSchema.parse(await res.json())
   }
 
   /**
@@ -1247,7 +1336,9 @@ export class ComfyApi extends EventTarget {
     try {
       const res = await axios.get(this.fileURL(`/templates/${fileName}`))
       const contentType = String(res.headers['content-type'] ?? '')
-      return contentType.includes('application/json') ? res.data : []
+      return contentType.includes('application/json')
+        ? coreWorkflowTemplatesResponseSchema.parse(res.data)
+        : []
     } catch (error) {
       // Fallback to default English version if localized version doesn't exist
       if (locale && locale !== 'en') {
@@ -1277,9 +1368,9 @@ export class ComfyApi extends EventTarget {
    * Loads node object definitions for the graph
    * @returns The node definitions
    */
-  async getNodeDefs(): Promise<Record<string, ComfyNodeDef>> {
+  async getNodeDefs(): Promise<z.infer<typeof nodeInfoResponseSchema>> {
     const resp = await this.fetchApi('/object_info', { cache: 'no-store' })
-    return await resp.json()
+    return nodeInfoResponseSchema.parse(await resp.json())
   }
 
   /**
@@ -1345,7 +1436,9 @@ export class ComfyApi extends EventTarget {
       throw new PromptExecutionError(errorResponse, res.status)
     }
 
-    return await res.json()
+    const response: unknown = await res.json()
+    zPromptResponse.parse(response)
+    return response as PromptResponse
   }
 
   /**
@@ -1382,9 +1475,9 @@ export class ComfyApi extends EventTarget {
       return []
     }
     const folderBlacklist = ['configs', 'custom_nodes']
-    return (await res.json()).filter(
-      (folder: ModelFolderInfo) => !folderBlacklist.includes(folder.name)
-    )
+    return modelFolderInfosSchema
+      .parse(await res.json())
+      .filter((folder) => !folderBlacklist.includes(folder.name))
   }
 
   /**
@@ -1393,11 +1486,13 @@ export class ComfyApi extends EventTarget {
    * @returns The list of model filenames within the specified folder
    */
   async getModels(folder: string): Promise<ModelFile[]> {
-    const res = await this.fetchApi(`/experiment/models/${folder}`)
+    const res = await this.fetchApi(
+      `/experiment/models/${encodeURIComponent(folder)}`
+    )
     if (res.status === 404) {
       return []
     }
-    return await res.json()
+    return modelFilesResponseSchema.parse(await res.json())
   }
 
   /**
@@ -1408,24 +1503,32 @@ export class ComfyApi extends EventTarget {
    */
   async viewMetadata(folder: string, model: string) {
     const res = await this.fetchApi(
-      `/view_metadata/${folder}?filename=${encodeURIComponent(model)}`
+      `/view_metadata/${encodeURIComponent(folder)}?filename=${encodeURIComponent(model)}`
     )
-    const rawResponse = await res.text()
-    if (!rawResponse) {
+    if (!res.ok) {
+      reportError(new Error('Model metadata request failed'), {
+        errorType: 'error_loading_model_metadata',
+        surface: 'assets',
+        tags: { status: res.status }
+      })
       return null
     }
     try {
-      return JSON.parse(rawResponse)
-    } catch (error) {
-      console.error(
-        'Error viewing metadata',
-        res.status,
-        res.statusText,
-        rawResponse,
-        error
-      )
+      const raw: unknown = await res.json()
+      const parsed = z.record(z.string(), z.string().nullable()).safeParse(raw)
+      if (parsed.success) return parsed.data
+    } catch {
+      reportError(new Error('Model metadata response could not be read'), {
+        errorType: 'error_loading_model_metadata',
+        surface: 'assets'
+      })
       return null
     }
+    reportError(new Error('Model metadata response has an invalid shape'), {
+      errorType: 'error_loading_model_metadata',
+      surface: 'assets'
+    })
+    return null
   }
 
   /**
@@ -1503,7 +1606,9 @@ export class ComfyApi extends EventTarget {
    */
   async getSystemStats(): Promise<SystemStats> {
     const res = await this.fetchApi('/system_stats')
-    return await res.json()
+    const response: unknown = await res.json()
+    zGetSystemStatsResponse.parse(response)
+    return response as SystemStats
   }
 
   /**
@@ -1604,7 +1709,8 @@ export class ComfyApi extends EventTarget {
    * Gets user configuration data and where data should be stored
    */
   async getUserConfig(): Promise<UserConfigResponse> {
-    return (await this.fetchApi('/users')).json()
+    const response = await this.fetchApi('/users')
+    return userConfigResponseSchema.parse(await response.json())
   }
 
   /**
@@ -1641,7 +1747,7 @@ export class ComfyApi extends EventTarget {
         `Failed to load settings: 401 ${resp.statusText || 'Unauthorized'}`
       )
     }
-    return await resp.json()
+    return zGetAllSettingsResponse.parse(await resp.json()) as Settings
   }
 
   /**
@@ -1742,12 +1848,10 @@ export class ComfyApi extends EventTarget {
     return resp
   }
 
-  /**
-   * Deletes a user data file for the current user
-   * @param { string } file The name of the userdata file to delete
-   */
-  async deleteUserData(file: string) {
+  /** Deletes a user data file for the current user. */
+  async deleteUserData(file: string, options?: Pick<RequestInit, 'headers'>) {
     const resp = await this.fetchApi(`/userdata/${encodeURIComponent(file)}`, {
+      ...options,
       method: 'DELETE'
     })
     return resp
@@ -1764,7 +1868,7 @@ export class ComfyApi extends EventTarget {
     options = { overwrite: false }
   ) {
     const resp = await this.fetchApi(
-      `/userdata/${encodeURIComponent(source)}/move/${encodeURIComponent(dest)}?overwrite=${options.overwrite}`,
+      `/userdata/${encodeURIComponent(source)}/move/${encodeURIComponent(dest)}?overwrite=${options.overwrite}&full_info=true`,
       {
         method: 'POST'
       }
@@ -1783,7 +1887,7 @@ export class ComfyApi extends EventTarget {
         `Error getting user data list '${trimmedDir}': ${resp.status} ${resp.statusText}`
       )
     }
-    return resp.json()
+    return userDataFullInfoResponseSchema.parse(await resp.json())
   }
 
   async getGlobalSubgraphData(id: string): Promise<string> {
@@ -1793,22 +1897,18 @@ export class ComfyApi extends EventTarget {
         `Failed to fetch global subgraph '${id}': ${resp.status} ${resp.statusText}`
       )
     }
-    const subgraph: unknown = await resp.json()
-    if (
-      typeof subgraph !== 'object' ||
-      subgraph === null ||
-      !('data' in subgraph) ||
-      typeof subgraph.data !== 'string' ||
-      !subgraph.data
-    ) {
+    const subgraph = zGetGlobalSubgraphResponse.safeParse(await resp.json())
+    if (!subgraph.success || !subgraph.data.data) {
       throw new Error(`Global subgraph '${id}' returned empty data`)
     }
-    return subgraph.data
+    return subgraph.data.data
   }
   async getGlobalSubgraphs(): Promise<Record<string, GlobalSubgraphData>> {
     const resp = await api.fetchApi('/global_subgraphs')
     if (resp.status !== 200) return {}
-    const subgraphs: Record<string, GlobalSubgraphData> = await resp.json()
+    const raw: unknown = await resp.json()
+    zGetGlobalSubgraphsResponse.parse(raw)
+    const subgraphs = raw as Record<string, GlobalSubgraphData>
     for (const [k, v] of Object.entries(subgraphs)) {
       if (!v.data) v.data = this.getGlobalSubgraphData(k)
     }
@@ -1826,7 +1926,7 @@ export class ComfyApi extends EventTarget {
     const url = isCloud
       ? this.apiURL('/logs/raw')
       : this.internalURL('/logs/raw')
-    return (await axios.get(url)).data
+    return logsRawResponseSchema.parse((await axios.get(url)).data)
   }
 
   async subscribeLogs(enabled: boolean): Promise<void> {
@@ -1892,7 +1992,7 @@ export class ComfyApi extends EventTarget {
    * @returns The custom nodes i18n data
    */
   async getCustomNodesI18n(): Promise<GetI18nResponse> {
-    return (await axios.get(this.apiURL('/i18n'))).data
+    return zGetI18nResponse.parse((await axios.get(this.apiURL('/i18n'))).data)
   }
 
   /**

@@ -6,11 +6,13 @@
  * Jobs API provides a memory-optimized alternative to history API.
  */
 
-import { zJobEntry } from '@comfyorg/ingest-types/zod'
+import { zJobCancelResponse, zJobEntry } from '@comfyorg/ingest-types/zod'
 import { z } from 'zod'
 
 import { resultItemType } from '@/schemas/resultItemTypeSchema'
 import { zTaskOutput } from '@/platform/remote/comfyui/execution/types'
+
+export { zJobCancelResponse }
 
 const zJobStatus = z.enum([
   'pending',

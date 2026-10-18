@@ -1,6 +1,7 @@
 import { setTelemetryRegistry } from '@/platform/telemetry'
 import { TelemetryRegistry } from '@/platform/telemetry/TelemetryRegistry'
 import { useAuthStore } from '@/stores/authStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
 import type { BillingCapabilitiesResponse } from '@comfyorg/ingest-types'
 import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios'
@@ -189,6 +190,86 @@ describe('useBillingCapabilities', () => {
 
   afterEach(() => scope.stop())
 
+  it('uses the prepaid account identity and clears capabilities on logout', async () => {
+    scope.stop()
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const session = usePrepaidSessionStore()
+    session.user = {
+      id: 'prepaid-user',
+      name: 'Test',
+      email: 'test@example.test',
+      emailVerified: true
+    }
+    Object.assign(useAuthStore(), { userId: undefined, currentUser: null })
+    vi.mocked(workspaceApi.getBillingCapabilities).mockResolvedValue({
+      ...capabilitiesResponse(true),
+      resolved_for: { user_id: 'prepaid-user', workspace_id: 'workspace-1' }
+    })
+    scope = effectScope()
+    billingCapabilities = scope.run(() => useBillingCapabilities())!
+
+    await billingCapabilities.initialize()
+
+    expect(billingCapabilities.hasResolvedCapabilities.value).toBe(true)
+    expect(billingCapabilities.canTopUp.value).toBe(true)
+    session.user = null
+    await nextTick()
+    expect(billingCapabilities.hasResolvedCapabilities.value).toBe(false)
+    expect(billingCapabilities.canTopUp.value).toBe(false)
+  })
+
+  it.for(['denied', 'unavailable', 'foreign-account'])(
+    'keeps prepaid top-up closed for %s even for a workspace owner',
+    async (outcome) => {
+      scope.stop()
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      usePrepaidSessionStore().user = {
+        id: 'prepaid-user',
+        name: 'Test',
+        email: 'test@example.test',
+        emailVerified: true
+      }
+      const response = capabilitiesResponse(outcome !== 'denied')
+      response.resolved_for.user_id =
+        outcome === 'foreign-account' ? 'other-user' : 'prepaid-user'
+      vi.mocked(workspaceApi.getBillingCapabilities).mockImplementation(() =>
+        outcome === 'unavailable'
+          ? Promise.reject(new Error('offline'))
+          : Promise.resolve(response)
+      )
+      scope = effectScope()
+      billingCapabilities = scope.run(() => useBillingCapabilities())!
+
+      await billingCapabilities.initialize()
+
+      expect(billingCapabilities.canTopUp.value).toBe(false)
+      expect(billingCapabilities.hasResolvedCapabilities.value).toBe(
+        outcome === 'denied'
+      )
+    }
+  )
+
+  it('renders the prepaid server self-serve subscription decision as received', async () => {
+    scope.stop()
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    usePrepaidSessionStore().user = {
+      id: 'prepaid-user',
+      name: 'Test',
+      email: 'test@example.test',
+      emailVerified: true
+    }
+    const response = capabilitiesResponse(true)
+    response.capabilities.can_subscribe_self_serve = false
+    response.resolved_for.user_id = 'prepaid-user'
+    vi.mocked(workspaceApi.getBillingCapabilities).mockResolvedValue(response)
+    scope = effectScope()
+    billingCapabilities = scope.run(() => useBillingCapabilities())!
+
+    await billingCapabilities.initialize()
+
+    expect(billingCapabilities.canSubscribeSelfServe.value).toBe(false)
+  })
+
   it.for([
     [
       'allowed',
@@ -349,7 +430,7 @@ describe('useBillingCapabilities', () => {
     )
   })
 
-  it('keeps top-up available for owners when the endpoint is unavailable', async () => {
+  it('fails top-up closed for owners when the endpoint is unavailable', async () => {
     vi.mocked(workspaceApi.getBillingCapabilities).mockRejectedValueOnce(
       new Error('unavailable')
     )
@@ -357,7 +438,7 @@ describe('useBillingCapabilities', () => {
     await billingCapabilities.initialize()
 
     expect(billingCapabilities.hasResolvedCapabilities.value).toBe(false)
-    expect(billingCapabilities.canTopUp.value).toBe(true)
+    expect(billingCapabilities.canTopUp.value).toBe(false)
     expect(billingCapabilities.canSubscribeSelfServe.value).toBe(false)
     expect(billingCapabilities.canCancel.value).toBe(false)
     expect(billingCapabilities.canReactivate.value).toBe(false)
@@ -433,7 +514,7 @@ describe('useBillingCapabilities', () => {
     await billingCapabilities.initialize()
 
     expect(workspaceApi.getBillingCapabilities).toHaveBeenCalledOnce()
-    expect(billingCapabilities.canTopUp.value).toBe(true)
+    expect(billingCapabilities.canTopUp.value).toBe(false)
     expect(billingCapabilities.canSubscribeSelfServe.value).toBe(false)
     expect(billingCapabilities.canCancel.value).toBe(false)
     expect(billingCapabilities.canReactivate.value).toBe(false)
@@ -469,12 +550,12 @@ describe('useBillingCapabilities', () => {
     expect(billingCapabilities.canSubscribeSelfServe.value).toBe(false)
   })
 
-  it('keeps local top-up available without calling the Cloud endpoint', async () => {
+  it('fails local top-up closed without a capability provider', async () => {
     mockIsCloud.value = false
 
     await billingCapabilities.initialize()
 
-    expect(billingCapabilities.canTopUp.value).toBe(true)
+    expect(billingCapabilities.canTopUp.value).toBe(false)
     expect(billingCapabilities.canSubscribeSelfServe.value).toBe(false)
     expect(workspaceApi.getBillingCapabilities).not.toHaveBeenCalled()
   })
@@ -1020,7 +1101,7 @@ describe('useBillingCapabilities', () => {
     expect(mockReportError).toHaveBeenCalledOnce()
   })
 
-  it('keeps the owner top-up fallback readable while a retry is in flight', async () => {
+  it('keeps owner top-up closed while the first capability read retries', async () => {
     vi.spyOn(Math, 'random').mockReturnValue(0)
     let resolveRetry!: (value: BillingCapabilitiesResponse) => void
     vi.mocked(workspaceApi.getBillingCapabilities)
@@ -1033,11 +1114,11 @@ describe('useBillingCapabilities', () => {
       )
 
     await billingCapabilities.initialize()
-    expect(billingCapabilities.canTopUp.value).toBe(true)
+    expect(billingCapabilities.canTopUp.value).toBe(false)
 
     await vi.advanceTimersByTimeAsync(31_000)
     expect(workspaceApi.getBillingCapabilities).toHaveBeenCalledTimes(2)
-    expect(billingCapabilities.canTopUp.value).toBe(true)
+    expect(billingCapabilities.canTopUp.value).toBe(false)
     expect(billingCapabilities.isReady.value).toBe(true)
 
     resolveRetry(capabilitiesResponse(true))
@@ -1142,7 +1223,7 @@ describe('useBillingCapabilities on the SDK rail', () => {
     {
       failure: 'REQUEST_FAILED at 503',
       result: { status: 'error', code: 'REQUEST_FAILED', httpStatus: 503 },
-      canTopUp: true,
+      canTopUp: false,
       authoritative: false,
       reads: 2
     }

@@ -194,7 +194,7 @@ import { applyPromotedWidgetControl } from '@/core/graph/subgraph/promotedWidget
 import { ComfyUI } from './ui'
 import { $el } from './ui/utils'
 import {
-  isWorkspaceEditorIframe,
+  isManagedEditorSession,
   PromptCapacityRetryCancelledError,
   retryPromptWhenCapacityPreparing
 } from './promptCapacityRetry'
@@ -1959,7 +1959,7 @@ export class ComfyApp implements IComfyApp {
                   previewMethod
                 }),
               {
-                enabled: isWorkspaceEditorIframe(),
+                enabled: isManagedEditorSession(),
                 signal: capacityRetryController.signal,
                 onRetry: () =>
                   this.showPoolCapacityRetryToast(capacityRetryController)

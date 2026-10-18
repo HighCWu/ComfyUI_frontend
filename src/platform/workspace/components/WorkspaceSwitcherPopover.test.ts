@@ -110,6 +110,25 @@ function renderComponent(
 }
 
 describe('WorkspaceSwitcherPopover', () => {
+  it('hides unsupported creation without inventing organization or quota restrictions', () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    Object.assign(useTeamWorkspaceStore(), { canCreateWorkspace: false })
+    renderComponent()
+
+    expect(
+      screen.queryByText('Create a team workspace')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(
+        "Your organization manages your workspaces, so you can't create one."
+      )
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(
+        'You can only own 10 workspaces. Delete one to create a new one.'
+      )
+    ).not.toBeInTheDocument()
+  })
   it('shows the credits-scope caption off cloud', () => {
     distributionMocks.isCloud = false
     renderComponent()

@@ -47,6 +47,16 @@ function renderComponent(promptMounted = computed(() => false)) {
 }
 
 describe('TopbarSubscribeButton', () => {
+  it('never exposes the upstream subscription entry in prepaid mode', () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    mockIsCloud.value = true
+    renderComponent()
+
+    expect(
+      screen.queryByTestId('topbar-subscribe-button')
+    ).not.toBeInTheDocument()
+  })
+
   it('renders on cloud when isFreeTier is true', () => {
     mockIsCloud.value = true
     renderComponent()

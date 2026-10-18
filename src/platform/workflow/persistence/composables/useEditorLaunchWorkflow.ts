@@ -1,16 +1,16 @@
 import { api } from '@/scripts/api'
 import { app } from '@/scripts/app'
-import type {
-  ComfyApiWorkflow,
-  ComfyWorkflowJSON
-} from '@/platform/workflow/validation/schemas/workflowSchema'
+import { z } from 'zod'
+import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 
-interface EditorLaunchResponse {
-  launch: {
-    label: string | null
-    workflow: ComfyWorkflowJSON | ComfyApiWorkflow
-  } | null
-}
+const editorLaunchResponseSchema = z.object({
+  launch: z
+    .object({
+      label: z.string().nullable(),
+      workflow: z.record(z.string(), z.unknown())
+    })
+    .nullable()
+})
 
 export function useEditorLaunchWorkflow() {
   async function loadEditorLaunchWorkflow(): Promise<boolean> {
@@ -20,20 +20,21 @@ export function useEditorLaunchWorkflow() {
       { cache: 'no-store' }
     )
     if (!response.ok) return false
-    const payload = (await response.json()) as EditorLaunchResponse
-    if (!payload.launch) return false
-    if (app.isApiJson(payload.launch.workflow)) {
-      app.loadApiJson(
-        payload.launch.workflow,
-        payload.launch.label ?? 'Launch workflow'
+    const payload = editorLaunchResponseSchema.safeParse(await response.json())
+    if (!payload.success) return false
+    if (!payload.data.launch) return false
+    if (app.isApiJson(payload.data.launch.workflow)) {
+      await app.loadApiJson(
+        payload.data.launch.workflow,
+        payload.data.launch.label ?? 'Launch workflow'
       )
       return true
     }
     await app.loadGraphData(
-      payload.launch.workflow,
+      payload.data.launch.workflow as ComfyWorkflowJSON,
       true,
       true,
-      payload.launch.label ?? 'Launch workflow'
+      payload.data.launch.label ?? 'Launch workflow'
     )
     return true
   }

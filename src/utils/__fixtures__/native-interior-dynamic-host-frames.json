@@ -1,0 +1,989 @@
+{
+  "catalogue": {
+    "image": "ghcr.io/highcwu/comfy-complete-pod:dddddddddddddddddddddddddddddddddddddddd",
+    "types": {
+      "Source": {
+        "widget_order": [],
+        "execution_output": false,
+        "execution_widgets": [],
+        "execution_inputs": {},
+        "node_template": {
+          "type": "Source",
+          "size": [
+            100,
+            100
+          ],
+          "flags": {},
+          "mode": 0,
+          "properties": {},
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "image",
+              "type": "IMAGE",
+              "links": null
+            }
+          ],
+          "widgets_values": []
+        }
+      },
+      "DynamicExample": {
+        "widget_order": [
+          "mode",
+          "mode.steps",
+          "mode.suffix"
+        ],
+        "execution_output": true,
+        "execution_widgets": [
+          {
+            "name": "mode",
+            "serialize": true,
+            "serializer": "value",
+            "encoding": "auto"
+          }
+        ],
+        "execution_dynamic_selection": {
+          "mode": "image"
+        },
+        "execution_inputs": {
+          "mode": {
+            "required": true,
+            "type": "COMBO",
+            "choices": [
+              "image"
+            ]
+          },
+          "mode.image": {
+            "required": true,
+            "type": "IMAGE"
+          },
+          "tail": {
+            "required": true,
+            "type": "IMAGE"
+          }
+        },
+        "execution_variants": [
+          {
+            "node_template": {
+              "type": "DynamicExample",
+              "size": [
+                200,
+                100
+              ],
+              "flags": {},
+              "mode": 0,
+              "properties": {},
+              "inputs": [
+                {
+                  "name": "mode",
+                  "type": "COMFY_DYNAMICCOMBO_V3",
+                  "link": null,
+                  "widget": {
+                    "name": "mode"
+                  }
+                },
+                {
+                  "name": "mode.steps",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "mode.steps"
+                  }
+                },
+                {
+                  "name": "mode.suffix",
+                  "type": "STRING",
+                  "link": null,
+                  "shape": 7,
+                  "widget": {
+                    "name": "mode.suffix"
+                  }
+                },
+                {
+                  "name": "tail",
+                  "type": "IMAGE",
+                  "link": null
+                }
+              ],
+              "outputs": [],
+              "widgets_values": [
+                "text",
+                7,
+                "tail"
+              ]
+            },
+            "execution_widgets": [
+              {
+                "name": "mode",
+                "serialize": true,
+                "serializer": "value",
+                "encoding": "auto"
+              },
+              {
+                "name": "mode.steps",
+                "serialize": true,
+                "serializer": "value",
+                "encoding": "auto"
+              },
+              {
+                "name": "mode.suffix",
+                "serialize": true,
+                "serializer": "value",
+                "encoding": "auto"
+              }
+            ],
+            "execution_dynamic_selection": {
+              "mode": "text"
+            },
+            "execution_inputs": {
+              "mode": {
+                "required": true,
+                "type": "COMBO",
+                "choices": [
+                  "text"
+                ]
+              },
+              "mode.steps": {
+                "required": true,
+                "type": "INT",
+                "min": 1,
+                "max": 30
+              },
+              "mode.suffix": {
+                "required": false,
+                "type": "STRING"
+              },
+              "tail": {
+                "required": true,
+                "type": "IMAGE"
+              }
+            },
+            "execution_output": true
+          }
+        ],
+        "node_template": {
+          "type": "DynamicExample",
+          "size": [
+            200,
+            100
+          ],
+          "flags": {},
+          "mode": 0,
+          "properties": {},
+          "inputs": [
+            {
+              "name": "mode",
+              "type": "COMFY_DYNAMICCOMBO_V3",
+              "link": null,
+              "widget": {
+                "name": "mode"
+              }
+            },
+            {
+              "name": "mode.image",
+              "type": "IMAGE",
+              "link": null
+            },
+            {
+              "name": "tail",
+              "type": "IMAGE",
+              "link": null
+            }
+          ],
+          "outputs": [],
+          "widgets_values": [
+            "image"
+          ]
+        },
+        "dynamic_combos": {
+          "mode": {
+            "default": "text",
+            "options": {
+              "text": {
+                "widgets": [
+                  "mode.steps",
+                  "mode.suffix"
+                ],
+                "defaults": {
+                  "mode.steps": 7,
+                  "mode.suffix": "tail"
+                }
+              },
+              "image": {
+                "widgets": [],
+                "defaults": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "revision": "baa7dee9a0295fab98ad7f6d8207a7d0e498556d2cb1bda9c147641c0f4031ce"
+  },
+  "initialGraph": {
+    "nodes": [
+      {
+        "id": 10,
+        "type": "11111111-1111-4111-8111-111111111111",
+        "mode": 0,
+        "inputs": [],
+        "outputs": [],
+        "widgets_values": []
+      }
+    ],
+    "links": [],
+    "definitions": {
+      "subgraphs": [
+        {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Dynamic",
+          "version": 1,
+          "revision": 0,
+          "config": {},
+          "groups": [],
+          "state": {
+            "lastNodeId": 2,
+            "lastLinkId": 2,
+            "lastGroupId": 0,
+            "lastRerouteId": 0
+          },
+          "inputNode": {
+            "id": -10,
+            "bounding": [
+              0,
+              0,
+              100,
+              100
+            ],
+            "pinned": false
+          },
+          "outputNode": {
+            "id": -20,
+            "bounding": [
+              500,
+              0,
+              100,
+              100
+            ],
+            "pinned": false
+          },
+          "inputs": [],
+          "outputs": [],
+          "nodes": [
+            {
+              "type": "Source",
+              "size": [
+                100,
+                100
+              ],
+              "mode": 0,
+              "flags": {},
+              "properties": {},
+              "inputs": [],
+              "outputs": [
+                {
+                  "name": "image",
+                  "type": "IMAGE",
+                  "links": [
+                    1,
+                    2
+                  ]
+                }
+              ],
+              "widgets_values": [],
+              "id": 1
+            },
+            {
+              "type": "DynamicExample",
+              "size": [
+                200,
+                100
+              ],
+              "mode": 0,
+              "flags": {},
+              "properties": {},
+              "inputs": [
+                {
+                  "name": "mode",
+                  "type": "COMFY_DYNAMICCOMBO_V3",
+                  "widget": {
+                    "name": "mode"
+                  },
+                  "link": null
+                },
+                {
+                  "name": "mode.image",
+                  "type": "IMAGE",
+                  "link": 1
+                },
+                {
+                  "name": "tail",
+                  "type": "IMAGE",
+                  "link": 2
+                }
+              ],
+              "outputs": [],
+              "widgets_values": [
+                "image"
+              ],
+              "id": 2
+            }
+          ],
+          "links": [
+            {
+              "id": 1,
+              "origin_id": 1,
+              "origin_slot": 0,
+              "target_id": 2,
+              "target_slot": 1,
+              "type": "IMAGE"
+            },
+            {
+              "id": 2,
+              "origin_id": 1,
+              "origin_slot": 0,
+              "target_id": 2,
+              "target_slot": 2,
+              "type": "IMAGE"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "initialSnapshot": "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",
+  "frames": [
+    {
+      "seq": 2,
+      "op": {
+        "op": "set_widget",
+        "widget": "mode",
+        "value": "text",
+        "node_id": 2,
+        "op_id": "11111111111111111111111111111111",
+        "actor": "agent:thread:turn",
+        "base_version": 1,
+        "stamp": [
+          2,
+          "agent:thread:turn"
+        ],
+        "path": [
+          10,
+          2
+        ],
+        "inner_widget": "mode"
+      },
+      "update": "ASTJlbrbDwCngIKozAIVAAcAyZW62w8AAScAyZW62w8BBWxpbmtzAAgAyZW62w8CAX0CKADJlbrbDwEEbmFtZQF3BWltYWdlKADJlbrbDwEEdHlwZQF3BUlNQUdFp4CCqMwCMwCngIKozAIkAAcAyZW62w8HASgAyZW62w8IBG5hbWUBdwRtb2RlKADJlbrbDwgEdHlwZQF3FUNPTUZZX0RZTkFNSUNDT01CT19WMygAyZW62w8IBGxpbmsBfigAyZW62w8IBndpZGdldAF2AQRuYW1ldwRtb2Rlh8mVutsPCAEoAMmVutsPDQRuYW1lAXcKbW9kZS5zdGVwcygAyZW62w8NBHR5cGUBdwNJTlQoAMmVutsPDQRsaW5rAX4oAMmVutsPDQZ3aWRnZXQBdgEEbmFtZXcKbW9kZS5zdGVwc4fJlbrbDw0BKADJlbrbDxIEbmFtZQF3C21vZGUuc3VmZml4KADJlbrbDxIEdHlwZQF3BlNUUklORygAyZW62w8SBGxpbmsBfigAyZW62w8SBndpZGdldAF2AQRuYW1ldwttb2RlLnN1ZmZpeCgAyZW62w8SBXNoYXBlAX0Hh8mVutsPEgEoAMmVutsPGARuYW1lAXcEdGFpbCgAyZW62w8YBHR5cGUBdwVJTUFHRSgAyZW62w8YBGxpbmsBfQKogIKozAI3AXcEdGV4dCgAgIKozAI2Cm1vZGUuc3RlcHMBfQcoAICCqMwCNgttb2RlLnN1ZmZpeAF3BHRhaWyogIKozAI7AXYGAmlkfQIJb3JpZ2luX2lkfQELb3JpZ2luX3Nsb3R9AAl0YXJnZXRfaWR9Agt0YXJnZXRfc2xvdH0DBHR5cGV3BUlNQUdFqICCqMwCBAF1AKiAgqjMAj0BdQF3ATIoAQhfX3N0YW1wc0JbIndpZGdldCIsWyIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCIyIl0sIjAiLCJtb2RlIl0BdQN9AncRYWdlbnQ6dGhyZWFkOnR1cm53IDExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExKAEJX19hcHBsaWVkIDExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExAXdANzM5MzExZmFmODM0YzE0MjEzZjc4NGZjOTlmNzQ3ZGJiNjA3NWE1YTQwOWYyZDMxNmVjZmI3ODZkMjVkOGYxMgGAgqjMAgcEARUHJA4zATcBOgI9AQ==",
+      "graph": {
+        "definitions": {
+          "subgraphs": [
+            {
+              "config": {},
+              "groups": [],
+              "id": "11111111-1111-4111-8111-111111111111",
+              "inputNode": {
+                "id": -10
+              },
+              "inputs": [],
+              "links": [
+                {
+                  "id": 2,
+                  "origin_id": 1,
+                  "origin_slot": 0,
+                  "target_id": 2,
+                  "target_slot": 3,
+                  "type": "IMAGE"
+                }
+              ],
+              "name": "Dynamic",
+              "nodes": [
+                {
+                  "flags": {},
+                  "id": 1,
+                  "inputs": [],
+                  "mode": 0,
+                  "outputs": [
+                    {
+                      "links": [
+                        2
+                      ],
+                      "name": "image",
+                      "type": "IMAGE"
+                    }
+                  ],
+                  "properties": {},
+                  "size": [
+                    100,
+                    100
+                  ],
+                  "type": "Source",
+                  "widgets_values": []
+                },
+                {
+                  "flags": {},
+                  "id": 2,
+                  "inputs": [
+                    {
+                      "link": null,
+                      "name": "mode",
+                      "type": "COMFY_DYNAMICCOMBO_V3",
+                      "widget": {
+                        "name": "mode"
+                      }
+                    },
+                    {
+                      "link": null,
+                      "name": "mode.steps",
+                      "type": "INT",
+                      "widget": {
+                        "name": "mode.steps"
+                      }
+                    },
+                    {
+                      "link": null,
+                      "name": "mode.suffix",
+                      "shape": 7,
+                      "type": "STRING",
+                      "widget": {
+                        "name": "mode.suffix"
+                      }
+                    },
+                    {
+                      "link": 2,
+                      "name": "tail",
+                      "type": "IMAGE"
+                    }
+                  ],
+                  "mode": 0,
+                  "outputs": [],
+                  "properties": {},
+                  "size": [
+                    200,
+                    100
+                  ],
+                  "type": "DynamicExample",
+                  "widgets_values": [
+                    "text",
+                    7,
+                    "tail"
+                  ]
+                }
+              ],
+              "outputNode": {
+                "id": -20
+              },
+              "outputs": [],
+              "revision": 0,
+              "state": {
+                "lastGroupId": 0,
+                "lastLinkId": 2,
+                "lastNodeId": 2,
+                "lastRerouteId": 0
+              },
+              "version": 1
+            }
+          ]
+        },
+        "links": [],
+        "nodes": [
+          {
+            "id": 10,
+            "inputs": [],
+            "mode": 0,
+            "outputs": [],
+            "type": "11111111-1111-4111-8111-111111111111",
+            "widgets_values": []
+          }
+        ]
+      },
+      "api": {
+        "10:1": {
+          "class_type": "Source",
+          "inputs": {}
+        },
+        "10:2": {
+          "class_type": "DynamicExample",
+          "inputs": {
+            "mode": "text",
+            "mode.steps": 7,
+            "mode.suffix": "tail",
+            "tail": [
+              "10:1",
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "seq": 3,
+      "op": {
+        "op": "set_widget",
+        "widget": "mode.steps",
+        "value": 11,
+        "node_id": 2,
+        "op_id": "22222222222222222222222222222222",
+        "actor": "agent:thread:turn",
+        "base_version": 2,
+        "stamp": [
+          3,
+          "agent:thread:turn"
+        ],
+        "path": [
+          10,
+          2
+        ],
+        "inner_widget": "mode.steps"
+      },
+      "update": "AQOH5fKPDQCoyZW62w8dAX0LKAEIX19zdGFtcHNIWyJ3aWRnZXQiLFsiMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiMiJdLCIwIiwibW9kZS5zdGVwcyJdAXUDfQN3EWFnZW50OnRocmVhZDp0dXJudyAyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMigBCV9fYXBwbGllZCAyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMgF3QDcyYTIyYjczMWY1NGI5Y2MwZjc5ZWZhYTNiMTBkODYxMDc4M2MzOTA2N2U5MGQ3NTI3Nzc3MmMyZTVjYTMxZDkCyZW62w8BHQGAgqjMAgcEARUHJA4zATcBOgI9AQ==",
+      "graph": {
+        "definitions": {
+          "subgraphs": [
+            {
+              "config": {},
+              "groups": [],
+              "id": "11111111-1111-4111-8111-111111111111",
+              "inputNode": {
+                "id": -10
+              },
+              "inputs": [],
+              "links": [
+                {
+                  "id": 2,
+                  "origin_id": 1,
+                  "origin_slot": 0,
+                  "target_id": 2,
+                  "target_slot": 3,
+                  "type": "IMAGE"
+                }
+              ],
+              "name": "Dynamic",
+              "nodes": [
+                {
+                  "flags": {},
+                  "id": 1,
+                  "inputs": [],
+                  "mode": 0,
+                  "outputs": [
+                    {
+                      "links": [
+                        2
+                      ],
+                      "name": "image",
+                      "type": "IMAGE"
+                    }
+                  ],
+                  "properties": {},
+                  "size": [
+                    100,
+                    100
+                  ],
+                  "type": "Source",
+                  "widgets_values": []
+                },
+                {
+                  "flags": {},
+                  "id": 2,
+                  "inputs": [
+                    {
+                      "link": null,
+                      "name": "mode",
+                      "type": "COMFY_DYNAMICCOMBO_V3",
+                      "widget": {
+                        "name": "mode"
+                      }
+                    },
+                    {
+                      "link": null,
+                      "name": "mode.steps",
+                      "type": "INT",
+                      "widget": {
+                        "name": "mode.steps"
+                      }
+                    },
+                    {
+                      "link": null,
+                      "name": "mode.suffix",
+                      "shape": 7,
+                      "type": "STRING",
+                      "widget": {
+                        "name": "mode.suffix"
+                      }
+                    },
+                    {
+                      "link": 2,
+                      "name": "tail",
+                      "type": "IMAGE"
+                    }
+                  ],
+                  "mode": 0,
+                  "outputs": [],
+                  "properties": {},
+                  "size": [
+                    200,
+                    100
+                  ],
+                  "type": "DynamicExample",
+                  "widgets_values": [
+                    "text",
+                    11,
+                    "tail"
+                  ]
+                }
+              ],
+              "outputNode": {
+                "id": -20
+              },
+              "outputs": [],
+              "revision": 0,
+              "state": {
+                "lastGroupId": 0,
+                "lastLinkId": 2,
+                "lastNodeId": 2,
+                "lastRerouteId": 0
+              },
+              "version": 1
+            }
+          ]
+        },
+        "links": [],
+        "nodes": [
+          {
+            "id": 10,
+            "inputs": [],
+            "mode": 0,
+            "outputs": [],
+            "type": "11111111-1111-4111-8111-111111111111",
+            "widgets_values": []
+          }
+        ]
+      },
+      "api": {
+        "10:1": {
+          "class_type": "Source",
+          "inputs": {}
+        },
+        "10:2": {
+          "class_type": "DynamicExample",
+          "inputs": {
+            "mode": "text",
+            "mode.steps": 11,
+            "mode.suffix": "tail",
+            "tail": [
+              "10:1",
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "seq": 4,
+      "op": {
+        "op": "set_widget",
+        "widget": "mode",
+        "value": "image",
+        "node_id": 2,
+        "op_id": "33333333333333333333333333333333",
+        "actor": "agent:thread:turn",
+        "base_version": 3,
+        "stamp": [
+          4,
+          "agent:thread:turn"
+        ],
+        "path": [
+          10,
+          2
+        ],
+        "inner_widget": "mode"
+      },
+      "update": "ARvI2cSCDQCnyZW62w8AAAcAyNnEgg0AAScAyNnEgg0BBWxpbmtzAAgAyNnEgg0CAX0CKADI2cSCDQEEbmFtZQF3BWltYWdlKADI2cSCDQEEdHlwZQF3BUlNQUdFp8mVutsPBgCnyZW62w8HAAcAyNnEgg0HASgAyNnEgg0IBG5hbWUBdwRtb2RlKADI2cSCDQgEdHlwZQF3FUNPTUZZX0RZTkFNSUNDT01CT19WMygAyNnEgg0IBGxpbmsBfigAyNnEgg0IBndpZGdldAF2AQRuYW1ldwRtb2Rlh8jZxIINCAEoAMjZxIINDQRuYW1lAXcKbW9kZS5pbWFnZSgAyNnEgg0NBHR5cGUBdwVJTUFHRSgAyNnEgg0NBGxpbmsBfofI2cSCDQ0BKADI2cSCDREEbmFtZQF3BHRhaWwoAMjZxIINEQR0eXBlAXcFSU1BR0UoAMjZxIINEQRsaW5rAX0CqMmVutsPHAF3BWltYWdlqMmVutsPHwF2BgJpZH0CCW9yaWdpbl9pZH0BC29yaWdpbl9zbG90fQAJdGFyZ2V0X2lkfQILdGFyZ2V0X3Nsb3R9AgR0eXBldwVJTUFHRajJlbrbDyABdQCoyZW62w8hAXUBdwEyqMmVutsPIgF1A30EdxFhZ2VudDp0aHJlYWQ6dHVybncgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMoAQlfX2FwcGxpZWQgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMBd0BiNGYxZGFmZTdiODYwODljMTdkZDg2NDY5YmUwMGMyMjBhOTQ2YjIyMTk2YTYzM2I0Y2UwMzFkMDcxMDExMGZkAsmVutsPAgAeHwSAgqjMAgcEARUHJA4zATcBOgI9AQ==",
+      "graph": {
+        "definitions": {
+          "subgraphs": [
+            {
+              "config": {},
+              "groups": [],
+              "id": "11111111-1111-4111-8111-111111111111",
+              "inputNode": {
+                "id": -10
+              },
+              "inputs": [],
+              "links": [
+                {
+                  "id": 2,
+                  "origin_id": 1,
+                  "origin_slot": 0,
+                  "target_id": 2,
+                  "target_slot": 2,
+                  "type": "IMAGE"
+                }
+              ],
+              "name": "Dynamic",
+              "nodes": [
+                {
+                  "flags": {},
+                  "id": 1,
+                  "inputs": [],
+                  "mode": 0,
+                  "outputs": [
+                    {
+                      "links": [
+                        2
+                      ],
+                      "name": "image",
+                      "type": "IMAGE"
+                    }
+                  ],
+                  "properties": {},
+                  "size": [
+                    100,
+                    100
+                  ],
+                  "type": "Source",
+                  "widgets_values": []
+                },
+                {
+                  "flags": {},
+                  "id": 2,
+                  "inputs": [
+                    {
+                      "link": null,
+                      "name": "mode",
+                      "type": "COMFY_DYNAMICCOMBO_V3",
+                      "widget": {
+                        "name": "mode"
+                      }
+                    },
+                    {
+                      "link": null,
+                      "name": "mode.image",
+                      "type": "IMAGE"
+                    },
+                    {
+                      "link": 2,
+                      "name": "tail",
+                      "type": "IMAGE"
+                    }
+                  ],
+                  "mode": 0,
+                  "outputs": [],
+                  "properties": {},
+                  "size": [
+                    200,
+                    100
+                  ],
+                  "type": "DynamicExample",
+                  "widgets_values": [
+                    "image"
+                  ]
+                }
+              ],
+              "outputNode": {
+                "id": -20
+              },
+              "outputs": [],
+              "revision": 0,
+              "state": {
+                "lastGroupId": 0,
+                "lastLinkId": 2,
+                "lastNodeId": 2,
+                "lastRerouteId": 0
+              },
+              "version": 1
+            }
+          ]
+        },
+        "links": [],
+        "nodes": [
+          {
+            "id": 10,
+            "inputs": [],
+            "mode": 0,
+            "outputs": [],
+            "type": "11111111-1111-4111-8111-111111111111",
+            "widgets_values": []
+          }
+        ]
+      },
+      "api": {
+        "10:1": {
+          "class_type": "Source",
+          "inputs": {}
+        },
+        "10:2": {
+          "class_type": "DynamicExample",
+          "inputs": {
+            "mode": "image",
+            "tail": [
+              "10:1",
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "seq": 5,
+      "op": {
+        "op": "set_widget",
+        "widget": "mode",
+        "value": "text",
+        "node_id": 2,
+        "op_id": "44444444444444444444444444444444",
+        "actor": "agent:thread:turn",
+        "base_version": 4,
+        "stamp": [
+          5,
+          "agent:thread:turn"
+        ],
+        "path": [
+          10,
+          2
+        ],
+        "inner_widget": "mode"
+      },
+      "update": "AST2ms/RBQCnyNnEgg0AAAcA9prP0QUAAScA9prP0QUBBWxpbmtzAAgA9prP0QUCAX0CKAD2ms/RBQEEbmFtZQF3BWltYWdlKAD2ms/RBQEEdHlwZQF3BUlNQUdFp8jZxIINBgCnyNnEgg0HAAcA9prP0QUHASgA9prP0QUIBG5hbWUBdwRtb2RlKAD2ms/RBQgEdHlwZQF3FUNPTUZZX0RZTkFNSUNDT01CT19WMygA9prP0QUIBGxpbmsBfigA9prP0QUIBndpZGdldAF2AQRuYW1ldwRtb2Rlh/aaz9EFCAEoAPaaz9EFDQRuYW1lAXcKbW9kZS5zdGVwcygA9prP0QUNBHR5cGUBdwNJTlQoAPaaz9EFDQRsaW5rAX4oAPaaz9EFDQZ3aWRnZXQBdgEEbmFtZXcKbW9kZS5zdGVwc4f2ms/RBQ0BKAD2ms/RBRIEbmFtZQF3C21vZGUuc3VmZml4KAD2ms/RBRIEdHlwZQF3BlNUUklORygA9prP0QUSBGxpbmsBfigA9prP0QUSBndpZGdldAF2AQRuYW1ldwttb2RlLnN1ZmZpeCgA9prP0QUSBXNoYXBlAX0Hh/aaz9EFEgEoAPaaz9EFGARuYW1lAXcEdGFpbCgA9prP0QUYBHR5cGUBdwVJTUFHRSgA9prP0QUYBGxpbmsBfQKoyNnEgg0VAXcEdGV4dKiH5fKPDQABfQuoyZW62w8eAXcEdGFpbKjI2cSCDRYBdgYCaWR9AglvcmlnaW5faWR9AQtvcmlnaW5fc2xvdH0ACXRhcmdldF9pZH0CC3RhcmdldF9zbG90fQMEdHlwZXcFSU1BR0WoyNnEgg0XAXUAqMjZxIINGAF1AXcBMqjI2cSCDRkBdQN9BXcRYWdlbnQ6dGhyZWFkOnR1cm53IDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0KAEJX19hcHBsaWVkIDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0AXdANWZiMDgwMmFhODdlODJiZjdhMDMyMjgwMWFkZmIwNDY4OWYxMzg2YzQ1YTEyYTE2ZmJkMDE3MDVjMzU2ZjQ2MgTJlbrbDwEAI4fl8o8NAQAByNnEgg0BABqAgqjMAgcEARUHJA4zATcBOgI9AQ==",
+      "graph": {
+        "definitions": {
+          "subgraphs": [
+            {
+              "config": {},
+              "groups": [],
+              "id": "11111111-1111-4111-8111-111111111111",
+              "inputNode": {
+                "id": -10
+              },
+              "inputs": [],
+              "links": [
+                {
+                  "id": 2,
+                  "origin_id": 1,
+                  "origin_slot": 0,
+                  "target_id": 2,
+                  "target_slot": 3,
+                  "type": "IMAGE"
+                }
+              ],
+              "name": "Dynamic",
+              "nodes": [
+                {
+                  "flags": {},
+                  "id": 1,
+                  "inputs": [],
+                  "mode": 0,
+                  "outputs": [
+                    {
+                      "links": [
+                        2
+                      ],
+                      "name": "image",
+                      "type": "IMAGE"
+                    }
+                  ],
+                  "properties": {},
+                  "size": [
+                    100,
+                    100
+                  ],
+                  "type": "Source",
+                  "widgets_values": []
+                },
+                {
+                  "flags": {},
+                  "id": 2,
+                  "inputs": [
+                    {
+                      "link": null,
+                      "name": "mode",
+                      "type": "COMFY_DYNAMICCOMBO_V3",
+                      "widget": {
+                        "name": "mode"
+                      }
+                    },
+                    {
+                      "link": null,
+                      "name": "mode.steps",
+                      "type": "INT",
+                      "widget": {
+                        "name": "mode.steps"
+                      }
+                    },
+                    {
+                      "link": null,
+                      "name": "mode.suffix",
+                      "shape": 7,
+                      "type": "STRING",
+                      "widget": {
+                        "name": "mode.suffix"
+                      }
+                    },
+                    {
+                      "link": 2,
+                      "name": "tail",
+                      "type": "IMAGE"
+                    }
+                  ],
+                  "mode": 0,
+                  "outputs": [],
+                  "properties": {},
+                  "size": [
+                    200,
+                    100
+                  ],
+                  "type": "DynamicExample",
+                  "widgets_values": [
+                    "text",
+                    11,
+                    "tail"
+                  ]
+                }
+              ],
+              "outputNode": {
+                "id": -20
+              },
+              "outputs": [],
+              "revision": 0,
+              "state": {
+                "lastGroupId": 0,
+                "lastLinkId": 2,
+                "lastNodeId": 2,
+                "lastRerouteId": 0
+              },
+              "version": 1
+            }
+          ]
+        },
+        "links": [],
+        "nodes": [
+          {
+            "id": 10,
+            "inputs": [],
+            "mode": 0,
+            "outputs": [],
+            "type": "11111111-1111-4111-8111-111111111111",
+            "widgets_values": []
+          }
+        ]
+      },
+      "api": {
+        "10:1": {
+          "class_type": "Source",
+          "inputs": {}
+        },
+        "10:2": {
+          "class_type": "DynamicExample",
+          "inputs": {
+            "mode": "text",
+            "mode.steps": 11,
+            "mode.suffix": "tail",
+            "tail": [
+              "10:1",
+              0
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

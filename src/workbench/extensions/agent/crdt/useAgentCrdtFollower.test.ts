@@ -9,6 +9,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, nextTick, ref, shallowRef } from 'vue'
 import type { Ref } from 'vue'
+import * as Y from 'yjs'
+import { SCHEMA_VERSION } from '@comfyorg/comfy-multi-player'
 import type { Op } from '@comfyorg/comfy-multi-player'
 
 import { render } from '@testing-library/vue'
@@ -43,7 +45,10 @@ const bridgeState = vi.hoisted(() => {
     follower = {
       updatesApplied: 0,
       doc: {
-        getMap: () => ({ toJSON: () => ({}) })
+        getMap: () => ({
+          toJSON: () => ({}),
+          get: (_key: string): unknown => undefined
+        })
       }
     }
   }
@@ -88,6 +93,9 @@ const projectionState = vi.hoisted(() => {
     ),
     replaceOnNextFrame: vi.fn(),
     discardPending: vi.fn((_workflowId: string): DocNodeDelta => NO_NODES),
+    retryDeferred: vi.fn(
+      (): FrameOutcome => ({ applied: false, nodes: NO_NODES })
+    ),
     noteLocalWrites: vi.fn(),
     settleLocalWrites: vi.fn(),
     destroy: vi.fn()
@@ -144,6 +152,7 @@ vi.mock<unknown>(import('./agentCrdtProjection'), () => ({
     revertRejected = projectionState.revertRejected
     replaceOnNextFrame = projectionState.replaceOnNextFrame
     discardPending = projectionState.discardPending
+    retryDeferred = projectionState.retryDeferred
     noteLocalWrites = projectionState.noteLocalWrites
     settleLocalWrites = projectionState.settleLocalWrites
     destroy = projectionState.destroy
@@ -212,29 +221,40 @@ function mountFollower(
   isTargetActive: Ref<boolean>
   status: () => AgentCrdtStatus
   enqueue: (operations: GraphOperation[]) => void
+  subscriptionSent: () => boolean
 } {
   const workflowId = ref<string | null>(initial)
   const isTargetActive = ref(initiallyActive)
   let exposedStatus!: () => AgentCrdtStatus
   let enqueue!: (operations: GraphOperation[]) => void
+  let sent!: () => boolean
   const host = defineComponent({
     setup() {
-      const { status, enqueueHumanOperations } = useAgentCrdtFollower(
-        workflowId,
-        () => null,
-        isTargetActive,
-        getGraph,
-        events,
-        applierDeps,
-        canvasFor
-      )
+      const { status, enqueueHumanOperations, subscriptionSent } =
+        useAgentCrdtFollower(
+          workflowId,
+          () => null,
+          isTargetActive,
+          getGraph,
+          events,
+          applierDeps,
+          canvasFor
+        )
       exposedStatus = () => status.value as AgentCrdtStatus
       enqueue = enqueueHumanOperations
+      sent = subscriptionSent
       return () => null
     }
   })
   const { unmount } = render(host)
-  return { unmount, workflowId, isTargetActive, status: exposedStatus, enqueue }
+  return {
+    unmount,
+    workflowId,
+    isTargetActive,
+    status: exposedStatus,
+    enqueue,
+    subscriptionSent: sent
+  }
 }
 
 function bridge(): InstanceType<(typeof bridgeState)['FakeBridge']> {
@@ -793,7 +813,12 @@ describe('useAgentCrdtFollower', () => {
     // and clear applied state without arming a lineage replacement.
     const replacementFollower = {
       updatesApplied: 7,
-      doc: { getMap: () => ({ toJSON: () => ({}) }) }
+      doc: {
+        getMap: () => ({
+          toJSON: () => ({}),
+          get: (_key: string): unknown => undefined
+        })
+      }
     }
     const initialFollower = bridge().follower
     bridge().subscribe.mockImplementationOnce((nextWorkflowId: string) => {
@@ -859,30 +884,34 @@ describe('useAgentCrdtFollower', () => {
     unmount()
   })
 
-  it('PM-1604 / BE-11437: does not retry schema_version_mismatch and surfaces it', () => {
-    vi.useFakeTimers()
-    const onSyncError = vi.fn()
-    const { unmount } = mountFollower('wf-1', true, () => null, {
-      onSyncError
-    })
+  it.for([
+    ['stale_client_schema', 'Reload the page'],
+    ['schema_version_mismatch', 'Expected schema 2, found 1']
+  ] as const)(
+    'PM-1604 / BE-11437: does not retry %s and surfaces it',
+    ([code, message]) => {
+      vi.useFakeTimers()
+      const onSyncError = vi.fn()
+      const { unmount } = mountFollower('wf-1', true, () => null, {
+        onSyncError
+      })
+      dispatchFrame('doc_subscribe_sent', { workflowId: 'wf-1' })
+      bridge().resubscribe.mockClear()
+      bridge().reconcile.mockClear()
 
-    dispatchFrame('doc_subscribed', {
-      ok: false,
-      code: 'schema_version_mismatch',
-      message: 'Expected schema 2, found 1'
-    })
+      dispatchFrame('doc_subscribed', { ok: false, code, message })
 
-    vi.advanceTimersByTime(60_000)
-    apiState.target.dispatchEvent(new Event('status'))
+      expect(bridge().resubscribe).not.toHaveBeenCalled()
 
-    expect(bridge().resubscribe).not.toHaveBeenCalled()
-    expect(bridge().reconcile).not.toHaveBeenCalled()
-    expect(onSyncError).toHaveBeenCalledExactlyOnceWith(
-      'Expected schema 2, found 1',
-      'schema_version_mismatch'
-    )
-    unmount()
-  })
+      vi.advanceTimersByTime(60_000)
+      apiState.target.dispatchEvent(new Event('status'))
+
+      expect(bridge().resubscribe).not.toHaveBeenCalled()
+      expect(bridge().reconcile).not.toHaveBeenCalled()
+      expect(onSyncError).toHaveBeenCalledExactlyOnceWith(message, code)
+      unmount()
+    }
+  )
 
   it('PM-1604 / BE-11437: does not retry catalog_mismatch and surfaces it', () => {
     vi.useFakeTimers()
@@ -912,7 +941,7 @@ describe('useAgentCrdtFollower', () => {
   it('PM-1604 / BE-11437: does not retry unsupported and never surfaces it', () => {
     vi.useFakeTimers()
     const onSyncError = vi.fn()
-    const { unmount } = mountFollower('wf-1', true, () => null, {
+    const { unmount, status } = mountFollower('wf-1', true, () => null, {
       onSyncError
     })
 
@@ -928,6 +957,41 @@ describe('useAgentCrdtFollower', () => {
     expect(bridge().resubscribe).not.toHaveBeenCalled()
     expect(bridge().reconcile).not.toHaveBeenCalled()
     expect(onSyncError).not.toHaveBeenCalled()
+    expect(status().terminal).toBe('refused')
+    unmount()
+  })
+
+  it('asks for a reload once when the document is newer than this build reads', () => {
+    const onSyncError = vi.fn()
+    const { unmount } = mountFollower('wf-1', true, () => null, {
+      onSyncError
+    })
+    dispatchFrame('doc_subscribed', { ok: true })
+
+    const found = SCHEMA_VERSION + 1
+    dispatchFrame('schema_error', { workflowId: 'wf-1', found })
+    dispatchFrame('schema_error', { workflowId: 'wf-1', found })
+
+    expect(onSyncError).toHaveBeenCalledExactlyOnceWith(
+      `document schema v${found} is newer than this page reads (v${SCHEMA_VERSION})`,
+      'stale_client_schema'
+    )
+    unmount()
+  })
+
+  it('does not ask for a reload when the document is older than this build reads', () => {
+    const onSyncError = vi.fn()
+    const { unmount } = mountFollower('wf-1', true, () => null, {
+      onSyncError
+    })
+    dispatchFrame('doc_subscribed', { ok: true })
+
+    dispatchFrame('schema_error', {
+      workflowId: 'wf-1',
+      found: SCHEMA_VERSION - 1
+    })
+
+    expect(onSyncError).not.toHaveBeenCalled()
     unmount()
   })
 
@@ -939,6 +1003,7 @@ describe('useAgentCrdtFollower', () => {
 
     expect(status().connected).toBe(false)
     expect(status().workflowId).toBe('wf-1')
+    expect(status().terminal).toBe('schema_error')
     expect(projectionState.discardPending).toHaveBeenCalledWith('wf-1')
     unmount()
   })
@@ -953,6 +1018,36 @@ describe('useAgentCrdtFollower', () => {
     expect(status().updatesApplied).toBe(3)
     expect(status().lastFrameType).toBe('doc_update')
     expect(projectionState.applyFrame).toHaveBeenCalledWith(update)
+    unmount()
+  })
+
+  it('reports only the exact subscription that reached the transport', async () => {
+    const { unmount, workflowId, subscriptionSent } = mountFollower('wf-1')
+
+    expect(subscriptionSent()).toBe(true)
+    workflowId.value = 'wf-2'
+    await nextTick()
+    expect(subscriptionSent()).toBe(false)
+    unmount()
+  })
+
+  it('surfaces incomplete graph projection once per workflow without retrying edits', () => {
+    const onSyncError = vi.fn()
+    const { unmount } = mountFollower('wf-1', true, () => null, {
+      onSyncError
+    })
+    projectionState.applyFrame.mockReturnValue(
+      projectionState.applied([], projectionState.NO_NODES, 1)
+    )
+
+    dispatchFrame('doc_update', { workflowId: 'wf-1', seq: 7 })
+    dispatchFrame('doc_update', { workflowId: 'wf-1', seq: 8 })
+
+    expect(onSyncError).toHaveBeenCalledExactlyOnceWith(
+      undefined,
+      'local_projection_incomplete'
+    )
+    expect(clientState.sendOps).not.toHaveBeenCalled()
     unmount()
   })
 
@@ -1653,7 +1748,12 @@ describe('useAgentCrdtFollower', () => {
 
     it('arms a lineage replacement on a doc_reset and rebinds the replacement document', () => {
       const { unmount } = mountFollower('wf-1', true, () => fakeGraph)
-      const replacementDoc = { getMap: () => ({ toJSON: () => ({}) }) }
+      const replacementDoc = {
+        getMap: () => ({
+          toJSON: () => ({}),
+          get: (_key: string): unknown => undefined
+        })
+      }
 
       dispatchFrame('doc_reset', {
         workflowId: 'wf-1',
@@ -1864,6 +1964,36 @@ describe('useAgentCrdtFollower', () => {
     dispatchFrame('doc_update', catchUp)
     expect(projectionState.applyFrame).toHaveBeenCalledWith(catchUp)
     unmount()
+  })
+
+  it('sends edits of an agent-created node with its captured document lifetime', async () => {
+    const { unmount, enqueue } = mountFollower('wf-1')
+    const doc = new Y.Doc()
+    try {
+      const node = new Y.Map<unknown>()
+      node.set('__incarnation', 'agent-created-life')
+      doc.getMap('nodes').set('1', node)
+      bridge().follower.doc = doc
+      enqueue([{ op: 'set_widget', node_id: '1', widget: 'steps', value: 20 }])
+      node.set('__incarnation', 'new-life')
+      await Promise.resolve()
+      expect(clientState.sendOps).toHaveBeenCalledWith(
+        'wf-1',
+        expect.any(String),
+        [
+          expect.objectContaining({
+            op: 'set_widget',
+            node_id: '1',
+            widget: 'steps',
+            value: 20,
+            node_incarnation: 'agent-created-life'
+          })
+        ]
+      )
+    } finally {
+      unmount()
+      doc.destroy()
+    }
   })
 
   it('sends minted human operations through the doc client', async () => {
@@ -2222,15 +2352,16 @@ describe('useAgentCrdtFollower', () => {
       code: 'schema_version_mismatch'
     })
 
-    expect(onSyncError).toHaveBeenCalledTimes(1)
+    expect(onSyncError.mock.calls).toEqual([
+      [undefined, 'local_edits_unconfirmed'],
+      [undefined, 'schema_version_mismatch']
+    ])
     const settleCallIndex = vi
       .mocked(recordDevEvent)
       .mock.calls.findIndex(([event]) => event === 'human_ops_settled')
     expect(settleCallIndex).toBeGreaterThanOrEqual(0)
     const settleOrder =
       vi.mocked(recordDevEvent).mock.invocationCallOrder[settleCallIndex]
-    // onDocReset's precedent: cleanup that could strand held/in-flight ops
-    // runs before notifying consumer code (the toast store) that could throw.
     expect(settleOrder).toBeLessThan(onSyncError.mock.invocationCallOrder[0])
     unmount()
   })
@@ -2292,7 +2423,9 @@ describe('useAgentCrdtFollower', () => {
     unmount()
   })
 
-  function mountWithHumanOps(): {
+  function mountWithHumanOps(
+    onSyncError?: (message?: string, code?: string) => void
+  ): {
     enqueue: ReturnType<typeof useAgentCrdtFollower>['enqueueHumanOperations']
     workflowId: Ref<string | null>
     unmount: () => void
@@ -2303,7 +2436,13 @@ describe('useAgentCrdtFollower', () => {
     >['enqueueHumanOperations']
     const host = defineComponent({
       setup() {
-        const { enqueueHumanOperations } = useAgentCrdtFollower(workflowId)
+        const { enqueueHumanOperations } = useAgentCrdtFollower(
+          workflowId,
+          undefined,
+          undefined,
+          undefined,
+          { onSyncError }
+        )
         enqueue = enqueueHumanOperations
         return () => null
       }
@@ -2337,7 +2476,8 @@ describe('useAgentCrdtFollower', () => {
 
   it('a doc_reset settles sent and queued human batches without another send', async () => {
     vi.useFakeTimers()
-    const { enqueue, unmount } = mountWithHumanOps()
+    const onSyncError = vi.fn()
+    const { enqueue, unmount } = mountWithHumanOps(onSyncError)
 
     enqueue([{ op: 'delete_node', node_id: '1', removed_links: [] }])
     await Promise.resolve()
@@ -2352,6 +2492,10 @@ describe('useAgentCrdtFollower', () => {
       'unconfirmed',
       'undeliverable'
     ])
+    expect(onSyncError).toHaveBeenCalledExactlyOnceWith(
+      undefined,
+      'local_edits_unconfirmed'
+    )
     unmount()
   })
 
@@ -2459,7 +2603,7 @@ describe('useAgentCrdtFollower', () => {
       vi.mocked(recordDevEvent).mockClear()
     })
 
-    it('notes a local widget write with the projection on enqueue and settles it when the host answers', async () => {
+    it('holds an accepted local widget write until its document echo arrives', async () => {
       const { unmount, enqueue } = mountWriter('wf-1')
       const setWidget = {
         op: 'set_widget' as const,
@@ -2474,9 +2618,7 @@ describe('useAgentCrdtFollower', () => {
       await Promise.resolve()
       ackSent(0)
 
-      expect(projectionState.settleLocalWrites).toHaveBeenCalledWith([
-        expect.objectContaining(setWidget)
-      ])
+      expect(projectionState.settleLocalWrites).not.toHaveBeenCalled()
       unmount()
     })
 
@@ -2736,6 +2878,7 @@ describe('useAgentCrdtFollower', () => {
     vi.advanceTimersByTime(SUBSCRIBE_ACK_TIMEOUT_MS)
 
     expect(status().connected).toBe(false)
+    expect(status().terminal).toBe('timeout')
     expect(bridge().resubscribe).toHaveBeenCalledTimes(2)
     expect(telemetryState.reportError).toHaveBeenCalledExactlyOnceWith(
       expect.any(Error),
@@ -2755,6 +2898,7 @@ describe('useAgentCrdtFollower', () => {
 
     apiState.target.dispatchEvent(new Event('reconnected'))
     expect(bridge().reconnect).toHaveBeenCalledOnce()
+    expect(status().terminal).toBeNull()
     dispatchFrame('doc_subscribe_sent', { workflowId: 'wf-1' })
     vi.advanceTimersByTime(SUBSCRIBE_ACK_TIMEOUT_MS)
     expect(bridge().resubscribe).toHaveBeenCalledTimes(3)

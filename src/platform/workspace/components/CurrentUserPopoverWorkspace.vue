@@ -125,29 +125,23 @@
       >
         {{ $t('subscription.upgradeToAddCredits') }}
       </Button>
-      <!-- Subscribe/Resubscribe (only when not subscribed or cancelled) -->
+      <!-- Reactivation is rendered from its exact server capability. New
+           self-serve subscriptions already use the mutually exclusive
+           upgrade CTA above, so do not render a duplicate Subscribe button. -->
       <SubscribeButton
-        v-if="showSubscribeAction && isPersonalWorkspace"
+        v-if="canReactivate && isPersonalWorkspace"
         :fluid="false"
-        :label="
-          isCancelled
-            ? $t('subscription.resubscribe')
-            : $t('workspaceSwitcher.subscribe')
-        "
+        :label="$t('subscription.resubscribe')"
         size="sm"
         button-variant="subscribe"
       />
       <Button
-        v-if="showSubscribeAction && !isPersonalWorkspace"
+        v-if="canReactivate && !isPersonalWorkspace"
         variant="primary"
         size="sm"
         @click="handleOpenSubscriptionAction"
       >
-        {{
-          isCancelled
-            ? $t('subscription.resubscribe')
-            : $t('workspaceSwitcher.subscribe')
-        }}
+        {{ $t('subscription.resubscribe') }}
       </Button>
     </div>
 
@@ -295,9 +289,9 @@ const {
   isInPersonalWorkspace: isPersonalWorkspace,
   activeWorkspace
 } = storeToRefs(workspaceStore)
-const { permissions, canReactivatePlan, canOpenPricingSurface } =
-  useWorkspaceUI()
-const { canTopUp, canSubscribeSelfServe } = useBillingCapabilities()
+const { permissions, canOpenPricingSurface } = useWorkspaceUI()
+const { canTopUp, canSubscribeSelfServe, canReactivate } =
+  useBillingCapabilities()
 const isWorkspaceSwitcherOpen = ref(false)
 const isWorkspaceNameTooltipOpen = ref(false)
 const workspaceSwitcherTrigger = useTemplateRef('workspaceSwitcherTrigger')
@@ -343,7 +337,6 @@ const {
   fetchBalance
 } = useBillingContext()
 
-const isCancelled = computed(() => subscription.value?.isCancelled ?? false)
 const subscriptionDialog = useSubscriptionDialog()
 
 const { locale } = useI18n()
@@ -365,7 +358,12 @@ const displayedCredits = computed(() => {
   })
 })
 
-const showPlansAndPricing = canOpenPricingSurface
+const prepaidBilling = computed(
+  () => import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
+)
+const showPlansAndPricing = computed(
+  () => !prepaidBilling.value && canOpenPricingSurface.value
+)
 // Subscribing is a Cloud-only concept: Local users manage plan/credits
 // through settings instead (see showLocalPlansAndCredits below), regardless
 // of subscription status.
@@ -380,20 +378,9 @@ const hasDelinquentSubscription = computed(
 )
 const showManagePlan = computed(
   () =>
+    !prepaidBilling.value &&
     permissions.value.canManageSubscription &&
     (canAccessSubscriptionFeatures.value || hasDelinquentSubscription.value)
-)
-
-const showSubscribeAction = computed(
-  () =>
-    // Subscribing is Cloud-only, so the whole action stays gated on isCloud.
-    // Self-serve subscribe is server-authoritative; reactivation is not.
-    isCloud &&
-    ((isCancelled.value && canReactivatePlan.value) ||
-      (!canAccessSubscriptionFeatures.value &&
-        !hasDelinquentSubscription.value &&
-        canSubscribeSelfServe.value &&
-        canTopUp.value))
 )
 
 const handleOpenUserSettings = () => {

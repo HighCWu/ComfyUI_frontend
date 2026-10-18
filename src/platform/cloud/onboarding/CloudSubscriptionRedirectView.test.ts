@@ -117,6 +117,19 @@ describe('CloudSubscriptionRedirectView', () => {
     installBillingContextFixture()
   })
 
+  test('routes prepaid deployments to the balance portal', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const navigate = vi
+      .spyOn(window.location, 'assign')
+      .mockImplementation(() => {})
+
+    await mountView({ tier: 'creator' })
+
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/billing/')
+    expect(useSubscriptionDialog().showPricingTable).not.toHaveBeenCalled()
+    expect(useBillingContext().manageSubscription).not.toHaveBeenCalled()
+  })
+
   test('redirects to home when subscriptionType is missing', async () => {
     await mountView({})
 

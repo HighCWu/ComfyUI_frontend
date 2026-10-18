@@ -7,6 +7,24 @@ import { i18n } from '@/i18n'
 import MarkdownStream from './MarkdownStream.vue'
 
 describe('MarkdownStream', () => {
+  it('renders native content-addressed result images and opens text downloads using their exact URLs', () => {
+    const prompt = '00000000-0000-4000-8000-000000000001'
+    const image = `/api/view?type=output&filename=${'a'.repeat(64)}.png&subfolder=${prompt}`
+    const text = `/api/view?type=output&filename=${'b'.repeat(64)}.txt&subfolder=${prompt}`
+    render(MarkdownStream, {
+      props: {
+        text: `![Generated result](${image})\n\n[Download full text](${text})`
+      },
+      global: { plugins: [i18n] }
+    })
+    expect(
+      screen.getByRole('img', { name: 'Generated result' })
+    ).toHaveAttribute('src', image)
+    const link = screen.getByRole('link', { name: 'Download full text' })
+    expect(link).toHaveAttribute('href', text)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
   it('renders markdown prose', () => {
     render(MarkdownStream, { props: { text: '**bold**' } })
     expect(screen.getByText('bold', { selector: 'strong' })).toBeInTheDocument()

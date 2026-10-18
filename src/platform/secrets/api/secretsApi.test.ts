@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/scripts/api'
 
-import { listSecretProviders } from './secretsApi'
+import {
+  createSecret,
+  listSecretProviders,
+  listSecrets,
+  updateSecret
+} from './secretsApi'
 
 vi.mock(import('@/scripts/api'))
 
@@ -65,12 +70,14 @@ describe('listSecretProviders', () => {
     ])
   })
 
-  it('returns an empty list when data is missing', async () => {
+  it('rejects a successful provider response when data is missing', async () => {
     vi.mocked(api.fetchApi).mockResolvedValue(jsonResponse({}))
 
-    const providers = await listSecretProviders()
-
-    expect(providers).toEqual([])
+    await expect(listSecretProviders()).rejects.toMatchObject({
+      name: 'SecretsApiError',
+      status: 200,
+      message: 'Secret request returned an invalid response'
+    })
   })
 
   it('throws SecretsApiError on a failed response', async () => {
@@ -103,4 +110,58 @@ describe('listSecretProviders', () => {
       message: 'exists'
     })
   })
+})
+
+describe('secret metadata responses', () => {
+  const metadata = {
+    id: '123e4567-e89b-42d3-a456-426614174000',
+    name: 'Hugging Face',
+    provider: 'huggingface',
+    credential_type: 'api_key' as const,
+    created_at: '2026-10-18T00:00:00.000Z',
+    updated_at: '2026-10-18T00:00:00.000Z'
+  }
+
+  it('validates list, create and update metadata responses', async () => {
+    vi.mocked(api.fetchApi)
+      .mockResolvedValueOnce(jsonResponse({ data: [metadata] }))
+      .mockResolvedValueOnce(jsonResponse(metadata, { status: 201 }))
+      .mockResolvedValueOnce(jsonResponse(metadata))
+
+    await expect(listSecrets()).resolves.toEqual([metadata])
+    await expect(
+      createSecret({
+        name: 'Hugging Face',
+        provider: 'huggingface',
+        secret_value: 'token'
+      })
+    ).resolves.toEqual(metadata)
+    await expect(
+      updateSecret(metadata.id, { name: 'Hugging Face' })
+    ).resolves.toEqual(metadata)
+  })
+
+  it.for([
+    { operation: 'list', response: { data: [{ ...metadata, id: 'invalid' }] } },
+    { operation: 'create', response: { ...metadata, created_at: 'today' } },
+    { operation: 'update', response: { ...metadata, secret_value: 'leaked' } }
+  ])(
+    'rejects malformed $operation metadata',
+    async ({ operation, response }) => {
+      vi.mocked(api.fetchApi).mockResolvedValue(jsonResponse(response))
+
+      const request =
+        operation === 'list'
+          ? listSecrets()
+          : operation === 'create'
+            ? createSecret({ name: 'Secret', secret_value: 'token' })
+            : updateSecret(metadata.id, { name: 'Secret' })
+
+      await expect(request).rejects.toMatchObject({
+        name: 'SecretsApiError',
+        status: 200,
+        message: 'Secret request returned an invalid response'
+      })
+    }
+  )
 })

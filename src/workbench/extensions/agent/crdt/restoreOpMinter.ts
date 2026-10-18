@@ -1,22 +1,8 @@
-/**
- * Mints an undo/redo restore into the bound document. The ChangeTracker
- * replays history through `app.loadGraphData`, which litegraph runs under the
- * `load` intent source, so `docOpMinter` sees nothing of it and the document
- * keeps the state the human just undid; the next remote frame then puts it
- * back on the canvas (QAF-51).
- *
- * While the tracker is `_restoringState`, the graph is snapshotted at the
- * extension's `beforeLoadGraph` and `afterConfigureGraph` hooks and the
- * difference is expressed as semantic ops: node deletions with the links they
- * severed, node additions, changed values of widget keys present after the
- * restore, and link additions. Removed widget keys and standalone link
- * removals have no wire op; a standalone removal is surfaced, not dropped
- * silently (FE-2229).
- */
 import type { WorkflowNode } from '@comfyorg/comfy-multi-player'
 
 import type { LGraph } from '@/lib/litegraph/src/LGraph'
 import type { LLink } from '@/lib/litegraph/src/LLink'
+import { reportError } from '@/platform/telemetry/reportError'
 
 import { docInputIndex, wireNodeSnapshot } from './docOpMinter'
 import type { GraphOperation } from './graphOperations'
@@ -139,6 +125,51 @@ function changedWidgetOperations(
   })
 }
 
+function changedNodeFieldOperations(
+  before: RestoreSnapshot,
+  after: RestoreSnapshot
+): GraphOperation[] {
+  return [...after.nodes].flatMap(([id, node]) => {
+    const previous = before.nodes.get(id)
+    if (!previous) return []
+    const operations: GraphOperation[] = []
+    if (
+      previous.title !== node.title &&
+      (node.title == null || typeof node.title === 'string')
+    ) {
+      operations.push({
+        op: 'set_node_field',
+        node_id: id,
+        field: 'title',
+        value: node.title ?? null
+      })
+    }
+    if (previous.mode !== node.mode) {
+      operations.push({
+        op: 'set_node_field',
+        node_id: id,
+        field: 'mode',
+        value: node.mode ?? null
+      })
+    }
+    for (const flag of ['collapsed', 'pinned'] as const) {
+      const value = node.flags?.[flag]
+      if (
+        previous.flags?.[flag] !== value &&
+        (value == null || typeof value === 'boolean')
+      ) {
+        operations.push({
+          op: 'set_node_field',
+          node_id: id,
+          field: `flags.${flag}`,
+          value: value ?? null
+        })
+      }
+    }
+    return operations
+  })
+}
+
 function addedLinkOperations(
   before: RestoreSnapshot,
   after: RestoreSnapshot,
@@ -175,30 +206,53 @@ function addedLinkOperations(
   })
 }
 
-function reportDetachedLinks(
+function removedLinkOperations(
   before: RestoreSnapshot,
-  after: RestoreSnapshot
-): void {
+  after: RestoreSnapshot,
+  deps: RestoreOpMinterDeps
+): GraphOperation[] | undefined {
+  const operations: GraphOperation[] = []
   for (const [id, link] of before.links) {
     if (after.links.has(id)) continue
     const endpointRemoved =
       !after.nodes.has(String(link.origin_id)) ||
       !after.nodes.has(String(link.target_id))
-    if (!endpointRemoved) {
-      console.error(
-        '[agent-crdt] undo/redo restore removed link without its node; doc may diverge',
-        id
+    if (endpointRemoved) continue
+    const targetId = String(link.target_id)
+    const slot = before.nodes.get(targetId)?.inputs?.[link.target_slot]
+    const input =
+      slot &&
+      typeof slot === 'object' &&
+      'name' in slot &&
+      typeof slot.name === 'string'
+        ? { name: slot.name }
+        : undefined
+    const toSlot = docInputIndex(
+      deps.docInputNames(targetId),
+      input,
+      link.target_slot
+    )
+    if (toSlot === undefined) {
+      reportError(
+        'Cannot resolve the removed link input while restoring the workflow',
+        {
+          surface: 'agent',
+          errorType: 'failure_restoring_agent_removed_link_input',
+          context: { linkId: id }
+        }
       )
+      return undefined
     }
+    operations.push({
+      op: 'disconnect',
+      link_id: link.id,
+      to_node: link.target_id,
+      to_slot: toSlot
+    })
   }
+  return operations
 }
 
-/**
- * An incomplete snapshot is not a smaller graph: a node that threw only after
- * the restore would read as deleted and mint `delete_node` for a node still on
- * the canvas (and the mirror case a duplicate `add_node`). Serialization
- * failure has no op either, so the whole diff is skipped loudly.
- */
 function diffRestore(
   before: RestoreSnapshot,
   after: RestoreSnapshot,
@@ -217,11 +271,14 @@ function diffRestore(
     )
     return []
   }
-  reportDetachedLinks(before, after)
+  const removedLinks = removedLinkOperations(before, after, deps)
+  if (removedLinks === undefined) return []
   return [
     ...removedNodeOperations(before, after),
     ...addedNodeOperations(before, after),
     ...changedWidgetOperations(before, after),
+    ...changedNodeFieldOperations(before, after),
+    ...removedLinks,
     ...addedLinkOperations(before, after, deps)
   ]
 }

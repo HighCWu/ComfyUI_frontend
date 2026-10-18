@@ -3,6 +3,7 @@ import type { SkillReference } from './skillReference'
 export interface WorkflowReferenceMetadata {
   id: string
   name: string
+  editorPath?: string
   unavailable?: boolean
 }
 
@@ -19,4 +20,4 @@ export interface PromptSnapshot {
 
 export type WorkflowReferenceOption =
   | { id: string; name: string }
-  | { id?: undefined; name: string; tabPath: string }
+  | { id?: undefined; name: string; tabPath: string; isPersisted?: boolean }

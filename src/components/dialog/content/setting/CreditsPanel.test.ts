@@ -40,12 +40,16 @@ const i18n = createI18n({
     en: {
       credits: {
         credits: 'Credits',
+        workspaceCredits: 'Balance',
         activity: 'Activity',
         invoiceHistory: 'Invoice History',
         faqs: 'FAQs',
         messageSupport: 'Message Support'
       },
-      subscription: { partnerNodesCredits: 'Partner Nodes Credits' }
+      subscription: {
+        manageBilling: 'Manage billing',
+        partnerNodesCredits: 'Partner Nodes Credits'
+      }
     }
   }
 })
@@ -68,6 +72,7 @@ describe('CreditsPanel', () => {
   }
 
   it('opens the billing portal for the active billing rail', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'subscription')
     const billing = mockBillingContext()
     const user = userEvent.setup()
     renderComponent()
@@ -75,6 +80,25 @@ describe('CreditsPanel', () => {
     await user.click(screen.getByRole('button', { name: /Invoice History/ }))
 
     expect(billing.manageSubscription).toHaveBeenCalledOnce()
+  })
+
+  it('opens the Laimon prepaid portal without invoking subscription management', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const billing = mockBillingContext()
+    const navigate = vi
+      .spyOn(window.location, 'assign')
+      .mockImplementation(() => {})
+    render(CreditsPanel, {
+      props: { embedded: true },
+      global: { plugins: [i18n], stubs: { Divider: true } }
+    })
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /Manage billing/ })
+    )
+
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/billing/')
+    expect(billing.manageSubscription).not.toHaveBeenCalled()
   })
 
   it('refreshes activity on a balance change but not on first hydration', async () => {

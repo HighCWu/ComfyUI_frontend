@@ -2,7 +2,16 @@ import { readFileSync } from 'node:fs'
 import { applyOps, mint, project } from '@comfyorg/comfy-multi-player'
 import type { WidgetCatalog, WorkflowJSON } from '@comfyorg/comfy-multi-player'
 import { fromPartial } from '@total-typescript/shoehorn'
-import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi
+} from 'vitest'
 import { z } from 'zod'
 
 import { isRootGraphDocBound } from '@/lib/litegraph/src/docBoundGraphs'
@@ -19,7 +28,8 @@ import {
 import type { ISerialisedNode } from '@/lib/litegraph/src/types/serialisation'
 import {
   createTestSubgraph,
-  createTestSubgraphNode
+  createTestSubgraphNode,
+  enableSubgraphNodeCreation
 } from '@/lib/litegraph/src/subgraph/__fixtures__/subgraphHelpers'
 import { reportError } from '@/platform/telemetry/reportError'
 import { transformInputSpecV1ToV2 } from '@/schemas/nodeDef/migration'
@@ -54,6 +64,16 @@ class TestSink extends LGraphNode {
   constructor() {
     super('Test Sink')
     this.addInput('image', 'IMAGE')
+  }
+}
+
+class TestWidgetSink extends LGraphNode {
+  constructor() {
+    super('Test Widget Sink')
+    const input = this.addInput('strength', 'IMAGE')
+    input.widget = { name: 'strength' }
+    this.addWidget('number', 'strength', 1, () => {})
+    this.serialize_widgets = true
   }
 }
 
@@ -106,6 +126,7 @@ const CATALOG: WidgetCatalog = {
   types: {
     TestSource: { widget_order: ['steps'] },
     TestSink: { widget_order: [] },
+    TestWidgetSink: { widget_order: ['strength'] },
     TestAutogrowSink: { widget_order: [] },
     TestPrompt: { widget_order: ['text'] }
   }
@@ -160,6 +181,7 @@ function seedGraph(graph: LGraph) {
 beforeEach(() => {
   LiteGraph.registerNodeType('TestSource', TestSource)
   LiteGraph.registerNodeType('TestSink', TestSink)
+  LiteGraph.registerNodeType('TestWidgetSink', TestWidgetSink)
   LiteGraph.registerNodeType('TestAutogrowSink', TestAutogrowSink)
   LiteGraph.registerNodeType('TestNote', TestNote)
   LiteGraph.registerNodeType('TestPrompt', TestPrompt)
@@ -203,6 +225,182 @@ describe('attachDocOpMinter', () => {
   })
 
   afterEach(() => minter.detach())
+
+  it('registers converted definitions with presentation widgets through the original SDK', async () => {
+    onTestFinished(enableSubgraphNodeCreation(graph))
+    const { source } = seedGraph(graph)
+    const doc = mintDocFrom(graph)
+    onTestFinished(() => doc.destroy())
+    const { subgraph, node } = graph.convertToSubgraph(new Set([source]))
+    await afterFlush()
+    expect(
+      applyOutcomes(doc, minted).filter(
+        (outcome) => outcome.outcome === 'rejected'
+      )
+    ).toEqual([])
+    const projected = project(doc, CATALOG)
+    expect(projected.definitions?.subgraphs).toContainEqual(
+      expect.objectContaining({ id: subgraph.id })
+    )
+    expect(
+      projected.nodes.find((item) => String(item.id) === String(node.id))?.type
+    ).toBe(subgraph.id)
+  })
+
+  it('registers the converted subgraph before its new host reaches the document', async () => {
+    onTestFinished(enableSubgraphNodeCreation(graph))
+    const source = new TestPrompt()
+    const sink = new TestSink()
+    withGraphIntentSource('load', () => {
+      source.addOutput('image', 'IMAGE')
+      graph.add(source)
+      graph.add(sink)
+      source.connect(0, sink, 0)
+    })
+    const doc = mintDocFrom(graph)
+    onTestFinished(() => doc.destroy())
+    const { subgraph, node } = graph.convertToSubgraph(new Set([source]))
+    await afterFlush()
+    const outcomes = applyOutcomes(doc, minted)
+    expect(
+      outcomes.filter((outcome) => outcome.outcome === 'rejected')
+    ).toEqual([])
+    const projected = project(doc, CATALOG)
+    expect(projected.definitions?.subgraphs).toContainEqual(
+      expect.objectContaining({ id: subgraph.id })
+    )
+    expect(
+      projected.nodes.find((item) => String(item.id) === String(node.id))?.type
+    ).toBe(subgraph.id)
+  })
+
+  it('preserves nested definitions when two conversions happen before the next flush', async () => {
+    onTestFinished(enableSubgraphNodeCreation(graph))
+    const { source } = seedGraph(graph)
+    const doc = mintDocFrom(graph)
+    onTestFinished(() => doc.destroy())
+    const inner = graph.convertToSubgraph(new Set([source]))
+    const outer = graph.convertToSubgraph(new Set([inner.node]))
+
+    await afterFlush()
+
+    expect(
+      applyOutcomes(doc, minted).filter(
+        (outcome) => outcome.outcome === 'rejected'
+      )
+    ).toEqual([])
+    const projected = project(doc, CATALOG)
+    expect(projected.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: outer.subgraph.id })
+      ])
+    )
+    expect(projected.definitions?.subgraphs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: outer.subgraph.id
+        }),
+        expect.objectContaining({
+          id: inner.subgraph.id,
+          nodes: expect.arrayContaining([
+            expect.objectContaining({ type: 'TestSource' })
+          ])
+        })
+      ])
+    )
+  })
+
+  it('unpacks a registered subgraph without losing its widget value or external link', async () => {
+    onTestFinished(enableSubgraphNodeCreation(graph))
+    const source = new TestPrompt()
+    const sink = new TestSink()
+    const converted = withGraphIntentSource('load', () => {
+      source.addOutput('image', 'IMAGE')
+      graph.add(source)
+      graph.add(sink)
+      source.connect(0, sink, 0)
+      return graph.convertToSubgraph(new Set([source]))
+    })
+    const doc = mintDocFrom(graph)
+    onTestFinished(() => doc.destroy())
+
+    expect(graph.unpackSubgraph(converted.node)).toBe(true)
+    await afterFlush()
+
+    expect(
+      applyOutcomes(doc, minted).filter(
+        (outcome) => outcome.outcome === 'rejected'
+      )
+    ).toEqual([])
+    const projected = project(doc, CATALOG)
+    const restored = projected.nodes.find((node) => node.type === 'TestPrompt')
+    expect(restored?.widgets_values).toEqual(['an interior default'])
+    expect(projected.nodes.map((node) => node.type).sort()).toEqual([
+      'TestPrompt',
+      'TestSink'
+    ])
+    expect(projected.links).toEqual([
+      [expect.any(Number), String(restored?.id), 0, String(sink.id), 0, 'IMAGE']
+    ])
+  })
+
+  it('sends no partial conversion when the definition cannot be serialized', async () => {
+    onTestFinished(enableSubgraphNodeCreation(graph))
+    const { source } = seedGraph(graph)
+    const { subgraph } = graph.convertToSubgraph(new Set([source]))
+    vi.spyOn(subgraph, 'asSerialisable').mockImplementation(() => {
+      throw new Error('invalid definition')
+    })
+    await afterFlush()
+    expect(minted).toEqual([])
+    expect(reportError).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        errorType: 'agent_crdt_unrepresentable_subgraph_definition'
+      })
+    )
+  })
+
+  it('omits node incarnation bookkeeping from a converted definition', async () => {
+    onTestFinished(enableSubgraphNodeCreation(graph))
+    const { source } = seedGraph(graph)
+    const { subgraph } = graph.convertToSubgraph(new Set([source]))
+    const serialized = subgraph.asSerialisable()
+    vi.spyOn(subgraph, 'asSerialisable').mockReturnValue({
+      ...serialized,
+      nodes: serialized.nodes.map((node) => ({
+        ...node,
+        __incarnation: 'prior-incarnation'
+      }))
+    })
+    await afterFlush()
+    const registration = minted.find(
+      (operation) => operation.op === 'define_subgraph'
+    )
+    assert.exists(registration)
+    expect(registration.subgraph_definition.nodes).toEqual(serialized.nodes)
+    expect(registration.subgraph_definition.nodes[0]).not.toHaveProperty(
+      '__incarnation'
+    )
+  })
+
+  it('leaves the original graph intact when the host rejects a converted definition', async () => {
+    onTestFinished(enableSubgraphNodeCreation(graph))
+    const { source } = seedGraph(graph)
+    const doc = mintDocFrom(graph)
+    onTestFinished(() => doc.destroy())
+    const original = project(doc, CATALOG)
+    graph.convertToSubgraph(new Set([source]))
+    await afterFlush()
+    expect(minted[0]?.op).toBe('define_subgraph')
+    const invalid = minted.map((operation) =>
+      operation.op === 'define_subgraph'
+        ? { ...operation, subgraph_id: 'invalid-definition-id' }
+        : operation
+    )
+    expect(applyOutcomes(doc, invalid)[0]?.outcome).toBe('rejected')
+    expect(project(doc, CATALOG)).toEqual(original)
+  })
 
   describe('mints one op per graph command', () => {
     it.for([
@@ -620,6 +818,54 @@ describe('attachDocOpMinter', () => {
       ).toEqual(['agent_crdt_link_slot_not_in_doc'])
     })
 
+    it('grows a widget-backed input missing from an agent-built document', async () => {
+      const source = new TestSource()
+      const sink = new TestWidgetSink()
+      withGraphIntentSource('load', () => {
+        graph.add(source)
+        graph.add(sink)
+      })
+      const serialized = graph.serialize() as unknown as WorkflowJSON
+      const serializedSink = serialized.nodes.find(
+        (node) => String(node.id) === String(sink.id)
+      )
+      assert.exists(serializedSink)
+      serializedSink.inputs = []
+      const doc = mint(serialized, CATALOG)
+      docInputNames = (nodeId) =>
+        readDocSlotNames(doc, String(nodeId), 'inputs')
+
+      source.connect(0, sink, 0)
+      await afterFlush()
+
+      const linkId = sink.inputs[0].link
+      expect(minted).toEqual([
+        {
+          op: 'connect',
+          link_id: linkId,
+          from_node: source.id,
+          from_slot: 0,
+          to_node: sink.id,
+          to_slot: null,
+          link_type: 'IMAGE',
+          grow: { name: 'strength', type: 'IMAGE', widget: 'strength' }
+        }
+      ])
+      expect(applyMinted(doc, minted)).toEqual(['applied'])
+      expect(docInputs(doc, sink.id)).toEqual([
+        { name: 'strength', link: linkId }
+      ])
+      const projectedSink = project(doc, CATALOG).nodes.find(
+        (node) => String(node.id) === String(sink.id)
+      )
+      expect(projectedSink?.inputs?.[0]).toMatchObject({
+        name: 'strength',
+        link: linkId,
+        widget: { name: 'strength' }
+      })
+      doc.destroy()
+    })
+
     it('grows an autogrow slot the document lacks instead of naming a live index, and the applier appends it', async () => {
       const sources = [new TestSource(), new TestSource(), new TestSource()]
       const sink = new TestAutogrowSink()
@@ -730,6 +976,24 @@ describe('attachDocOpMinter', () => {
     docPromotedWidgets = (nodeId) => readDocPromotedWidgets(doc, String(nodeId))
     return { host, doc }
   }
+
+  it('does not grow a promoted input missing from the subgraph host document', async () => {
+    const { host, doc } = seedPromotedHost()
+    expect(host.inputs[1].widget).toEqual({ name: 'text' })
+    const source = new LGraphNode('Text Source')
+    source.addOutput('STRING', 'STRING')
+    withGraphIntentSource('load', () => graph.add(source))
+    docInputNames = (nodeId) => (nodeId === host.id ? [] : null)
+
+    source.connect(0, host, 1)
+    await afterFlush()
+
+    expect(minted).toEqual([])
+    expect(
+      vi.mocked(reportError).mock.calls.map(([, meta]) => meta.errorType)
+    ).toEqual(['agent_crdt_link_slot_not_in_doc'])
+    doc.destroy()
+  })
 
   it('PM-1995: mints a promoted host write the doc host accepts', async () => {
     const { host, doc } = seedPromotedHost()

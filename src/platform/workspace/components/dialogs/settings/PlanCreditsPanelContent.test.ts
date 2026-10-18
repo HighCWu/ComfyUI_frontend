@@ -72,6 +72,7 @@ function renderPanel({ cloud = true } = {}) {
 }
 
 beforeEach(() => {
+  vi.stubEnv('VITE_RUN_BILLING_MODE', 'subscription')
   permission.canManage.value = true
 })
 
@@ -97,6 +98,22 @@ describe('PlanCreditsPanelContent', () => {
     ).toBeTruthy()
     expect(
       screen.queryByRole('region', { name: 'Plan and credits overview' })
+    ).toBeNull()
+  })
+
+  it('shows only prepaid balance and activity on the Laimon cloud build', () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    renderPanel()
+
+    expect(
+      screen.getByRole('region', { name: 'Local credits overview' })
+    ).toBeTruthy()
+    expect(
+      screen.queryByRole('region', { name: 'Plan and credits overview' })
+    ).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Invoices' })).toBeNull()
+    expect(
+      screen.queryByRole('contentinfo', { name: 'Subscription links' })
     ).toBeNull()
   })
 

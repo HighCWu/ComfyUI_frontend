@@ -1,11 +1,14 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest'
+import { fromAny } from '@total-typescript/shoehorn'
 
 import type { WorkflowApiAssetsResponse } from '@comfyorg/ingest-types'
+import axios from 'axios'
 import type {
   PromptFailureResponse,
   PromptResponse
 } from '@/platform/remote/comfyui/types'
-import { api, PromptExecutionError } from '@/scripts/api'
+import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
+import { api, ComfyApi, PromptExecutionError } from '@/scripts/api'
 
 describe('ComfyApi response boundaries', () => {
   it('models prompt success separately from prompt failure', () => {
@@ -30,6 +33,168 @@ describe('ComfyApi response boundaries', () => {
       }).toString()
     ).toBe('Gateway rejected prompt')
   })
+
+  it('validates a successful prompt submission before returning it', async () => {
+    const client = new ComfyApi()
+    const promptId = crypto.randomUUID()
+    vi.spyOn(client, 'fetchApi').mockResolvedValue(
+      Response.json({
+        prompt_id: promptId,
+        number: 17,
+        node_errors: {},
+        execution_kind: 'gpu'
+      })
+    )
+
+    await expect(
+      client.queuePrompt(0, {
+        output: {},
+        workflow: fromAny<ComfyWorkflowJSON, unknown>({})
+      })
+    ).resolves.toMatchObject({
+      prompt_id: promptId,
+      number: 17,
+      execution_kind: 'gpu'
+    })
+  })
+
+  it('rejects a malformed successful prompt submission', async () => {
+    const client = new ComfyApi()
+    vi.spyOn(client, 'fetchApi').mockResolvedValue(
+      Response.json({ prompt_id: 'not-a-uuid', node_errors: [] })
+    )
+
+    await expect(
+      client.queuePrompt(0, {
+        output: {},
+        workflow: fromAny<ComfyWorkflowJSON, unknown>({})
+      })
+    ).rejects.toThrow()
+  })
+
+  it('validates node definitions while preserving extension metadata', async () => {
+    const client = new ComfyApi()
+    const response = {
+      ExampleNode: {
+        name: 'ExampleNode',
+        display_name: 'Example node',
+        category: 'examples',
+        input: { required: { text: ['STRING'] } },
+        output: ['IMAGE'],
+        custom_extension_metadata: { package: 'example-pack' }
+      }
+    }
+    vi.spyOn(client, 'fetchApi').mockResolvedValue(Response.json(response))
+
+    await expect(client.getNodeDefs()).resolves.toEqual(response)
+  })
+
+  it('accepts legacy node metadata present in the staging object catalog', async () => {
+    const client = new ComfyApi()
+    const response = {
+      LegacyNode: {
+        name: 'LegacyNode',
+        display_name: null,
+        output: [['first', 'second']],
+        output_is_list: [null],
+        output_name: 'CHOICE',
+        output_tooltips: [null]
+      }
+    }
+    vi.spyOn(client, 'fetchApi').mockResolvedValue(Response.json(response))
+
+    await expect(client.getNodeDefs()).resolves.toEqual(response)
+  })
+
+  it.for([null, [], { BrokenNode: null }, { BrokenNode: 'invalid' }])(
+    'rejects malformed node definitions %#',
+    async (response) => {
+      const client = new ComfyApi()
+      vi.spyOn(client, 'fetchApi').mockResolvedValue(Response.json(response))
+
+      await expect(client.getNodeDefs()).rejects.toThrow()
+    }
+  )
+
+  it('validates system stats while preserving Laimon extensions', async () => {
+    const client = new ComfyApi()
+    const response = {
+      system: {
+        argv: [],
+        comfyui_version: '0.3.76',
+        embedded_python: false,
+        os: 'cloud',
+        python_version: 'n/a',
+        pytorch_version: 'n/a',
+        ram_free: 0,
+        ram_total: 0,
+        required_frontend_version: '1.58.0'
+      },
+      devices: [],
+      telemetry: { scope: 'control-plane', available: false }
+    }
+    vi.spyOn(client, 'fetchApi').mockResolvedValue(Response.json(response))
+
+    await expect(client.getSystemStats()).resolves.toEqual(response)
+  })
+
+  it('rejects malformed system stats before they reach the store', async () => {
+    const client = new ComfyApi()
+    vi.spyOn(client, 'fetchApi').mockResolvedValue(
+      Response.json({ system: { os: 'cloud' }, devices: 'none' })
+    )
+
+    await expect(client.getSystemStats()).rejects.toThrow()
+  })
+
+  it('validates the native user-storage bootstrap while preserving extensions', async () => {
+    const client = new ComfyApi()
+    const response = {
+      storage: 'server',
+      migrated: true,
+      deployment: 'laimon'
+    }
+    vi.spyOn(client, 'fetchApi').mockResolvedValue(Response.json(response))
+
+    await expect(client.getUserConfig()).resolves.toEqual(response)
+  })
+
+  it.for([
+    null,
+    {},
+    { storage: 'browser' },
+    { storage: 'server', migrated: 'yes' },
+    { storage: 'server', users: [] },
+    { storage: 'server', users: { alice: 17 } }
+  ])('rejects malformed user-storage bootstrap %#', async (response) => {
+    const client = new ComfyApi()
+    vi.spyOn(client, 'fetchApi').mockResolvedValue(Response.json(response))
+
+    await expect(client.getUserConfig()).rejects.toThrow()
+  })
+
+  it('validates custom-node translations before returning them', async () => {
+    const client = new ComfyApi()
+    const response = {
+      'comfyui-impact-pack': {
+        en: { title: 'Impact Pack' },
+        'zh-CN': { title: '影响工具包' }
+      }
+    }
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({ data: response })
+
+    await expect(client.getCustomNodesI18n()).resolves.toEqual(response)
+  })
+
+  it.for([null, [], 'translations'])(
+    'rejects malformed custom-node translations %#',
+    async (response) => {
+      const client = new ComfyApi()
+      vi.spyOn(axios, 'get').mockResolvedValueOnce({ data: response })
+
+      await expect(client.getCustomNodesI18n()).rejects.toThrow()
+    }
+  )
 
   it.for([
     {
@@ -86,6 +251,50 @@ describe('ComfyApi response boundaries', () => {
     await expect(api.getGlobalSubgraphData('blueprint-17')).rejects.toThrow(
       "Global subgraph 'blueprint-17' returned empty data"
     )
+  })
+
+  it('validates user-data file metadata before returning it', async () => {
+    const files = [{ path: 'workflows/demo.json', size: 17, modified: 42 }]
+    vi.mocked(global.fetch).mockResolvedValue(Response.json(files))
+
+    await expect(api.listUserDataFullInfo('workflows')).resolves.toEqual(files)
+  })
+
+  it('rejects user-data entries without a path', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      Response.json([{ size: 17, modified: 42 }])
+    )
+
+    await expect(api.listUserDataFullInfo('workflows')).rejects.toThrow()
+  })
+
+  it('validates global subgraph metadata while preserving local extensions', async () => {
+    const subgraphs = {
+      'blueprint-17': {
+        name: 'Blueprint 17',
+        source: 'templates',
+        info: { node_pack: 'core', category: 'Examples' },
+        data: '{"version":1}',
+        essentials_category: 'image'
+      }
+    }
+    vi.mocked(global.fetch).mockResolvedValue(Response.json(subgraphs))
+
+    await expect(api.getGlobalSubgraphs()).resolves.toEqual(subgraphs)
+  })
+
+  it('rejects malformed global subgraph metadata', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      Response.json({
+        'blueprint-17': {
+          name: 'Blueprint 17',
+          source: 'templates',
+          data: '{"version":1}'
+        }
+      })
+    )
+
+    await expect(api.getGlobalSubgraphs()).rejects.toThrow()
   })
 
   it('returns valid shareable assets', async () => {

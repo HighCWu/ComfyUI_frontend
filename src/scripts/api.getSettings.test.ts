@@ -10,6 +10,15 @@ describe('api.getSettings', () => {
     await expect(api.getSettings()).resolves.toEqual(settings)
   })
 
+  it.for([null, [], 'settings'])(
+    'rejects a malformed settings payload',
+    async (payload) => {
+      vi.spyOn(api, 'fetchApi').mockResolvedValue(Response.json(payload))
+
+      await expect(api.getSettings()).rejects.toThrow()
+    }
+  )
+
   // HTTP/2 carries no reason phrase, so `statusText` is empty on every real
   // cloud response. An error built from it alone reaches Sentry as the
   // untitled "Error: No error message" group — the largest user-facing group

@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from 'vitest'
+import { assert, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import { POOL_CAPACITY_PREPARING_CODE, PromptExecutionError } from './api'
 import {
-  isWorkspaceEditorIframe,
+  isManagedEditorSession,
   PromptCapacityRetryCancelledError,
   retryPromptWhenCapacityPreparing
 } from './promptCapacityRetry'
@@ -128,32 +128,44 @@ describe('retryPromptWhenCapacityPreparing', () => {
   })
 })
 
-describe('isWorkspaceEditorIframe', () => {
-  it('requires both an eds window name and an iframe context', () => {
+describe('isManagedEditorSession', () => {
+  it('enables capacity preparation for a bound top-level editor', () => {
+    const originalName = window.name
+    window.name = 'eds_top-level'
+    onTestFinished(() => {
+      window.name = originalName
+    })
+    expect(isManagedEditorSession()).toBe(true)
+  })
+  it('retains legacy framed editor bindings without accepting ordinary windows', () => {
     const originalName = window.name
     const originalTop = Object.getOwnPropertyDescriptor(window, 'top')
-
-    Object.defineProperty(window, 'name', {
-      configurable: true,
-      value: 'eds_instance-1'
+    assert.exists(originalTop)
+    onTestFinished(() => {
+      window.name = originalName
+      Object.defineProperty(window, 'top', originalTop)
     })
+
+    window.name = 'eds_instance-1'
     Object.defineProperty(window, 'top', {
       configurable: true,
       value: {}
     })
 
-    expect(isWorkspaceEditorIframe()).toBe(true)
+    expect(isManagedEditorSession()).toBe(true)
 
-    Object.defineProperty(window, 'name', {
-      configurable: true,
-      value: 'comfy-instance-1'
-    })
-    expect(isWorkspaceEditorIframe()).toBe(false)
-
-    Object.defineProperty(window, 'name', {
-      configurable: true,
-      value: originalName
-    })
-    if (originalTop) Object.defineProperty(window, 'top', originalTop)
+    window.name = 'comfy-instance-1'
+    expect(isManagedEditorSession()).toBe(false)
   })
+  it.for(['', 'eds_', 'eds_bad/path', `eds_${'a'.repeat(125)}`])(
+    'rejects invalid session binding %s',
+    (name) => {
+      const originalName = window.name
+      window.name = name
+      onTestFinished(() => {
+        window.name = originalName
+      })
+      expect(isManagedEditorSession()).toBe(false)
+    }
+  )
 })

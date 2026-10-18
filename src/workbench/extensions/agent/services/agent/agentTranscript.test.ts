@@ -1,4 +1,4 @@
-import { assert, describe, expect, it } from 'vitest'
+import { assert, describe, expect, it, vi } from 'vitest'
 
 import type { AgentMessages } from '../../schemas/agentApiSchema'
 import { toTurnId, zAgentMessages } from '../../schemas/agentApiSchema'
@@ -21,6 +21,110 @@ const row = (
 })
 
 describe('normalizeAgentTranscript', () => {
+  it.for([
+    { mode: 'official', expected: 'turn-a' },
+    { mode: '', expected: 'assistant-row' }
+  ])(
+    'restores the $mode live transport identity without changing persisted row IDs',
+    ({ mode, expected }) => {
+      vi.stubEnv('VITE_AGENT_BACKEND_MODE', mode)
+      const transcript = normalizeAgentTranscript([
+        row(1, 'user', 'turn-a', 'Prompt', 'user-row'),
+        {
+          ...row(2, 'assistant', 'turn-a', 'Partial', 'assistant-row'),
+          status: 'streaming'
+        }
+      ])
+      expect(transcript.pending?.messageId).toBe(expected)
+      expect(transcript.rowIds).toEqual(new Set(['user-row', 'assistant-row']))
+    }
+  )
+
+  it('restores an active pause but not a resolved terminal pause', () => {
+    const message = row(1, 'assistant', 'turn-a', '', 'row-1')
+    message.status = 'streaming'
+    message.pending_ask = {
+      kind: 'paused',
+      ask_id: 'pause-1',
+      message_id: 'turn-a',
+      prompt: 'Reply paused',
+      options: [{ id: 'resume', label: 'Resume' }],
+      min_selections: 1,
+      max_selections: 1,
+      allow_other: false,
+      context: {
+        reason: 'step_limit',
+        message: 'Step limit',
+        recheck_after_seconds: 0
+      }
+    }
+    expect(
+      normalizeAgentTranscript([message]).messages[0].parts
+    ).toContainEqual(
+      expect.objectContaining({ askId: 'pause-1', paused: message.pending_ask })
+    )
+    message.status = 'complete'
+    expect(
+      normalizeAgentTranscript([message]).messages[0].parts
+    ).not.toContainEqual(expect.objectContaining({ askId: 'pause-1' }))
+  })
+  it('restores a pending Delete/Keep card with the server target list', () => {
+    const message = row(1, 'assistant', 'turn-a', '', 'row-1')
+    message.status = 'streaming'
+    message.pending_ask = {
+      kind: 'delete_approval',
+      ask_id: 'delete-1',
+      message_id: 'turn-a',
+      prompt: 'Delete nodes?',
+      options: [
+        { id: 'delete', label: 'Delete' },
+        { id: 'keep', label: 'Keep' }
+      ],
+      min_selections: 1,
+      max_selections: 1,
+      allow_other: false,
+      context: {
+        action: 'delete_nodes',
+        nodes: [{ id: '1', title: 'Owned node' }]
+      }
+    }
+    expect(
+      normalizeAgentTranscript([message]).messages[0].parts
+    ).toContainEqual(
+      expect.objectContaining({
+        type: 'runApproval',
+        askId: 'delete-1',
+        deletion: expect.objectContaining({ kind: 'delete_approval' })
+      })
+    )
+  })
+  it('restores a pending native question but never resurrects it on a terminal row', () => {
+    const message = row(1, 'assistant', 'turn-a', '', 'row-1')
+    message.status = 'streaming'
+    message.pending_ask = {
+      kind: 'ask_user',
+      ask_id: 'question-1',
+      message_id: 'turn-a',
+      prompt: 'Choose format',
+      options: [{ id: 'png', label: 'PNG' }],
+      min_selections: 1,
+      max_selections: 1,
+      allow_other: false
+    }
+    expect(
+      normalizeAgentTranscript([message]).messages[0].parts
+    ).toContainEqual(
+      expect.objectContaining({
+        type: 'runApproval',
+        askId: 'question-1',
+        question: expect.objectContaining({ prompt: 'Choose format' })
+      })
+    )
+    message.status = 'complete'
+    expect(
+      normalizeAgentTranscript([message]).messages[0].parts
+    ).not.toContainEqual(expect.objectContaining({ askId: 'question-1' }))
+  })
   it('restores a skill and adjacent workflow references in their original order from message text', () => {
     const message = row(1, 'user', 'turn-a', '', 'row-1')
     message.content = {
@@ -246,6 +350,29 @@ describe('normalizeAgentTranscript', () => {
         ref: 'content-hash',
         id: 'asset-1',
         kind: 'image'
+      }
+    ])
+  })
+
+  it('restores a generic readable file when the server intentionally omits media kind', () => {
+    const message = row(1, 'user', 'turn-a', 'read this brief', 'row-1')
+    message.content = {
+      text: 'read this brief',
+      attachments: ['content-hash.md'],
+      attachment_refs: [
+        {
+          name: 'content-hash.md',
+          display_name: 'Workflow brief.md'
+        }
+      ]
+    }
+
+    const transcript = normalizeAgentTranscript([message])
+
+    expect(transcript.userAttachments.get(toTurnId('turn-a'))).toEqual([
+      {
+        name: 'Workflow brief.md',
+        ref: 'content-hash.md'
       }
     ])
   })
@@ -630,6 +757,13 @@ describe('normalizeAgentTranscript', () => {
       state: 'streaming'
     })
     expect(transcript.pending?.messageId).toBe('row-1')
+    expect(transcript.messages[0].parts).toContainEqual({
+      type: 'runApproval',
+      askId: 'ask-1',
+      prompt: 'Run it?',
+      workflowId: undefined,
+      workflowName: undefined
+    })
   })
 
   // PM-1776 / PM-1682: the counterpart of the clamp above. A server row that

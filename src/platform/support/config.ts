@@ -41,13 +41,9 @@ function getFeedbackTags(source: FeedbackSource): Record<string, string> {
   return { distribution: getDistribution(), source }
 }
 
-/**
- * Builds the feedback Typeform URL tagged with the current build distribution
- * and the UI source that opened it. Tags are passed via the URL fragment
- * (Typeform's hidden-field convention) so survey responses can be segmented
- * by distribution (cloud / oss-nightly / oss) and entry point.
- */
+/** Builds first-party prepaid support or the upstream feedback form URL. */
 export function buildFeedbackTypeformUrl(source: FeedbackSource): string {
+  if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') return '/support'
   const params = new URLSearchParams(getFeedbackTags(source))
   return `${FEEDBACK_TYPEFORM_BASE_URL}#${params.toString()}`
 }
@@ -63,17 +59,12 @@ export function buildFeedbackHiddenFields(
     .join(',')
 }
 
-/**
- * Builds the support URL with optional user information for pre-filling.
- * Users without login information will still get a valid support URL without pre-fill.
- *
- * @param params - User information to pre-fill in the support form
- * @returns Complete Zendesk support URL with query parameters
- */
+/** Builds first-party prepaid support or a prefilled upstream support URL. */
 export function buildSupportUrl(params?: {
   userEmail?: string | null
   userId?: string | null
 }): string {
+  if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') return '/support'
   const searchParams = new URLSearchParams({
     [ZENDESK_FIELDS.DISTRIBUTION]: getDistribution()
   })

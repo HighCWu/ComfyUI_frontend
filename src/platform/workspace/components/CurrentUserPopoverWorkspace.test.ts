@@ -143,6 +143,7 @@ function renderComponent(
 
 describe('CurrentUserPopoverWorkspace', () => {
   beforeEach(() => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'subscription')
     useCurrentUser().userDisplayName = computed(() => 'Liz')
     useCurrentUser().userEmail = computed(() => 'liz@example.com')
     useCurrentUser().userPhotoUrl = computed(() => null)
@@ -151,7 +152,12 @@ describe('CurrentUserPopoverWorkspace', () => {
     state.canAccessSubscriptionFeatures = true
     state.isCancelled = false
     state.planSlug = 'pro-monthly'
+    state.canReactivatePlan = false
     useBillingCapabilities().canTopUp = computed(() => false)
+    useBillingCapabilities().canSubscribeSelfServe = computed(() => false)
+    useBillingCapabilities().canReactivate = computed(
+      () => state.canReactivatePlan
+    )
 
     state.canManageSubscription = false
     state.canManageSubscriptionLifecycle = false
@@ -357,6 +363,32 @@ describe('CurrentUserPopoverWorkspace', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('never exposes subscription lifecycle actions in prepaid mode', () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    state.canAccessSubscriptionFeatures = true
+    state.canManageSubscription = true
+    state.canManageSubscriptionLifecycle = true
+    state.canReactivatePlan = true
+    state.canOpenPricingSurface = true
+    state.isCancelled = true
+    useBillingCapabilities().canTopUp = computed(() => true)
+    useBillingCapabilities().canSubscribeSelfServe = computed(() => false)
+    useBillingCapabilities().canReactivate = computed(() => false)
+
+    renderComponent('personal')
+
+    expect(screen.getByTestId('add-credits-button')).toBeInTheDocument()
+    expect(
+      screen.queryByTestId('plans-pricing-menu-item')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByTestId('manage-plan-menu-item')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Resubscribe' })
+    ).not.toBeInTheDocument()
+  })
+
   /**
    * Plan selection stays in the app regardless of `hosted_billing_destination`:
    * billing-web's `/v1/pricing` has no personal/team tabs, cycle toggle, or
@@ -470,7 +502,7 @@ describe('CurrentUserPopoverWorkspace', () => {
     ).toHaveBeenCalledExactlyOnceWith({ source: 'avatar_menu_plans' })
   })
 
-  it('offers add-credits alongside Subscribe for an unsubscribed Cloud owner', () => {
+  it('does not duplicate Subscribe when add-credits is already available', () => {
     state.canAccessSubscriptionFeatures = false
     useBillingCapabilities().canTopUp = computed(() => true)
     useBillingCapabilities().canSubscribeSelfServe = computed(() => true)
@@ -483,8 +515,8 @@ describe('CurrentUserPopoverWorkspace', () => {
       screen.queryByTestId('upgrade-to-add-credits-button')
     ).not.toBeInTheDocument()
     expect(
-      screen.getByRole('button', { name: 'Subscribe' })
-    ).toBeInTheDocument()
+      screen.queryByRole('button', { name: 'Subscribe' })
+    ).not.toBeInTheDocument()
   })
 
   it('offers add-credits instead of the upgrade upsell on the Local free tier', () => {
@@ -518,7 +550,7 @@ describe('CurrentUserPopoverWorkspace', () => {
     state.isCloud = false
     state.isCancelled = true
     state.canManageSubscriptionLifecycle = true
-    useBillingCapabilities().canReactivate = computed(() => true)
+    useBillingCapabilities().canReactivate = computed(() => false)
 
     renderComponent('team')
 
@@ -565,7 +597,7 @@ describe('CurrentUserPopoverWorkspace', () => {
       visible: false
     },
     {
-      name: 'allows a subscription manager to subscribe an inaccessible plan',
+      name: 'does not duplicate the self-serve subscription upgrade action',
       canAccessSubscriptionFeatures: false,
       isCancelled: false,
       canManageSubscription: true,
@@ -574,7 +606,7 @@ describe('CurrentUserPopoverWorkspace', () => {
       canSubscribeSelfServe: true,
       canTopUp: true,
       action: 'Subscribe',
-      visible: true
+      visible: false
     },
     {
       name: 'does not let a lifecycle manager subscribe an inaccessible plan',

@@ -220,6 +220,7 @@ describe('WorkflowTabs feedback button', () => {
 describe('WorkflowTabs agent entry button', () => {
   beforeEach(() => {
     useAgentPanelStore().enabled = true
+    api.serverFeatureFlags.value = {}
     api.serverFeatureFlagsSettled.value = false
   })
 
@@ -239,6 +240,25 @@ describe('WorkflowTabs agent entry button', () => {
     expect(
       screen.queryByRole('button', { name: enMessages.agent.entryButton })
     ).toBeNull()
+  })
+
+  it('shows a disabled starting state without entering consent', async () => {
+    useAgentPanelStore().enabled = false
+    api.serverFeatureFlags.value = {
+      agent: { state: 'starting', reason: 'warming' }
+    }
+    const { user } = renderComponent()
+
+    const button = screen.getByRole('button', {
+      name: enMessages.agent.entryStarting
+    })
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).toHaveAttribute(
+      'title',
+      enMessages.agent.entryStartingReason.replace('{reason}', 'warming')
+    )
+    await user.click(button)
+    expect(withConsent).not.toHaveBeenCalled()
   })
 
   // The separator divides the button off from the avatar, so it must leave

@@ -72,14 +72,7 @@ describe(useWorkflowShareService, () => {
   })
 
   it('returns unpublished status for unknown workflow', async () => {
-    mockFetchApi.mockResolvedValue(
-      mockJsonResponse({
-        workflow_id: 'wf-0',
-        publish_time: null,
-        share_id: null,
-        listed: false
-      })
-    )
+    mockFetchApi.mockResolvedValue(mockJsonResponse({}, false, 404))
 
     const service = useWorkflowShareService()
     const status = await service.getPublishStatus('unknown-id')
@@ -173,7 +166,8 @@ describe(useWorkflowShareService, () => {
           workflow_id: 'wf-prefill',
           share_id: 'wf-prefill',
           publish_time: '2026-02-23T00:00:00Z',
-          listed: true
+          listed: true,
+          assets: []
         })
       }
 
@@ -231,7 +225,8 @@ describe(useWorkflowShareService, () => {
           workflow_id: 'wf-empty-meta',
           share_id: 'wf-empty-meta',
           publish_time: '2026-02-23T00:00:00Z',
-          listed: true
+          listed: true,
+          assets: []
         })
       }
 
@@ -268,7 +263,8 @@ describe(useWorkflowShareService, () => {
           workflow_id: 'wf-invalid',
           share_id: 'wf-invalid',
           publish_time: '2026-02-23T00:00:00Z',
-          listed: true
+          listed: true,
+          assets: []
         })
       )
       .mockResolvedValueOnce(
@@ -291,7 +287,8 @@ describe(useWorkflowShareService, () => {
           workflow_id: 'wf-no-meta',
           share_id: 'wf-no-meta',
           publish_time: '2026-02-23T00:00:00Z',
-          listed: true
+          listed: true,
+          assets: []
         })
       }
 
@@ -311,7 +308,8 @@ describe(useWorkflowShareService, () => {
         workflow_id: 'wf-unlisted',
         share_id: 'wf-unlisted',
         publish_time: '2026-02-23T00:00:00Z',
-        listed: false
+        listed: false,
+        assets: []
       })
     )
 
@@ -420,7 +418,7 @@ describe(useWorkflowShareService, () => {
   })
 
   it('imports published assets via POST /assets/import with share_id', async () => {
-    mockFetchApi.mockResolvedValue(mockJsonResponse({}, true, 200))
+    mockFetchApi.mockResolvedValue(mockJsonResponse({ assets: [] }, true, 200))
 
     const service = useWorkflowShareService()
     await service.importPublishedAssets(['pa-1', 'pa-2'], 'share-id-1')
@@ -437,7 +435,7 @@ describe(useWorkflowShareService, () => {
   })
 
   it('omits share_id from the payload when not provided', async () => {
-    mockFetchApi.mockResolvedValue(mockJsonResponse({}, true, 200))
+    mockFetchApi.mockResolvedValue(mockJsonResponse({ assets: [] }, true, 200))
 
     const service = useWorkflowShareService()
     await service.importPublishedAssets(['pa-1'])
@@ -450,7 +448,7 @@ describe(useWorkflowShareService, () => {
   })
 
   it('omits share_id from the payload when shareId is an empty string', async () => {
-    mockFetchApi.mockResolvedValue(mockJsonResponse({}, true, 200))
+    mockFetchApi.mockResolvedValue(mockJsonResponse({ assets: [] }, true, 200))
 
     const service = useWorkflowShareService()
     await service.importPublishedAssets(['pa-1'], '')

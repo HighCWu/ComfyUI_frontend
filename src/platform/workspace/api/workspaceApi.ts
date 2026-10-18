@@ -43,11 +43,20 @@ import type {
   WorkspaceWithRole
 } from '@comfyorg/ingest-types'
 import {
+  zBillingBalanceResponse,
+  zBillingCapabilitiesResponse,
+  zGetBillingEventsResponse,
+  zBillingOpStatusResponse,
+  zCurrentWorkspaceResponse,
+  zListMembersResponse,
+  zListWorkspacesResponse,
   zRetentionAcceptance,
   zRetentionFlowResponse
 } from '@comfyorg/ingest-types/zod'
 import type { AxiosInstance } from 'axios'
 import axios from 'axios'
+import { z } from 'zod'
+import type { ZodType } from 'zod'
 
 import {
   webSessionRequests,
@@ -196,7 +205,18 @@ function requireWorkspaceApiAuth(): WorkspaceApiAuth {
   return workspaceApiAuth
 }
 
+function validatedResponse<T>(schema: ZodType, data: T): T {
+  schema.parse(data)
+  return data
+}
+
+const prepaidBillingPlansResponseSchema = z
+  .object({ plans: z.array(z.never()).length(0) })
+  .strict()
+
 async function requestAuth() {
+  if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid')
+    return { withCredentials: true }
   if (webSessionRequests()) {
     const send = await webSessionSend()
     if (send) return { adapter: createWebSessionAdapter(send) }
@@ -244,7 +264,7 @@ export const workspaceApi = {
         workspaceApiUrl('/workspaces'),
         auth
       )
-      return response.data
+      return validatedResponse(zListWorkspacesResponse, response.data)
     } catch (err) {
       handleAxiosError(err, 'list')
     }
@@ -261,7 +281,7 @@ export const workspaceApi = {
         workspaceApiUrl('/workspaces/current'),
         auth
       )
-      return response.data
+      return validatedResponse(zCurrentWorkspaceResponse, response.data)
     } catch (err) {
       handleAxiosError(err, 'getCurrentWorkspace')
     }
@@ -350,7 +370,7 @@ export const workspaceApi = {
         workspaceApiUrl('/workspace/members'),
         { ...auth, params }
       )
-      return response.data
+      return validatedResponse(zListMembersResponse, response.data)
     } catch (err) {
       handleAxiosError(err, 'listMembers')
     }
@@ -504,7 +524,7 @@ export const workspaceApi = {
         workspaceApiUrl('/billing/balance'),
         auth
       )
-      return response.data
+      return validatedResponse(zBillingBalanceResponse, response.data)
     } catch (err) {
       handleAxiosError(err, 'getBillingBalance')
     }
@@ -524,7 +544,7 @@ export const workspaceApi = {
           workspaceApiUrl('/billing/capabilities'),
           { ...auth, timeout: 10_000, signal }
         )
-      return response.data
+      return validatedResponse(zBillingCapabilitiesResponse, response.data)
     } catch (err) {
       handleAxiosError(err, 'getBillingCapabilities')
     }
@@ -541,7 +561,9 @@ export const workspaceApi = {
         workspaceApiUrl('/billing/plans'),
         auth
       )
-      return response.data
+      return import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
+        ? validatedResponse(prepaidBillingPlansResponseSchema, response.data)
+        : response.data
     } catch (err) {
       handleAxiosError(err, 'getBillingPlans')
     }
@@ -808,7 +830,7 @@ export const workspaceApi = {
         workspaceApiUrl('/billing/events'),
         { ...auth, params }
       )
-      return response.data
+      return validatedResponse(zGetBillingEventsResponse, response.data)
     } catch (err) {
       handleAxiosError(err, 'getBillingEvents')
     }
@@ -825,7 +847,7 @@ export const workspaceApi = {
         workspaceApiUrl(`/billing/ops/${encodeURIComponent(opId)}`),
         { ...auth, timeout: 30_000 }
       )
-      return response.data
+      return validatedResponse(zBillingOpStatusResponse, response.data)
     } catch (err) {
       handleAxiosError(err, 'getBillingOpStatus')
     }

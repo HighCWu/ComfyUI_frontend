@@ -38,7 +38,7 @@ vi.mock<unknown>(import('@/platform/assets/services/assetService'), () => ({
 function mockFetchResponse(assets: Record<string, unknown>[]) {
   mockFetchApi.mockResolvedValueOnce({
     ok: true,
-    json: () => Promise.resolve({ assets })
+    json: () => Promise.resolve({ assets, has_more: false })
   })
 }
 
@@ -127,6 +127,44 @@ describe('resolvePreviewUrl', () => {
 })
 
 describe('findOutputAsset', () => {
+  it('requests only output assets for both hash and name lookup', async () => {
+    mockFetchEmpty()
+    mockFetchResponse([localAsset])
+
+    await findOutputAsset(localAsset.name)
+
+    for (const [path] of mockFetchApi.mock.calls) {
+      expect(
+        new URL(path, 'http://localhost').searchParams.get('include_tags')
+      ).toBe('output')
+    }
+  })
+
+  it.for(['hash', 'name'])(
+    'does not guess between duplicate %s matches',
+    async (lookup) => {
+      if (lookup === 'name') mockFetchEmpty()
+      mockFetchResponse([
+        { ...cloudAsset, id: 'first', name: 'same.glb', hash: 'same.glb' },
+        { ...cloudAsset, id: 'second', name: 'same.glb', hash: 'same.glb' }
+      ])
+
+      expect(await findOutputAsset('same.glb')).toBeUndefined()
+    }
+  )
+
+  it('does not choose a match from an incomplete asset page', async () => {
+    mockFetchApi.mockResolvedValueOnce(
+      Response.json({
+        assets: [cloudAsset],
+        has_more: true
+      })
+    )
+
+    expect(await findOutputAsset(cloudAsset.hash)).toBeUndefined()
+    expect(mockFetchApi).toHaveBeenCalledOnce()
+  })
+
   it('finds asset by hash (cloud)', async () => {
     mockFetchResponse([cloudAsset])
 
@@ -168,12 +206,24 @@ describe('findOutputAsset', () => {
     expect(result?.id).toBe('2')
   })
 
-  it('returns empty array on fetch error', async () => {
-    mockFetchError()
+  it('leaves the output unresolved without fallback on a failed lookup', async () => {
     mockFetchError()
 
     const result = await findOutputAsset('test.glb')
     expect(result).toBeUndefined()
+    expect(mockFetchApi).toHaveBeenCalledOnce()
+  })
+
+  it.for([
+    null,
+    { assets: 'not-an-array', has_more: false },
+    { assets: [{ id: 'asset-without-name' }], has_more: false },
+    { assets: [], has_more: 'false' }
+  ])('does not consume a malformed successful asset response', async (body) => {
+    mockFetchApi.mockResolvedValueOnce(Response.json(body))
+
+    expect(await findOutputAsset('test.glb')).toBeUndefined()
+    expect(mockFetchApi).toHaveBeenCalledOnce()
   })
 })
 

@@ -29,7 +29,135 @@ function setup() {
   return { doc, collector }
 }
 
+function interiorFixture() {
+  const { doc, collector } = setup()
+  const direct = new Y.Map<unknown>([['value', 1]])
+  const nested = new Y.Map<unknown>([['value', 2]])
+  const nestedNode = docNode({ widgets: nested })
+  const inner = new Y.Map<unknown>([['nodes', new Y.Map([['1', nestedNode]])]])
+  doc.getMap('definitions').set(
+    'outer',
+    new Y.Map<unknown>([
+      ['nodes', new Y.Map([['1', docNode({ widgets: direct })]])],
+      ['definitions', new Y.Map([['subgraphs', new Y.Map([['inner', inner]])]])]
+    ])
+  )
+  collector.take()
+  return { doc, collector, direct, nested, nestedNode, inner }
+}
+
 describe('DocChangeCollector', () => {
+  it.for(['inputs', 'outputs', 'type'])(
+    'records interior node %s changes without touching equal-ID root nodes',
+    (field) => {
+      const { collector, nestedNode } = interiorFixture()
+      nestedNode.set(field, [])
+      const changes = collector.take()
+      expect(changes.interiorTopology).toEqual(new Set(['inner']))
+      expect(changes.nodes.size + changes.links.size).toBe(0)
+      expect(changes.interiorWidgets).toBeUndefined()
+    }
+  )
+
+  it.for(['nodes', 'links', 'inputs', 'outputs'])(
+    'collects definition %s replacement and nested mutations',
+    (field) => {
+      const { collector, inner } = interiorFixture()
+      const entries = new Y.Map<unknown>()
+      inner.set(field, entries)
+      expect(collector.take().interiorTopology).toEqual(new Set(['inner']))
+      entries.set('1', new Y.Map([['link', 2]]))
+      expect(collector.take().interiorTopology).toEqual(new Set(['inner']))
+      entries.delete('1')
+      expect(collector.take().interiorTopology).toEqual(new Set(['inner']))
+    }
+  )
+
+  it('tracks deep port edits and isolates snapshots through teardown', () => {
+    const { collector, nestedNode, doc } = interiorFixture()
+    const ports = new Y.Array<unknown>()
+    const port = new Y.Map<unknown>([['name', 'image']])
+    ports.push([port])
+    nestedNode.set('inputs', ports)
+    collector.discard()
+    port.set('name', 'text')
+    const first = collector.peek()
+    doc.getMap('definitions').delete('outer')
+    expect(first.interiorTopology).toEqual(new Set(['inner']))
+    expect(collector.take().interiorTopology).toEqual(
+      new Set(['inner', 'outer'])
+    )
+    expect(collector.take().interiorTopology).toBeUndefined()
+    collector.destroy()
+    doc.getMap('definitions').set('outer', new Y.Map())
+    doc.getMap('definitions').delete('outer')
+    expect(collector.peek().interiorTopology).toBeUndefined()
+  })
+
+  it('distinguishes initial registration from replacement of an existing definition', () => {
+    const { collector, doc } = setup()
+    doc.getMap('definitions').set('new', new Y.Map())
+    const initial = collector.take()
+    expect(initial.interiorTopology).toBeUndefined()
+    expect(initial.registeredDefinitions).toEqual(new Set(['new']))
+    expect(collector.peek().registeredDefinitions).toBeUndefined()
+    doc.getMap('definitions').set('new', new Y.Map())
+    expect(collector.take().interiorTopology).toEqual(new Set(['new']))
+  })
+
+  it('scopes nested definition replacement to its own identity', () => {
+    const { collector, inner } = interiorFixture()
+    const definitions = new Y.Map<unknown>()
+    inner.set('definitions', new Y.Map([['subgraphs', definitions]]))
+    definitions.set('leaf', new Y.Map())
+    collector.discard()
+    definitions.set('leaf', new Y.Map())
+    expect(collector.take().interiorTopology).toEqual(new Set(['leaf']))
+  })
+
+  it('does not classify interior layout or widget changes as topology', () => {
+    const { collector, nestedNode, nested } = interiorFixture()
+    nestedNode.set('pos', [100, 200])
+    nested.set('value', 3)
+    expect(collector.take().interiorTopology).toBeUndefined()
+  })
+
+  it.for([
+    { scope: 'direct' as const, definitionId: 'outer' },
+    { scope: 'nested' as const, definitionId: 'inner' }
+  ])(
+    'keeps $scope interior widget changes separate from equal-ID root nodes',
+    ({ scope, definitionId }) => {
+      const fixture = interiorFixture()
+      fixture[scope].set('value', 73)
+      const first = fixture.collector.peek()
+      fixture[scope].set('extra', 4)
+      expect(first.interiorWidgets).toEqual(
+        new Map([[definitionId, new Map([['1', new Set(['value'])]])]])
+      )
+      expect(first.interiorTopology).toBeUndefined()
+      const changes = fixture.collector.take()
+      expect(changes.interiorWidgets).toEqual(
+        new Map([[definitionId, new Map([['1', new Set(['value', 'extra'])]])]])
+      )
+      expect(
+        changes.widgets.size + changes.nodes.size + changes.resyncNodes.size
+      ).toBe(0)
+      expect(fixture.collector.take().interiorWidgets).toBeUndefined()
+    }
+  )
+
+  it('coalesces interior storage replacement and stops collecting it after teardown', () => {
+    const { collector, nestedNode } = interiorFixture()
+    nestedNode.set('widgets', new Y.Map([['value', 77]]))
+    expect(collector.take().interiorWidgets).toEqual(
+      new Map([['inner', new Map([['1', 'all']])]])
+    )
+    collector.destroy()
+    nestedNode.set('widgets', new Y.Map([['value', 99]]))
+    expect(collector.take().interiorWidgets).toBeUndefined()
+  })
+
   it('records node adds, updates and deletes by document key', () => {
     const { doc, collector } = setup()
 

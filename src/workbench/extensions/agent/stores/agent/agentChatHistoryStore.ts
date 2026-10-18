@@ -1,12 +1,14 @@
 import { useLocalStorage, useTimestamp } from '@vueuse/core'
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref } from 'vue'
 
 import { clearLegacyAgentStorage } from '@/platform/workflow/persistence/base/storageIO'
 import {
   getWorkspaceId,
   StorageKeys
 } from '@/platform/workflow/persistence/base/storageKeys'
+
+import { createAgentRestClient } from '../../services/agent/agentRestClient'
 
 export interface ChatSession {
   id: string
@@ -59,9 +61,14 @@ export const useAgentChatHistoryStore = defineStore('agentChatHistory', () => {
 
   clearLegacyAgentStorage()
 
-  // The server owns thread titles but has no rename or delete endpoint yet
-  // (BE-3130), so renames live in a local overlay applied over the server
-  // titles and deletes in a local tombstone set filtered out of every refresh.
+  const nativeMode = import.meta.env.VITE_AGENT_BACKEND_MODE === 'official'
+  const rest = createAgentRestClient()
+  const pendingRenames = new Set<string>()
+  const pendingDeletes = new Map<string, Promise<boolean>>()
+  const lifetime = new AbortController()
+  onScopeDispose(() => {
+    lifetime.abort()
+  })
   const customTitles = useLocalStorage<Partial<Record<string, string>>>(
     StorageKeys.agentChatTitles(workspaceId),
     {}
@@ -73,7 +80,7 @@ export const useAgentChatHistoryStore = defineStore('agentChatHistory', () => {
 
   const titled = computed(() =>
     sessions.value.map((session) => {
-      const custom = customTitles.value[session.id]
+      const custom = nativeMode ? undefined : customTitles.value[session.id]
       return custom === undefined ? session : { ...session, title: custom }
     })
   )
@@ -83,13 +90,41 @@ export const useAgentChatHistoryStore = defineStore('agentChatHistory', () => {
   )
 
   function titleFor(id: string | null): string | undefined {
-    return id === null ? undefined : customTitles.value[id]
+    if (id === null) return undefined
+    if (!nativeMode) return customTitles.value[id]
+    const session = sessions.value.find((item) => item.id === id)
+    return session?.titleSource === 'server' ? session.title : undefined
   }
 
-  function rename(id: string, title: string): void {
+  async function rename(id: string, title: string): Promise<boolean> {
     const trimmed = title.trim()
-    if (trimmed === '') return
-    customTitles.value = { ...customTitles.value, [id]: trimmed }
+    if (trimmed === '' || lifetime.signal.aborted) return false
+    if (!nativeMode) {
+      customTitles.value = { ...customTitles.value, [id]: trimmed }
+      return true
+    }
+    if (trimmed.length > 200 || pendingRenames.has(id)) return false
+    pendingRenames.add(id)
+    const result = await rest.renameThread(id, trimmed, lifetime.signal)
+    pendingRenames.delete(id)
+    return result.ok && applyServerTitle(result.thread)
+  }
+
+  function applyServerTitle(
+    thread: Pick<ChatSession, 'id' | 'title'>
+  ): boolean {
+    if (lifetime.signal.aborted || deletedIds.value.includes(thread.id))
+      return false
+    const existing = sessions.value.find((item) => item.id === thread.id)
+    const renamed: ChatSession = {
+      ...thread,
+      updatedAt: existing?.updatedAt ?? Date.now(),
+      titleSource: 'server'
+    }
+    sessions.value = existing
+      ? sessions.value.map((item) => (item.id === thread.id ? renamed : item))
+      : [...sessions.value, renamed]
+    return true
   }
 
   function remove(id: string): void {
@@ -99,6 +134,28 @@ export const useAgentChatHistoryStore = defineStore('agentChatHistory', () => {
     if (!deletedIds.value.includes(id))
       deletedIds.value = [...deletedIds.value, id]
     if (activeId.value === id) activeId.value = null
+  }
+
+  async function deleteThread(id: string): Promise<boolean> {
+    if (lifetime.signal.aborted) return false
+    if (!nativeMode) {
+      remove(id)
+      return true
+    }
+    const pending = pendingDeletes.get(id)
+    if (pending) return pending
+    const deletion = (async () => {
+      const result = await rest.deleteThread(id, lifetime.signal)
+      if (!result.ok || lifetime.signal.aborted) return false
+      remove(id)
+      return true
+    })()
+    pendingDeletes.set(id, deletion)
+    try {
+      return await deletion
+    } finally {
+      if (pendingDeletes.get(id) === deletion) pendingDeletes.delete(id)
+    }
   }
 
   function replaceAll(next: ChatSession[]): void {
@@ -117,7 +174,7 @@ export const useAgentChatHistoryStore = defineStore('agentChatHistory', () => {
     grouped,
     titleFor,
     rename,
-    remove,
+    deleteThread,
     replaceAll,
     setActive
   }

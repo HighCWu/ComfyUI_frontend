@@ -1,5 +1,10 @@
 import {
   zAsset as zIngestAsset,
+  zCreateAssetExportResponse,
+  zDownloadExportResponse,
+  zGetModelFoldersResponse,
+  zGetModelsInFolderResponse,
+  zGetRemoteAssetMetadataResponse,
   zListAssetsResponse
 } from '@comfyorg/ingest-types/zod'
 import { z } from 'zod'
@@ -11,6 +16,7 @@ const zAsset = z.object({
   hash: z.string().optional(),
   id: z.string(),
   last_access_time: z.iso.datetime({ local: true }).optional(),
+  preview_id: z.string().nullable().optional(),
   preview_url: z.string().optional(),
   size: zIngestAsset.shape.size.unwrap().transform(Number).optional(),
   tags: zIngestAsset.shape.tags.default([]),
@@ -30,41 +36,19 @@ const zAssetResponse = zListAssetsResponse
     assets: z.array(zAsset)
   })
 
-// Zod schema for ModelFile to align with interface
-const zModelFile = z.object({
-  name: z.string(),
-  pathIndex: z.number()
+export const modelFolderInfoSchema = zGetModelFoldersResponse.element.extend({
+  extensions: z.array(z.string()).optional()
 })
+export const modelFolderInfosSchema = z.array(modelFolderInfoSchema)
+export const modelFilesResponseSchema = zGetModelsInFolderResponse
 
-const zValidationError = z.object({
-  code: z.string(),
-  message: z.string(),
-  field: z.string()
-})
-
-const zValidationResult = z.object({
-  is_valid: z.boolean(),
-  errors: z.array(zValidationError).optional(),
-  warnings: z.array(zValidationError).optional()
-})
-
-const zAssetMetadata = z.object({
+export const assetMetadataSchema = zGetRemoteAssetMetadataResponse.extend({
   content_length: z.number(),
   final_url: z.string(),
-  content_type: z.string().optional(),
-  filename: z.string().optional(),
-  name: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-  preview_url: z.string().optional(),
-  preview_image: z.string().optional(),
-  validation: zValidationResult.optional()
+  preview_url: z.string().optional()
 })
 
-const zAsyncUploadTask = z.object({
-  task_id: z.string(),
-  status: z.enum(['created', 'running', 'completed', 'failed']),
-  message: z.string().optional()
-})
+const zAsyncUploadTask = zCreateAssetExportResponse
 
 const zAsyncUploadResponse = z.discriminatedUnion('type', [
   z.object({ type: z.literal('sync'), asset: zAsset }),
@@ -92,6 +76,8 @@ export const assetFilenameSchema = z
 export const assetItemSchema = zAsset
 export const assetResponseSchema = zAssetResponse
 export const asyncUploadResponseSchema = zAsyncUploadResponse
+export const assetExportTaskResponseSchema = zCreateAssetExportResponse
+export const assetExportDownloadResponseSchema = zDownloadExportResponse
 
 /**
  * Identifier for a single asset record.
@@ -105,9 +91,9 @@ export type AssetId = string
 // Export types derived from Zod schemas
 export type AssetItem = z.infer<typeof zAsset>
 export type AssetResponse = z.infer<typeof zAssetResponse>
-export type AssetMetadata = z.infer<typeof zAssetMetadata>
+export type AssetMetadata = z.infer<typeof assetMetadataSchema>
 export type AsyncUploadResponse = z.infer<typeof zAsyncUploadResponse>
-export type ModelFile = z.infer<typeof zModelFile>
+export type ModelFile = z.infer<typeof modelFilesResponseSchema>[number]
 
 /** Payload for updating an asset via PUT /assets/:id */
 export type AssetUpdatePayload = Partial<
@@ -134,14 +120,4 @@ export const tagsOperationResultSchema = z.object({
 
 export type TagsOperationResult = z.infer<typeof tagsOperationResultSchema>
 
-// Legacy interface for backward compatibility (now aligned with Zod schema)
-export interface ModelFolderInfo {
-  name: string
-  folders: string[]
-  /**
-   * The folder's raw registered extension allowlist from
-   * `/experiment/models`. An empty array means match-all; absent on older
-   * backends.
-   */
-  extensions?: string[]
-}
+export type ModelFolderInfo = z.infer<typeof modelFolderInfoSchema>

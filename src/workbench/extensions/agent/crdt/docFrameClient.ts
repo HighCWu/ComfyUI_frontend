@@ -1,6 +1,9 @@
+import { SCHEMA_VERSION } from '@comfyorg/comfy-multi-player'
 import type { DocResetData } from '@comfyorg/ingest-types'
 
 import { reportError } from '@/platform/telemetry/reportError'
+
+import { DOC_TRANSPORT_READY_EVENT } from './docFrameCodes'
 
 export const DOC_PROTOCOL_VERSION = 1
 /** Keep this encoded-field cap aligned with cloud's `MaxDocFrameB64Len`. */
@@ -99,6 +102,7 @@ export type ServerDocFrame =
 
 /** A frame as it travels the wire, before {@link parseServerDocFrame} reads it. */
 export interface DocFrameTransport {
+  readonly ownsConnectionLifecycle?: boolean
   /**
    * Best-effort send. Returns `true` when the frame left the transport and
    * `false` when the transport cannot currently carry it (socket not OPEN).
@@ -474,6 +478,10 @@ export class DocFrameClient extends EventTarget {
 
   constructor(private readonly transport: DocFrameTransport) {
     super()
+    const readyListener = () =>
+      this.dispatchEvent(new Event(DOC_TRANSPORT_READY_EVENT))
+    this.listeners.set(DOC_TRANSPORT_READY_EVENT, readyListener)
+    transport.addEventListener(DOC_TRANSPORT_READY_EVENT, readyListener)
     const reportedTypes = new Set<string>()
     for (const type of [
       'doc_update',
@@ -504,13 +512,18 @@ export class DocFrameClient extends EventTarget {
     }
   }
 
+  get ownsConnectionLifecycle(): boolean {
+    return this.transport.ownsConnectionLifecycle === true
+  }
+
   /** @returns whether the subscribe frame actually left the transport. */
   subscribe(workflowId: string, stateVector: Uint8Array): boolean {
     return this.send('doc_subscribe', {
       v: DOC_PROTOCOL_VERSION,
       workflow_id: workflowId,
       state_vector_b64: encodeBase64(stateVector),
-      supports_reseed: true
+      supports_reseed: true,
+      schema_version: SCHEMA_VERSION
     })
   }
 

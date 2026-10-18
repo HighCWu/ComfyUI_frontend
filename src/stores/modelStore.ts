@@ -102,9 +102,7 @@ export class ComfyModelDef {
     if (this.has_loaded_metadata || this.is_load_requested) {
       return
     }
-    // viewMetadata reads the safetensors header off local disk; on Cloud the
-    // model bytes live in object storage so there is nothing to read.
-    if (isCloud) {
+    if (isCloud && api.getServerFeature('model_library_metadata') !== true) {
       return
     }
     this.is_load_requested = true
@@ -153,6 +151,8 @@ export class ComfyModelDef {
       this.updateSearchable()
     } catch (error) {
       console.error('Error loading model metadata', this.file_name, this, error)
+    } finally {
+      this.is_load_requested = false
     }
   }
 }

@@ -511,7 +511,11 @@ describe('AgentCrdtDocLifecycle schema_version_mismatch refusal', () => {
     expect(resubscribe).not.toHaveBeenCalled()
   })
 
-  it.for(['schema_version_mismatch', 'catalog_mismatch'] as const)(
+  it.for([
+    'stale_client_schema',
+    'schema_version_mismatch',
+    'catalog_mismatch'
+  ] as const)(
     '%s gives up immediately with no retry and reports it once',
     (code) => {
       const { lifecycle, resubscribe, onGaveUp } = wire()

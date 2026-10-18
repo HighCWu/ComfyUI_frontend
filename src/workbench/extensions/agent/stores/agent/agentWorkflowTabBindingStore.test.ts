@@ -246,6 +246,84 @@ describe('agentWorkflowTabBindingStore', () => {
     expect(bindings.matchesWorkflow('wf-3', third)).toBe(true)
   })
 
+  it('keeps the adopted document bound when its draft is first saved under a new name', async () => {
+    const workflows = useWorkflowStore()
+    const draft = workflows.createTemporary('Agent draft.json', {
+      ...blankGraph,
+      id: DRAFT_GRAPH_ID
+    })
+    workflows.openWorkflowsInBackground({ right: [draft.path] })
+    const bindings = useAgentWorkflowTabBindingStore()
+    bindings.bind('wf-adopted', draft.path)
+    const oldPath = draft.path
+
+    await workflows.renameWorkflow(draft, 'workflows/Named workflow.json')
+    draft.size = 1
+    await nextTick()
+
+    expect(bindings.tabPathFor('wf-adopted')).toBe(draft.path)
+    expect(bindings.workflowIdFor(draft.path)).toBe('wf-adopted')
+    expect(bindings.workflowIdFor(oldPath)).toBeUndefined()
+    expect(storedBindings()).toEqual({
+      'wf-adopted': {
+        tabPath: 'workflows/Named workflow.json',
+        graphId: DRAFT_GRAPH_ID,
+        confirmedAt: expect.any(Number)
+      }
+    })
+
+    await workflows.closeWorkflow(draft)
+    await nextTick()
+
+    expect(bindings.tabPathFor('wf-adopted')).toBeUndefined()
+  })
+
+  it('does not transfer an adopted document to a saved-as copy', async () => {
+    const workflows = useWorkflowStore()
+    const original = workflows.createTemporary('Original.json', {
+      ...blankGraph,
+      id: DRAFT_GRAPH_ID
+    })
+    await original.load()
+    original.size = 1
+    workflows.openWorkflowsInBackground({ right: [original.path] })
+    const bindings = useAgentWorkflowTabBindingStore()
+    bindings.bind('wf-original', original.path)
+
+    const copy = workflows.saveAs(original, 'workflows/Copy.json')
+    workflows.openWorkflowsInBackground({ right: [copy.path] })
+    await nextTick()
+
+    expect(bindings.tabPathFor('wf-original')).toBe(original.path)
+    expect(bindings.workflowIdFor(copy.path)).toBeUndefined()
+    expect(bindings.matchesWorkflow('wf-original', copy)).toBe(false)
+  })
+
+  it('does not move a refused draft binding when that draft is renamed', async () => {
+    seedBindings({
+      'wf-other': {
+        tabPath: DEFAULT_PATH,
+        graphId: OTHER_GRAPH_ID,
+        confirmedAt: Date.now()
+      }
+    })
+    const workflows = useWorkflowStore()
+    const bindings = useAgentWorkflowTabBindingStore()
+    const draft = workflows.createTemporary('Unsaved Workflow.json', {
+      ...blankGraph,
+      id: DRAFT_GRAPH_ID
+    })
+    workflows.openWorkflowsInBackground({ right: [draft.path] })
+    await nextTick()
+
+    await workflows.renameWorkflow(draft, 'workflows/Unrelated.json')
+    await nextTick()
+
+    expect(bindings.tabPathFor('wf-other')).toBe(DEFAULT_PATH)
+    expect(bindings.workflowIdFor(draft.path)).toBeUndefined()
+    expect(bindings.matchesWorkflow('wf-other', draft)).toBe(false)
+  })
+
   it('prunes bindings not confirmed within the TTL at store creation', () => {
     seedBindings({
       'wf-expired': {

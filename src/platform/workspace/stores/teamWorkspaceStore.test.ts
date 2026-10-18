@@ -6,6 +6,7 @@ import { computed, nextTick } from 'vue'
 
 import { reportError } from '@/platform/telemetry/reportError'
 import { useWorkspaceAuthStore } from '@/platform/workspace/stores/workspaceAuthStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 import { stubAccountIdentityPort } from '@/utils/__tests__/stubAccountIdentityPort'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -625,6 +626,56 @@ describe('useTeamWorkspaceStore', () => {
       expect(store.error).toEqual(new Error('Token exchange failed'))
     })
   })
+
+  it('resolves a prepaid cookie workspace without upstream session exchange', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const session = usePrepaidSessionStore()
+    session.user = {
+      id: 'prepaid-user',
+      name: 'Test',
+      email: 'test@example.test',
+      emailVerified: true
+    }
+    useCurrentUser().isApiKeyLogin = computed(() => false)
+    mockWorkspaceApi.list.mockResolvedValue({
+      workspaces: [{ ...mockPersonalWorkspace, id: 'prepaid-user' }],
+      default_workspace_id: 'prepaid-user',
+      can_create_workspace: false
+    })
+    const store = useTeamWorkspaceStore()
+
+    await store.initialize()
+
+    expect(store.activeWorkspaceId).toBe('prepaid-user')
+    expect(store.activeWorkspace?.role).toBe('owner')
+    expect(store.initState).toBe('ready')
+    expect(mockWorkspaceApi.list).toHaveBeenCalledOnce()
+    expect(store.canCreateWorkspace).toBe(false)
+    expect(useWorkspaceAuthStore().switchWorkspace).not.toHaveBeenCalled()
+    expect(mockEnsureSessionCookie).not.toHaveBeenCalled()
+    session.user = null
+    await nextTick()
+    expect(store.activeWorkspaceId).toBeNull()
+    expect(store.workspaces).toEqual([])
+    expect(store.initState).toBe('uninitialized')
+  })
+
+  it.for([true, false, undefined])(
+    'requires an explicit prepaid workspace creation grant (%s)',
+    async (allowed) => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      mockWorkspaceApi.list.mockResolvedValue({
+        workspaces: [mockPersonalWorkspace],
+        ...(allowed !== undefined && { can_create_workspace: allowed })
+      })
+      const store = useTeamWorkspaceStore()
+      expect(store.canCreateWorkspace).toBe(false)
+
+      await store.initialize()
+
+      expect(store.canCreateWorkspace).toBe(allowed === true)
+    }
+  )
 
   describe('initialize with an API-key session', () => {
     beforeEach(() => {

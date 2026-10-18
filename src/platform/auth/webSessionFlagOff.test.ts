@@ -18,10 +18,12 @@ import { useCloudWebSessionStore } from '@/platform/auth/session/cloudWebSession
 import { refreshRemoteConfig } from '@/platform/remoteConfig/refreshRemoteConfig'
 import { remoteConfig } from '@/platform/remoteConfig/remoteConfig'
 import { useTelemetry } from '@/platform/telemetry'
+import { reportError } from '@/platform/telemetry/reportError'
 import { useBillingReadRail } from '@/platform/workspace/composables/useBillingReadRail'
 import { TOKEN_REFRESH_BUFFER_MS } from '@/platform/workspace/workspaceConstants'
 import { api } from '@/scripts/api'
 import { useAuthStore } from '@/stores/authStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 import {
   resultItemPreviewUrl,
   resultItemUrl,
@@ -32,6 +34,24 @@ import type { ComfyApp } from '@/scripts/app'
 import type { ComfyExtension } from '@/types/comfy'
 
 type IdentityObserver = (user: User | null) => void
+
+it('uses the prepaid cookie identity for navigation and observes its logout', async () => {
+  vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+  vi.mocked(fetch).mockResolvedValueOnce(
+    Response.json({
+      user: {
+        id: 'prepaid-owner',
+        name: 'QA',
+        email: 'qa@example.test',
+        emailVerified: true
+      }
+    })
+  )
+  await expect(cloudSignIn()).resolves.toBe('signed_in')
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json(null))
+  await usePrepaidSessionStore().refresh()
+  await expect(cloudSignIn()).resolves.toBe('signed_out')
+})
 
 const identity = vi.hoisted(() => {
   const userObservers = new Set<IdentityObserver>()
@@ -107,6 +127,21 @@ vi.mock(import('@/platform/telemetry'))
 vi.mock(import('@/platform/telemetry/reportError'))
 
 await import('@/extensions/core/cloudSessionCookie')
+
+it.for(['onAuthTokenRefreshed', 'onAuthUserLogout'] as const)(
+  'does not bridge a prepaid session through Firebase on %s',
+  async (event) => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    identity.reset()
+    const extension = registeredExtensions.find(
+      ({ name }) => name === 'Comfy.Cloud.SessionCookie'
+    )
+    assert.exists(extension)
+    await extension[event]?.()
+    expect(fetch).not.toHaveBeenCalled()
+    expect(reportError).not.toHaveBeenCalled()
+  }
+)
 
 const ONE_HOUR_MS = 60 * 60 * 1000
 
@@ -209,7 +244,9 @@ function installFetchRecorder(features: Record<string, unknown>) {
       case 'POST /api/auth/session':
         return jsonResponse({ success: true })
       case 'POST /api/auth/token':
-        return jsonResponse(mintResponse())
+        return request.headers.authorization
+          ? jsonResponse(mintResponse())
+          : jsonResponse({ message: 'unauthenticated' }, 401)
       case 'GET /api/queue':
         return jsonResponse({ queue_running: [], queue_pending: [] })
       case 'POST /api/prompt':
@@ -627,6 +664,7 @@ describe.for([
   'cloud sign-in at boot with unified_web_session off ($name)',
   ({ features }) => {
     beforeEach(() => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'subscription')
       identity.reset()
     })
 
@@ -726,6 +764,20 @@ describe('an interactive sign-in with unified_web_session off', () => {
       recorder.all.filter(({ path }) => path === '/api/auth/session')
     ).toEqual([])
     expect(useTelemetry()?.trackWebSessionEvent).not.toHaveBeenCalled()
+  })
+
+  it('can start after authenticated config replaces an earlier anonymous false flag', async () => {
+    installFetchRecorder({ unified_cloud_auth: false })
+    await refreshRemoteConfig({ useAuth: false })
+    const webSession = useCloudWebSessionStore()
+    expect(webSession.start()).toBe(false)
+
+    remoteConfig.value = {
+      ...remoteConfig.value,
+      unified_web_session: true
+    }
+    expect(webSession.start()).toBe(true)
+    await webSession.whenReady()
   })
 })
 

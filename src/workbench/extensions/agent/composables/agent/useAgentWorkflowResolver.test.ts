@@ -32,7 +32,8 @@ function workflow(
 function setup(
   open: ComfyWorkflow[],
   cloud: CloudWorkflowEntry[] = [],
-  closed: ComfyWorkflow[] = []
+  closed: ComfyWorkflow[] = [],
+  includeUnboundSaved = false
 ) {
   const workflows = reactive({
     openWorkflows: open,
@@ -53,7 +54,8 @@ function setup(
     workflows,
     bindings,
     listCloudWorkflows,
-    getCloudWorkflow
+    getCloudWorkflow,
+    includeUnboundSaved
   })
   return {
     workflows,
@@ -84,6 +86,148 @@ function cloudRow(id: string): WorkflowResponse {
 describe('Agent workflow resolution', () => {
   beforeEach(() => {
     localStorage.clear()
+  })
+
+  it('lists closed ordinary saved references by path without duplicating indexed or open files', async () => {
+    const { resolver } = setup(
+      [workflow('workflows/open.json', 'Open')],
+      [
+        {
+          id: 'bound',
+          name: 'Portrait',
+          editor_path: 'workflows/a/Portrait.json'
+        },
+        { id: 'legacy', name: 'Virtual' }
+      ],
+      [
+        workflow('workflows/a/Portrait.json', 'Portrait'),
+        workflow('workflows/b/Portrait.json', 'Portrait'),
+        workflow('workflows/c/Portrait.json', 'Portrait'),
+        workflow('workflows/Virtual.json', 'Virtual'),
+        workflow('workflows/app.app.json', 'app', { suffix: 'app.json' }),
+        workflow('workflows/draft.json', 'Draft', { isTemporary: true }),
+        workflow('workflows/notes.txt', 'notes', { suffix: 'txt' })
+      ],
+      true
+    )
+    await resolver.refreshCloudWorkflowIds()
+    expect(resolver.availableWorkflowReferences.value).toEqual([
+      { tabPath: 'workflows/open.json', name: 'Open', isPersisted: true },
+      { tabPath: 'workflows/app.app.json', name: 'app.app', isPersisted: true },
+      {
+        tabPath: 'workflows/b/Portrait.json',
+        name: 'b/Portrait',
+        isPersisted: true
+      },
+      {
+        tabPath: 'workflows/c/Portrait.json',
+        name: 'c/Portrait',
+        isPersisted: true
+      },
+      {
+        id: 'bound',
+        name: 'Portrait',
+        editorPath: 'workflows/a/Portrait.json'
+      },
+      { id: 'legacy', name: 'Virtual' }
+    ])
+  })
+
+  it('does not expose closed unbound saved files in other backend modes', async () => {
+    const { resolver } = setup(
+      [],
+      [],
+      [workflow('workflows/ordinary.json', 'Ordinary')]
+    )
+    await resolver.refreshCloudWorkflowIds()
+    expect(resolver.availableWorkflowReferences.value).toEqual([])
+  })
+
+  it('clears the prior account index and ignores an in-flight stale refresh', async () => {
+    const tab = workflow('workflows/account.json', 'Account')
+    const { resolver, listCloudWorkflows } = setup(
+      [tab],
+      [{ id: 'account-a', name: 'Account' }]
+    )
+    await resolver.refreshCloudWorkflowIds()
+    expect(resolver.cloudIdFor(tab)).toBe('account-a')
+
+    let finishRefresh!: (value: CloudWorkflowListing) => void
+    listCloudWorkflows.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRefresh = resolve
+        })
+    )
+    const staleRefresh = resolver.refreshCloudWorkflowIds()
+
+    resolver.resetCloudWorkflowIds()
+    expect(resolver.cloudIdFor(tab)).toBeUndefined()
+    expect(resolver.availableWorkflowReferences.value).toEqual([])
+
+    finishRefresh(listing([{ id: 'stale-account-a', name: 'Account' }]))
+    await expect(staleRefresh).resolves.toBe(false)
+    expect(resolver.cloudIdFor(tab)).toBeUndefined()
+  })
+
+  it('resolves same-name saved documents by their server-bound paths', async () => {
+    const { resolver, workflows } = setup(
+      [
+        workflow('workflows/a/共享.json', '共享'),
+        workflow('workflows/b/共享.json', '共享')
+      ],
+      [
+        { id: 'a', name: '共享', editor_path: 'workflows/a/共享.json' },
+        { id: 'b', name: '共享', editor_path: 'workflows/b/共享.json' }
+      ]
+    )
+    await resolver.refreshCloudWorkflowIds()
+    expect(workflows.openWorkflows.map(resolver.cloudIdFor)).toEqual(['a', 'b'])
+    expect(resolver.boundOrOpenWorkflowFor('b')).toBe(
+      workflows.openWorkflows[1]
+    )
+    expect(resolver.openTabsSnapshot()).toEqual({
+      open_tabs: [
+        { workflow_id: 'a', name: '共享' },
+        { workflow_id: 'b', name: '共享' }
+      ]
+    })
+  })
+
+  it('does not substitute a same-name ordinary file for a closed path-bound document', async () => {
+    const { resolver, workflows, bindings } = setup(
+      [workflow('workflows/copy/Portrait.json', 'Portrait')],
+      [
+        {
+          id: 'original',
+          name: 'Portrait',
+          editor_path: 'workflows/original/Portrait.json'
+        }
+      ],
+      [workflow('workflows/original/Portrait.json', 'Portrait')]
+    )
+    bindings.bind('original', workflows.openWorkflows[0].path)
+    await resolver.refreshCloudWorkflowIds()
+    expect(resolver.cloudIdFor(workflows.openWorkflows[0])).toBeUndefined()
+    expect(resolver.boundOrOpenWorkflowFor('original')).toBeNull()
+    expect(resolver.storedWorkflowFor('original')).toBe(workflows.workflows[1])
+    expect(resolver.openTabsSnapshot()).toBeUndefined()
+  })
+
+  it('does not infer a saved document identity for a temporary tab at its path', async () => {
+    const { resolver, workflows } = setup(
+      [workflow('workflows/Portrait.json', 'Portrait', { isTemporary: true })],
+      [
+        {
+          id: 'saved',
+          name: 'Portrait',
+          editor_path: 'workflows/Portrait.json'
+        }
+      ]
+    )
+    await resolver.refreshCloudWorkflowIds()
+    expect(resolver.cloudIdFor(workflows.openWorkflows[0])).toBeUndefined()
+    expect(resolver.boundOrOpenWorkflowFor('saved')).toBeNull()
   })
 
   it.for(['cold', 'closed', 'forgotten'])(

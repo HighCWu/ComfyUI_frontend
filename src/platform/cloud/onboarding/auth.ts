@@ -1,4 +1,6 @@
 import { addBreadcrumb } from '@sentry/vue'
+import type { GetUserResponse } from '@comfyorg/ingest-types'
+import { zGetUserResponse } from '@comfyorg/ingest-types/zod'
 import { watch } from 'vue'
 
 import { firebaseIdentity } from '@/platform/auth/firebaseIdentity'
@@ -11,10 +13,6 @@ import { reportError } from '@/platform/telemetry/reportError'
 import { api } from '@/scripts/api'
 import { useAuthStore } from '@/stores/authStore'
 import { toError } from '@/utils/errorUtil'
-
-interface UserCloudStatus {
-  status: 'active'
-}
 
 const ONBOARDING_SURVEY_KEY = 'onboarding_survey'
 
@@ -42,7 +40,7 @@ function isHttpError(error: unknown, errorMessagePrefix: string): boolean {
   return error instanceof Error && error.message.startsWith(errorMessagePrefix)
 }
 
-export async function getUserCloudStatus(): Promise<UserCloudStatus> {
+export async function getUserCloudStatus(): Promise<GetUserResponse> {
   try {
     const response = await api.fetchApi('/user', {
       method: 'GET',
@@ -70,7 +68,7 @@ export async function getUserCloudStatus(): Promise<UserCloudStatus> {
       throw error
     }
 
-    return response.json()
+    return zGetUserResponse.parse(await response.json())
   } catch (error) {
     if (!isHttpError(error, 'Failed to get user:')) {
       captureApiError(toError(error), '/user', 'network_error')

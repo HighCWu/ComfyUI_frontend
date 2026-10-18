@@ -3,34 +3,29 @@ import { isEqual } from 'es-toolkit'
 import type { GraphOperation } from './graphOperations'
 
 type SetWidgetOp = Extract<GraphOperation, { op: 'set_widget' }>
+type ResolveInterior = (
+  path: readonly (string | number)[]
+) => string | undefined
 
-/**
- * Widget registers the live graph has written but the document has not yet
- * caught up on. A register is one last-writer-wins value: a remote frame that
- * writes it while a local write is still in flight holds the value the host
- * built before that write reached it, so applying the frame would rewind the
- * widget and lose what was typed since. Such a frame is held back until the
- * document holds the local value, or the write settles without reaching the
- * document (host skipped or refused it, lineage broke).
- *
- * Only the latest local value per register is kept: an older in-flight write
- * settling (its echo, its ack) does not lift the hold while a newer one is
- * still out. Interior (`path`) writes address subgraph definitions the applier
- * never projects, so they are not tracked.
- */
 export class LocalWidgetWrites {
   private readonly pending = new Map<string, unknown>()
 
-  note(operations: readonly GraphOperation[]): void {
-    for (const op of topLevelSetWidgetOps(operations)) {
-      this.pending.set(registerKey(op.node_id, op.widget), op.value)
+  note(
+    operations: readonly GraphOperation[],
+    resolveInterior?: ResolveInterior
+  ): void {
+    for (const op of widgetTargets(operations, resolveInterior)) {
+      this.pending.set(registerKey(op.nodeId, op.widget), op.value)
     }
   }
 
   /** Lifts the hold of every register whose settled op carried its latest value. */
-  settle(operations: readonly GraphOperation[]): void {
-    for (const op of topLevelSetWidgetOps(operations)) {
-      this.holds(String(op.node_id), op.widget, op.value)
+  settle(
+    operations: readonly GraphOperation[],
+    resolveInterior?: ResolveInterior
+  ): void {
+    for (const op of widgetTargets(operations, resolveInterior)) {
+      this.holds(op.nodeId, op.widget, op.value)
     }
   }
 
@@ -59,12 +54,20 @@ export class LocalWidgetWrites {
   }
 }
 
-function topLevelSetWidgetOps(
-  operations: readonly GraphOperation[]
-): SetWidgetOp[] {
-  return operations.filter(
-    (op): op is SetWidgetOp => op.op === 'set_widget' && op.path == null
-  )
+function widgetTargets(
+  operations: readonly GraphOperation[],
+  resolveInterior?: ResolveInterior
+) {
+  return operations
+    .filter((op): op is SetWidgetOp => op.op === 'set_widget')
+    .flatMap((op) => {
+      const nodeId =
+        op.path == null ? String(op.node_id) : resolveInterior?.(op.path)
+      const widget = op.path == null ? op.widget : op.inner_widget
+      return nodeId !== undefined && typeof widget === 'string'
+        ? [{ nodeId, widget, value: op.value }]
+        : []
+    })
 }
 
 const KEY_SEPARATOR = '\u0000'

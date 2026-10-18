@@ -228,6 +228,20 @@ describe('useMaskEditorSaver', () => {
     expect(mockNode.widgets?.[0].value).toBe('original.png [input]')
   })
 
+  it('does not write server references from a malformed upload response', async () => {
+    vi.mocked(api.fetchApi).mockResolvedValue(
+      Response.json({ name: 42, subfolder: 'clipspace', type: 'input' })
+    )
+
+    await expect(useMaskEditorSaver().save()).rejects.toThrow(
+      /Invalid upload response for clipspace-mask-\d+\.png/
+    )
+
+    expect(useNodeOutputStore().nodeOutputs['42']).toBeUndefined()
+    expect(mockNode.widgets?.[0].value).toBe('original.png [input]')
+    expect(mockNode.properties['image']).toBe('original.png [input]')
+  })
+
   it('omits subfolder from the upload FormData under the unified contract', async () => {
     const { save } = useMaskEditorSaver()
     await save()

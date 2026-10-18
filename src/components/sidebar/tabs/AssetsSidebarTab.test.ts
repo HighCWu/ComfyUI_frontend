@@ -9,6 +9,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
 
+import { useFeatureFlags } from '@/composables/useFeatureFlags'
 import { useMediaAssetActions } from '@/platform/assets/composables/useMediaAssetActions'
 import { resolveOutputAssetItems } from '@/platform/assets/utils/outputAssetUtil'
 import { openHdrViewer } from '@/services/hdrViewerService'
@@ -28,6 +29,7 @@ beforeEach(() => {
   }
   vi.spyOn(store.inputAssets, 'loadNew').mockResolvedValue(undefined)
   vi.spyOn(store.inputAssets, 'loadMore').mockResolvedValue(false)
+  vi.spyOn(store.inputAssets, 'invalidate').mockResolvedValue(undefined)
 })
 
 const folderAsset = vi.hoisted(() => ({
@@ -43,6 +45,8 @@ const folderAsset = vi.hoisted(() => ({
     outputCount: 2
   }
 }))
+
+const selectionState = vi.hoisted(() => ({ hasSelection: false }))
 
 vi.mock<unknown>(
   import('@/platform/assets/composables/useAssetGridSelection'),
@@ -66,7 +70,7 @@ vi.mock<unknown>(
         handleAssetClick: vi.fn(),
         selectAll: vi.fn(),
         setSelectedIds: vi.fn(),
-        hasSelection: ref(false),
+        hasSelection: ref(selectionState.hasSelection),
         clearSelection: vi.fn(),
         getSelectedAssets: vi.fn(() => []),
         reconcileSelection: vi.fn(),
@@ -80,6 +84,8 @@ vi.mock<unknown>(
 )
 
 vi.mock(import('@/platform/assets/composables/useMediaAssetActions'))
+
+vi.mock(import('@/composables/useFeatureFlags'))
 
 vi.mock(import('@/platform/assets/utils/outputAssetUtil'))
 
@@ -110,6 +116,7 @@ const sidebarTabTemplateStub = {
       <div data-testid="folder-title"><slot name="alt-title" /></div>
       <div data-testid="folder-controls"><slot name="header" /></div>
       <slot name="body" />
+      <slot name="footer" />
     </section>
   `
 }
@@ -128,7 +135,13 @@ const assetsGridStub = {
   `
 }
 
-function renderTab({ realTemplate = false } = {}) {
+function renderTab({
+  realTemplate = false,
+  selectionBar = true
+}: {
+  realTemplate?: boolean
+  selectionBar?: object | boolean
+} = {}) {
   return render(AssetsSidebarTab, {
     global: {
       plugins: [i18n],
@@ -140,7 +153,7 @@ function renderTab({ realTemplate = false } = {}) {
         AssetsSidebarGridView: assetsGridStub,
         AssetsSidebarListView: true,
         MediaAssetFilterBar: true,
-        MediaAssetSelectionBar: true,
+        MediaAssetSelectionBar: selectionBar,
         MediaLightbox: true
       }
     }
@@ -148,6 +161,7 @@ function renderTab({ realTemplate = false } = {}) {
 }
 
 beforeEach(() => {
+  selectionState.hasSelection = false
   useAssetsStore().outputAssets.items = [folderAsset]
   useAssetsStore().outputAssets.hasMore = false
 })
@@ -300,6 +314,31 @@ describe('AssetsSidebarTab context menu', () => {
 })
 
 describe('AssetsSidebarTab tab panel', () => {
+  it.for([
+    { enabled: false, expected: 'false' },
+    { enabled: true, expected: 'true' }
+  ])(
+    'uses the server deletion fact for imported assets when enabled=$enabled',
+    async ({ enabled, expected }) => {
+      selectionState.hasSelection = true
+      vi.mocked(useFeatureFlags().flags).assetDeletionEnabled = enabled
+      renderTab({
+        selectionBar: {
+          props: ['showDelete'],
+          template:
+            '<div data-testid="selection-bar" :data-show-delete="String(showDelete)" />'
+        }
+      })
+
+      await userEvent.click(screen.getByRole('tab', { name: 'Imported' }))
+
+      expect(screen.getByTestId('selection-bar')).toHaveAttribute(
+        'data-show-delete',
+        expected
+      )
+    }
+  )
+
   it('labels the asset list with the selected tab', async () => {
     renderTab()
 

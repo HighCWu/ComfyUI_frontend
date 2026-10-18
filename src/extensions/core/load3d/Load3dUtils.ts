@@ -1,9 +1,16 @@
+import { zUploadImageResponse } from '@comfyorg/ingest-types/zod'
+import { z } from 'zod'
+
 import { t } from '@/i18n'
 import { useToast } from '@/components/ui/toast/toastStore'
 import { api } from '@/scripts/api'
 import { useApp } from '@/scripts/appInstance'
 import { uploadTempFile } from '@/services/uploadTempFile'
 import { getErrorMessage } from '@/utils/errorUtil'
+
+const namedUploadImageResponseSchema = zUploadImageResponse.extend({
+  name: z.string().min(1)
+})
 
 class Load3dUtils {
   static async uploadTempImage(
@@ -55,7 +62,7 @@ class Load3dUtils {
       })
 
       if (resp.status === 200) {
-        const data = await resp.json()
+        const data = namedUploadImageResponseSchema.parse(await resp.json())
         let path = data.name
 
         if (data.subfolder) {

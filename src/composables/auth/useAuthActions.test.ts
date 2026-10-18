@@ -19,6 +19,7 @@ import type { ComfyWorkflow } from '@/platform/workflow/management/stores/workfl
 import { stubFirebaseAuthHarness } from '@/utils/__tests__/stubAccountIdentityPort'
 import { useWorkflowService } from '@/platform/workflow/core/services/workflowService'
 import { useBillingContext } from '@/composables/billing/useBillingContext'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 import { presentSsoRequired } from '@/platform/auth/sso/ssoRequired'
 
 vi.mock(import('firebase/auth'), { spy: true })
@@ -181,6 +182,62 @@ describe('useAuthActions.logout', () => {
   beforeEach(() => {
     mockDistributionState.isCloud = true
     Object.assign(mockWorkflowStore, { modifiedWorkflows: [] })
+  })
+
+  it.for([
+    { decision: null, shouldRevoke: false },
+    { decision: false, shouldRevoke: true }
+  ])(
+    'keeps prepaid revocation behind the dirty-workflow decision ($decision)',
+    async ({ decision, shouldRevoke }) => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      const navigate = vi
+        .spyOn(window.location, 'href', 'set')
+        .mockImplementation(() => {})
+      Object.assign(mockWorkflowStore, {
+        modifiedWorkflows: [makeWorkflow('dirty.json')]
+      })
+      vi.mocked(useDialogService().confirm).mockResolvedValue(decision)
+      vi.mocked(fetch).mockResolvedValue(Response.json(null))
+
+      await useAuthActions().logout()
+
+      expect(mockAuthStore.logout).not.toHaveBeenCalled()
+      if (shouldRevoke) {
+        expect(fetch).toHaveBeenCalledWith(
+          '/api/auth/session',
+          expect.objectContaining({ method: 'DELETE', credentials: 'include' })
+        )
+        expect(mockClearAllWorkspaceStorage).toHaveBeenCalledOnce()
+        expect(navigate).toHaveBeenCalledWith('/auth/login')
+      } else {
+        expect(fetch).not.toHaveBeenCalled()
+        expect(mockClearAllWorkspaceStorage).not.toHaveBeenCalled()
+        expect(navigate).not.toHaveBeenCalled()
+      }
+    }
+  )
+
+  it('does not clear prepaid identity or workspace state when revocation fails', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const navigate = vi
+      .spyOn(window.location, 'href', 'set')
+      .mockImplementation(() => {})
+    const session = usePrepaidSessionStore()
+    session.user = {
+      id: 'owner',
+      name: 'QA',
+      email: 'qa@example.test',
+      emailVerified: true
+    }
+    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 503 }))
+
+    await useAuthActions().logout()
+
+    expect(session.user.id).toBe('owner')
+    expect(mockAuthStore.logout).not.toHaveBeenCalled()
+    expect(mockClearAllWorkspaceStorage).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
   })
 
   it('logs out on non-cloud distributions without prompting when workflows are modified', async () => {

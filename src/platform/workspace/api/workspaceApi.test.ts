@@ -53,6 +53,45 @@ installWorkspaceApiAuth()
 
 const AUTH_HEADER = { Authorization: 'Bearer test-token' } as const
 
+describe('prepaid same-origin workspace authentication', () => {
+  it.for([
+    'getCurrentWorkspace',
+    'getBillingStatus',
+    'getBillingBalance'
+  ] as const)(
+    'uses the existing session cookie for %s without requesting a Firebase token',
+    async (method) => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      vi.mocked(useAuthStore().getWorkspaceAuthHeaderOrThrow).mockRejectedValue(
+        new Error('Firebase is not signed in')
+      )
+      const data =
+        method === 'getCurrentWorkspace'
+          ? {
+              id: 'ws-personal',
+              name: 'Personal',
+              type: 'personal',
+              role: 'owner',
+              auth_method: 'session'
+            }
+          : method === 'getBillingBalance'
+            ? { amount_micros: 0, currency: 'USD' }
+            : { localFixture: true }
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data
+      })
+      await expect(workspaceApi[method]()).resolves.toEqual(data)
+      expect(
+        useAuthStore().getWorkspaceAuthHeaderOrThrow
+      ).not.toHaveBeenCalled()
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/api\//),
+        { withCredentials: true }
+      )
+    }
+  )
+})
+
 describe('workspaceApi', () => {
   beforeEach(() => {
     vi.mocked(useAuthStore().getWorkspaceAuthHeaderOrThrow).mockResolvedValue(
@@ -286,7 +325,21 @@ describe('workspaceApi', () => {
 
   describe('workspace CRUD', () => {
     it('list() sends GET /workspaces with auth header', async () => {
-      const data = { workspaces: [] }
+      const data = {
+        can_create_workspace: false,
+        default_workspace_id: 'ws-personal',
+        workspaces: [
+          {
+            id: 'ws-personal',
+            name: 'Personal',
+            type: 'personal',
+            role: 'owner',
+            created_at: '2026-10-18T00:00:00.000Z',
+            joined_at: '2026-10-18T00:00:00.000Z',
+            control_url: '/workspaces/ws-personal/'
+          }
+        ]
+      }
       mockAxiosInstance.get.mockResolvedValue({ data })
 
       const result = await workspaceApi.list()
@@ -295,6 +348,21 @@ describe('workspaceApi', () => {
         headers: AUTH_HEADER
       })
       expect(result).toEqual(data)
+    })
+
+    it('rejects malformed workspace list and current-workspace responses', async () => {
+      mockAxiosInstance.get
+        .mockResolvedValueOnce({ data: { workspaces: [] } })
+        .mockResolvedValueOnce({
+          data: {
+            id: 'ws-personal',
+            name: 'Personal',
+            type: 'personal'
+          }
+        })
+
+      await expect(workspaceApi.list()).rejects.toThrow()
+      await expect(workspaceApi.getCurrentWorkspace()).rejects.toThrow()
     })
 
     it('create() sends POST /workspaces with payload', async () => {
@@ -354,8 +422,23 @@ describe('workspaceApi', () => {
   describe('member management', () => {
     it('listMembers() sends GET with params', async () => {
       const data = {
-        members: [],
-        pagination: { offset: 0, limit: 10, total: 0 }
+        members: [
+          {
+            id: 'user-42',
+            name: 'Jane',
+            email: 'jane@test.comfy.org',
+            joined_at: '2026-10-18T00:00:00.000Z',
+            role: 'owner',
+            is_original_owner: true,
+            credits_used_this_month: 17
+          }
+        ],
+        pagination: {
+          offset: 0,
+          limit: 10,
+          total: 1,
+          has_more: false
+        }
       }
       mockAxiosInstance.get.mockResolvedValue({ data })
 
@@ -372,6 +455,17 @@ describe('workspaceApi', () => {
         }
       )
       expect(result).toEqual(data)
+    })
+
+    it('rejects malformed workspace member pagination', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          members: [],
+          pagination: { offset: 0, limit: 10, total: 0 }
+        }
+      })
+
+      await expect(workspaceApi.listMembers()).rejects.toThrow()
     })
 
     it('removeMember() sends DELETE /workspace/members/:userId', async () => {
@@ -522,15 +616,23 @@ describe('workspaceApi', () => {
       const data = {
         resolved_for: { user_id: 'user-1', workspace_id: 'workspace-1' },
         capabilities: {
-          can_subscribe_self_serve: true,
+          can_subscribe_self_serve: false,
           can_top_up: false,
-          can_cancel: true,
-          can_reactivate: true,
-          can_change_seats: true,
-          can_invite_members: true,
-          can_manage_members: true,
+          can_cancel: false,
+          can_reactivate: false,
+          can_change_seats: false,
+          can_invite_members: false,
+          can_manage_members: false,
+          can_downgrade_to_personal: false,
+          can_revert_scheduled_change: false
+        },
+        rollout_defaults_applied: {
+          can_top_up: false,
+          can_subscribe_self_serve: false,
           can_downgrade_to_personal: false
-        }
+        },
+        revision: 17,
+        expires_at: '2026-10-18T00:01:00.000Z'
       }
       mockAxiosInstance.get.mockResolvedValue({ data })
 
@@ -545,6 +647,29 @@ describe('workspaceApi', () => {
       expect(result).toEqual(data)
     })
 
+    it.for([
+      {
+        method: 'balance',
+        call: () => workspaceApi.getBillingBalance(),
+        data: { amount_micros: '500', currency: 'USD' }
+      },
+      {
+        method: 'capabilities',
+        call: () => workspaceApi.getBillingCapabilities(),
+        data: {
+          resolved_for: { user_id: 'user-1', workspace_id: 'workspace-1' },
+          capabilities: { can_top_up: true }
+        }
+      }
+    ])(
+      'rejects malformed prepaid $method responses',
+      async ({ call, data }) => {
+        mockAxiosInstance.get.mockResolvedValue({ data })
+
+        await expect(call()).rejects.toThrow()
+      }
+    )
+
     it('getBillingPlans() sends GET /billing/plans', async () => {
       const data = { plans: [] }
       mockAxiosInstance.get.mockResolvedValue({ data })
@@ -555,6 +680,17 @@ describe('workspaceApi', () => {
         headers: AUTH_HEADER
       })
       expect(result).toEqual(data)
+    })
+
+    it('getBillingPlans() rejects subscription catalogue data', async () => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          plans: [{ slug: 'upstream-subscription' }]
+        }
+      })
+
+      await expect(workspaceApi.getBillingPlans()).rejects.toThrow()
     })
 
     const retentionFlow = {
@@ -951,6 +1087,26 @@ describe('workspaceApi', () => {
       expect(result).toEqual(data)
     })
 
+    it('getBillingEvents() rejects malformed successful responses', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          events: [
+            {
+              createdAt: 'not-a-date',
+              event_id: 'evt-1',
+              event_type: 'api_usage_completed'
+            }
+          ],
+          limit: 10,
+          page: 1,
+          total: 1,
+          totalPages: 1
+        }
+      })
+
+      await expect(workspaceApi.getBillingEvents()).rejects.toThrow()
+    })
+
     it('getBillingOpStatus() sends GET /billing/ops/:id', async () => {
       const data = {
         id: 'op-1',
@@ -972,6 +1128,18 @@ describe('workspaceApi', () => {
         }
       )
       expect(result).toEqual(data)
+    })
+
+    it('rejects a malformed prepaid billing operation status', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          id: 'op-1',
+          status: 'completed',
+          started_at: 'yesterday'
+        }
+      })
+
+      await expect(workspaceApi.getBillingOpStatus('op-1')).rejects.toThrow()
     })
   })
 })

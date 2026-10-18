@@ -21,7 +21,10 @@ import type { AgentStarterPromptAttribution } from '../../utils/starterPrompts'
 import { useAgentMentionPicker } from '../../composables/agent/useAgentMentionPicker'
 import { useSkillMenuDescription } from '../../composables/agent/useSkillMenuDescription'
 import { useWorkflowReferencePicker } from '../../composables/agent/useWorkflowReferencePicker'
-import type { ComposerAttachment } from '../../types/composerAttachment'
+import type {
+  AttachmentValidationError,
+  ComposerAttachment
+} from '../../types/composerAttachment'
 import type { MentionSection } from '../../composables/agent/mentionPickerState'
 import { useComposer } from '../../composables/agent/useComposer'
 import type { SelectedNode } from '../../composables/agent/useCanvasSelection'
@@ -350,15 +353,35 @@ const emptyMentionLabel = computed(() =>
 function onEnter(event: KeyboardEvent): void {
   if (event.isComposing || event.shiftKey) return
   event.preventDefault()
+  event.stopPropagation()
   if (running.value) return
   composer.submit()
 }
 
-const primaryActionTooltip = computed(() =>
-  running.value ? t('agent.stop') : t('agent.send')
-)
 const primaryActionVariant = computed(() =>
   running.value ? 'secondary' : 'inverted'
+)
+const SEND_BLOCKED_MESSAGES = {
+  'invalid-video': 'agent.sendBlockedByInvalidVideo',
+  'unsupported-type': 'agent.sendBlockedByUnsupportedType'
+} as const satisfies Record<AttachmentValidationError, string>
+const sendBlockedReason = computed(() => {
+  const invalid = composer.attachments.value.flatMap(
+    ({ name, validationError }) =>
+      validationError ? [{ name, validationError }] : []
+  )
+  if (running.value || invalid.length === 0) return undefined
+  if (invalid.length > 1)
+    return t('agent.sendBlockedByInvalidAttachments', {
+      count: invalid.length
+    })
+  const [{ name, validationError }] = invalid
+  return t(SEND_BLOCKED_MESSAGES[validationError], { name })
+})
+const primaryActionTooltip = computed(
+  () =>
+    sendBlockedReason.value ??
+    (running.value ? t('agent.stop') : t('agent.send'))
 )
 const primaryActionDisabled = computed(
   () => !running.value && (workflowSelecting || !composer.canSend.value)

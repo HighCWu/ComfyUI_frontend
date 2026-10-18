@@ -9,7 +9,10 @@ import { useAgentConversationStore } from './stores/agent/agentConversationStore
 import { useAgentPanelStore } from './stores/agent/agentPanelStore'
 
 export function openFeedbackDialog(source: FeedbackSource) {
-  if (!useAgentPanelStore().enabled) {
+  if (
+    import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid' ||
+    !useAgentPanelStore().enabled
+  ) {
     openGeneralFeedbackDialog(source)
     return
   }

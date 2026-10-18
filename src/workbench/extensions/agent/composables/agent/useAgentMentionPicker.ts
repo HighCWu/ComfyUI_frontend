@@ -118,7 +118,11 @@ export function useAgentMentionPicker(options: MentionPickerOptions) {
       return [
         ...options
           .assets()
-          .filter((asset) => asset.name.toLowerCase().includes(search))
+          .filter(
+            (asset) =>
+              asset.validationError === undefined &&
+              asset.name.toLowerCase().includes(search)
+          )
           .map(
             (asset): MentionMatch => ({
               kind: 'asset',

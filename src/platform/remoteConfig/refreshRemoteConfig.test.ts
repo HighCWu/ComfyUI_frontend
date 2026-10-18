@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/scripts/api'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 
 import {
   invalidateRemoteConfig,
@@ -24,7 +25,7 @@ vi.mock(import('@/scripts/api'))
 describe('refreshRemoteConfig', () => {
   const mockConfig = { feature1: true, feature2: 'value' }
 
-  function mockSuccessResponse(config: Record<string, unknown> = mockConfig) {
+  function mockSuccessResponse(config: unknown = mockConfig) {
     return {
       ok: true,
       json: async () => config
@@ -95,6 +96,136 @@ describe('refreshRemoteConfig', () => {
   })
 
   describe('with auth (default)', () => {
+    it.for([
+      null,
+      [],
+      { supports_preview_metadata: 'yes' },
+      { max_upload_size: -1.5 },
+      { free_tier_offer: { job_allowance: 'ten' } }
+    ])('rejects malformed successful remote config %#', async (config) => {
+      mockAuthenticatedFetch(mockSuccessResponse(config))
+
+      await refreshRemoteConfig()
+
+      expect(remoteConfig.value).toEqual({})
+      expect(remoteConfigState.value).toBe('error')
+      expect(authenticatedRemoteConfigState.value).toBe('error')
+    })
+
+    it('does not let prepaid bootstrap supersede a pending or established authenticated config', async () => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      usePrepaidSessionStore().user = {
+        id: 'owner',
+        name: 'QA',
+        email: 'qa@example.test',
+        emailVerified: true
+      }
+      const pending = Promise.withResolvers<Response>()
+      vi.mocked(fetch)
+        .mockReturnValueOnce(pending.promise)
+        .mockImplementation(async () =>
+          Response.json({ unified_web_session: false })
+        )
+      const authenticated = refreshRemoteConfig()
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+
+      await refreshRemoteConfig({ useAuth: false })
+      pending.resolve(
+        Response.json(
+          { unified_web_session: true },
+          {
+            headers: { 'X-Laimon-Config-User': 'owner' }
+          }
+        )
+      )
+      await authenticated
+
+      expect(remoteConfig.value).toEqual({ unified_web_session: true })
+      expect(remoteConfigState.value).toBe('authenticated')
+
+      await refreshRemoteConfig({ useAuth: false })
+
+      expect(remoteConfig.value).toEqual({ unified_web_session: true })
+      expect(authenticatedRemoteConfigState.value).toBe('authenticated')
+      expect(fetch).toHaveBeenCalledOnce()
+
+      invalidateRemoteConfig()
+      await refreshRemoteConfig({ useAuth: false })
+
+      expect(remoteConfigState.value).toBe('anonymous')
+      expect(remoteConfig.value).toEqual({ unified_web_session: false })
+    })
+
+    it('does not commit a prepaid config body after its account changes', async () => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      const session = usePrepaidSessionStore()
+      session.user = {
+        id: 'owner',
+        name: 'QA',
+        email: 'qa@example.test',
+        emailVerified: true
+      }
+      const body = new TransformStream<Uint8Array, Uint8Array>()
+      const response = new Response(body.readable, {
+        headers: {
+          'X-Laimon-Config-User': 'owner',
+          'Content-Type': 'application/json'
+        }
+      })
+      vi.mocked(fetch).mockResolvedValue(response)
+      const refresh = refreshRemoteConfig()
+      const writer = body.writable.getWriter()
+      await writer.write(new TextEncoder().encode('{'))
+      session.user = {
+        id: 'other-owner',
+        name: 'Other',
+        email: 'other@example.test',
+        emailVerified: true
+      }
+      await writer.write(
+        new TextEncoder().encode('"agent-in-app-experience":true}')
+      )
+      await writer.close()
+      await refresh
+
+      expect(remoteConfig.value).toEqual({})
+      expect(sessionAgentGrant.value).toBeUndefined()
+      expect(authenticatedRemoteConfigState.value).not.toBe('authenticated')
+    })
+
+    it.for(['owner', 'foreign', null])(
+      'requires matching server identity on the prepaid cookie rail (%s)',
+      async (responseOwner) => {
+        vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+        usePrepaidSessionStore().user = {
+          id: 'owner',
+          name: 'QA',
+          email: 'qa@example.test',
+          emailVerified: true
+        }
+        vi.mocked(fetch).mockResolvedValue(
+          Response.json(mockConfig, {
+            headers: responseOwner
+              ? { 'X-Laimon-Config-User': responseOwner }
+              : {}
+          })
+        )
+
+        await refreshRemoteConfig()
+
+        expect(authenticatedRemoteConfigState.value).toBe(
+          responseOwner === 'owner' ? 'authenticated' : 'error'
+        )
+        expect(remoteConfig.value).toEqual(
+          responseOwner === 'owner' ? mockConfig : {}
+        )
+        expect(api.fetchApi).not.toHaveBeenCalled()
+        expect(fetch).toHaveBeenCalledWith(
+          '/ComfyUI/api/features?authenticated=1',
+          expect.objectContaining({ credentials: 'include', cache: 'no-store' })
+        )
+      }
+    )
     it('uses api.fetchApi when useAuth is true', async () => {
       mockAuthenticatedFetch(mockSuccessResponse())
 

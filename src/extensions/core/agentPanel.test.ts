@@ -15,8 +15,8 @@ import {
   defineComponent,
   effectScope,
   nextTick,
-  reactive,
-  ref
+  ref,
+  watch
 } from 'vue'
 import type { EffectScope } from 'vue'
 import { useCurrentUser } from '@/composables/auth/useCurrentUser'
@@ -43,8 +43,8 @@ import { useCanvasStore } from '@/renderer/core/canvas/canvasStore'
 import { useAgentComposerStore } from '@/workbench/extensions/agent/stores/agent/agentComposerStore'
 import { useDialogStore } from '@/stores/dialogStore'
 import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
-import type { useFeatureFlags } from '@/composables/useFeatureFlags'
 import { useAgentPanelStore } from '@/workbench/extensions/agent/stores/agent/agentPanelStore'
+import { api } from '@/scripts/api'
 import { createMockLoadedWorkflow } from '@/utils/__tests__/litegraphTestUtils'
 import {
   createMockCanvasRenderingContext2D,
@@ -143,17 +143,13 @@ vi.mock(
 )
 
 const agentFlagEnabled = ref(false)
-
-vi.mock(import('@/composables/useFeatureFlags'), () => ({
-  useFeatureFlags: () =>
-    fromPartial<ReturnType<typeof useFeatureFlags>>({
-      flags: reactive({
-        get agentInAppExperienceEnabled() {
-          return agentFlagEnabled.value
-        }
-      })
-    })
-}))
+watch(
+  agentFlagEnabled,
+  (enabled) => {
+    api.serverFeatureFlags.value = enabled ? { agent: { state: 'ready' } } : {}
+  },
+  { flush: 'sync', immediate: true }
+)
 
 const { registerAgentPanelExtension } = await import('./agentPanel')
 const importRegistrationCount = mocks.capturedExtensions.length
@@ -189,9 +185,8 @@ async function loadEntryAndSetup(): Promise<void> {
 async function setRemoteConfigState(
   state: 'unloaded' | 'loading' | 'authenticated' | 'error'
 ): Promise<void> {
-  const { authenticatedRemoteConfigState } =
-    await import('@/platform/remoteConfig/remoteConfig')
-  authenticatedRemoteConfigState.value = state
+  api.serverFeatureFlagsSettled.value =
+    state === 'authenticated' || state === 'error'
   await nextTick()
 }
 
@@ -245,6 +240,7 @@ describe('AgentPanel extension flag gate', () => {
     agentStore.enabled = false
     agentStore.isOpen = true
     agentFlagEnabled.value = false
+    api.serverFeatureFlagsSettled.value = false
     releaseFirstRunScreen()
     activeTour.value = null
     startupDecision = Promise.resolve(true)
@@ -1744,10 +1740,7 @@ describe('AgentPanel extension flag gate', () => {
     Object.assign(consentStore, { accepted: false, isChecking: false })
     await loadEntryAndSetup()
     vi.mocked(consentStore.load).mockClear()
-    const { remoteConfigRevision } =
-      await import('@/platform/remoteConfig/remoteConfig')
-
-    remoteConfigRevision.value++
+    api.serverFeatureFlags.value = { agent: { state: 'ready' } }
     await nextTick()
 
     expect(consentStore.load).toHaveBeenCalledOnce()

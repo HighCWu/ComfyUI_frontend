@@ -37,6 +37,9 @@ export const useAgentConsentStore = defineStore('agentConsent', () => {
 
   function currentIdentity(): string | null {
     const userId = currentUserId()
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+      return userId ? JSON.stringify([userId, 'account']) : null
+    }
     const workspaceId = workspaceStore.activeWorkspaceId
     if (!userId || !workspaceId || workspaceStore.isSwitching) return null
     return JSON.stringify([
@@ -70,6 +73,8 @@ export const useAgentConsentStore = defineStore('agentConsent', () => {
         'Comfy account authentication is required'
       )
     }
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid')
+      return currentIdentity()
     const generation = workspaceStore.workspaceTransitionGeneration
     if (!workspaceStore.activeWorkspaceId && !workspaceStore.isSwitching) {
       await workspaceStore.initialize()
@@ -94,6 +99,11 @@ export const useAgentConsentStore = defineStore('agentConsent', () => {
   }
 
   async function requireAuth(sessionId: number, identity: string) {
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+      if (!stillOwns(sessionId, identity)) return null
+      return (url: string, init: RequestInit) =>
+        fetch(url, { ...init, credentials: 'include' })
+    }
     const send = webSessionRequests() ? await webSessionSend() : undefined
     const auth = send ?? (await authStore.getWorkspaceAuthHeader())
     if (!stillOwns(sessionId, identity)) return null
@@ -140,7 +150,22 @@ export const useAgentConsentStore = defineStore('agentConsent', () => {
     if (loadedIdentity.value === identity) return accepted.value
     if (pendingLoad?.identity === identity) return pendingLoad.result
 
-    const result = readConsent(session, identity)
+    const result = (async () => {
+      // The prepaid identity bootstrap can briefly clear and restore the same
+      // account while the first authenticated feature refresh settles. A read
+      // from the earlier epoch must not commit, but an explicit panel click
+      // must not be lost merely because the stable identity has the same key.
+      // Bound retries so a genuinely unstable auth rail still fails closed.
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        const value = await readConsent(session, identity)
+        if (loadedIdentity.value === identity) return value
+        const current = currentIdentity()
+        if (current !== null && current !== identity) return false
+        if (current === identity) continue
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+      return false
+    })()
     const request = { identity, result }
     pendingLoad = request
     try {

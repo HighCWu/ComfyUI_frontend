@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { reportError } from '@/platform/telemetry/reportError'
 import { useReleaseService } from '@/platform/updates/common/releaseService'
 
 // Hoist the mock to avoid hoisting issues
@@ -14,6 +15,8 @@ vi.mock<unknown>(import('axios'), () => ({
     isAxiosError: vi.fn()
   }
 }))
+
+vi.mock(import('@/platform/telemetry/reportError'))
 
 describe('useReleaseService', () => {
   let service: ReturnType<typeof useReleaseService>
@@ -40,6 +43,21 @@ describe('useReleaseService', () => {
   })
 
   describe('getReleases', () => {
+    it('keeps prepaid release discovery on the paired backend', async () => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: [] })
+      await expect(service.getReleases({ project: 'cloud' })).resolves.toEqual(
+        []
+      )
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/releases', {
+        baseURL: '',
+        params: { project: 'cloud' },
+        signal: undefined,
+        headers: undefined
+      })
+      expect(service.error.value).toBeNull()
+    })
+
     it('should fetch releases successfully', async () => {
       mockAxiosInstance.get.mockResolvedValue({ data: mockReleases })
 
@@ -60,6 +78,21 @@ describe('useReleaseService', () => {
       expect(result).toEqual(mockReleases)
       expect(service.isLoading.value).toBe(false)
       expect(service.error.value).toBeNull()
+    })
+
+    it('refuses malformed successful release responses', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { releases: [] } })
+
+      await expect(
+        service.getReleases({ project: 'comfyui' })
+      ).resolves.toBeNull()
+      expect(service.error.value).toBe(
+        'Failed to get releases: Invalid response'
+      )
+      expect(reportError).toHaveBeenCalledWith(expect.anything(), {
+        errorType: 'release_notes_invalid_response',
+        surface: 'platform'
+      })
     })
 
     it('should fetch releases with form_factor parameter', async () => {

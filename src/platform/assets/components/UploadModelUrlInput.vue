@@ -85,6 +85,7 @@ import { computed } from 'vue'
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
 import { useFeatureFlags } from '@/composables/useFeatureFlags'
+import { getProviderLogo } from '@/platform/secrets/providers'
 import { useSettingsDialog } from '@/platform/settings/composables/useSettingsDialog'
 
 const { flags } = useFeatureFlags()
@@ -110,8 +111,8 @@ const url = computed({
   set: (value: string) => emit('update:modelValue', value)
 })
 
-const civitaiIcon = '/assets/images/civitai.svg'
 const civitaiUrl = 'https://civitai.com/models'
-const huggingFaceIcon = '/assets/images/hf-logo.svg'
+const civitaiIcon = getProviderLogo('civitai')
 const huggingFaceUrl = 'https://huggingface.co'
+const huggingFaceIcon = getProviderLogo('huggingface')
 </script>

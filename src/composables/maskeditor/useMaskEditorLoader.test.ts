@@ -1,6 +1,6 @@
 import { useMaskEditorDataStore } from '@/stores/maskEditorDataStore'
 import { fromAny } from '@total-typescript/shoehorn'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { useWidgetValueStore } from '@/stores/widgetValueStore'
@@ -143,7 +143,7 @@ describe('useMaskEditorLoader', () => {
 
     await useMaskEditorLoader().loadFromNode(node)
 
-    for (const layerFilename of ['hash-painted-masked.png', 'hash-paint.png']) {
+    for (const layerFilename of ['hash-mask.png', 'hash-paint.png']) {
       const layerUrls = requestedLayerUrls(layerFilename)
       expect(layerUrls.length).toBeGreaterThan(0)
       for (const url of layerUrls) {
@@ -151,6 +151,35 @@ describe('useMaskEditorLoader', () => {
       }
     }
   })
+
+  it.for(['', 'clipspace', 'nested & layers'])(
+    'uses the server layer directory %j',
+    async (subfolder) => {
+      distribution.isCloud = true
+      vi.mocked(api.fetchApi).mockResolvedValue(
+        Response.json({
+          painted_masked: 'hash-main.png',
+          paint: 'hash-paint.png',
+          subfolder
+        })
+      )
+      const node = createLoadImageNode('hash-main.png [input]')
+
+      await useMaskEditorLoader().loadFromNode(node)
+
+      const data = mockDataStore.inputData
+      assert.exists(data)
+      assert.exists(data.paintLayer)
+      expect(
+        [data.baseLayer.url, data.maskLayer.url, data.paintLayer.url].map(
+          (url) => new URL(url).searchParams.get('subfolder')
+        )
+      ).toEqual([subfolder || null, subfolder || null, subfolder || null])
+      expect(api.fetchApi).toHaveBeenCalledWith(
+        '/files/mask-layers?filename=hash-main.png%20%5Binput%5D'
+      )
+    }
+  )
 
   it('falls back to the node image when layer files are missing', async () => {
     failUrlPattern = /clipspace-(mask|paint)-123\.png/
@@ -165,11 +194,50 @@ describe('useMaskEditorLoader', () => {
     })
   })
 
-  it('still fails when the node image itself cannot be loaded', async () => {
+  it('loads WebP mask channels in cloud mode', async () => {
+    distribution.isCloud = true
+    const node = createLoadImageNode('portrait.WEBP [input]')
+
+    const result = await useMaskEditorLoader().loadFromNode(node)
+
+    expect(result).toEqual({ ok: true })
+    expect(
+      requestedUrls
+        .map((url) => new URL(url).searchParams.get('channel'))
+        .filter((channel) => channel !== null)
+    ).toEqual(['rgb', 'a'])
+    expect(api.fetchApi).toHaveBeenCalledWith(
+      '/files/mask-layers?filename=portrait.WEBP%20%5Binput%5D'
+    )
+    expect(mockDataStore.inputData).toMatchObject({
+      sourceRef: { filename: 'portrait.WEBP', type: 'input' }
+    })
+  })
+
+  it('falls back to the node image when a successful layer response is malformed', async () => {
+    distribution.isCloud = true
+    vi.mocked(api.fetchApi).mockResolvedValue(Response.json({ mask: 42 }))
+    const node = createLoadImageNode('portrait.png [input]')
+
+    expect(await useMaskEditorLoader().loadFromNode(node)).toEqual({ ok: true })
+    expect(
+      requestedUrls
+        .map((url) => new URL(url).searchParams.get('channel'))
+        .filter((channel) => channel !== null)
+    ).toEqual(['rgb', 'a'])
+    expect(mockDataStore.inputData).toMatchObject({
+      sourceRef: { filename: 'portrait.png', type: 'input' },
+      paintLayer: undefined
+    })
+  })
+
+  it('returns a failure when the node image itself cannot be loaded', async () => {
     failUrlPattern = /./
     const node = createLoadImageNode('some-regular-image.png [input]')
 
-    await expect(useMaskEditorLoader().loadFromNode(node)).rejects.toThrow()
+    expect(await useMaskEditorLoader().loadFromNode(node)).toMatchObject({
+      ok: false
+    })
     expect(mockDataStore.setLoading).toHaveBeenLastCalledWith(
       false,
       expect.any(String)

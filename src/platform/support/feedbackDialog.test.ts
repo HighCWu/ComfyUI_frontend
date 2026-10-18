@@ -25,6 +25,24 @@ vi.mock(import('@/platform/distribution/types'), () => ({
 }))
 
 describe('openFeedbackDialog', () => {
+  it('opens first-party support without sending account context to a survey in prepaid mode', () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    useCurrentUser().userEmail = computed(() => 'private@example.test')
+    vi.mocked(useCurrentUser).mockClear()
+
+    openFeedbackDialog('action-bar')
+
+    expect(open).toHaveBeenCalledWith(
+      '/support',
+      '_blank',
+      'noopener,noreferrer'
+    )
+    expect(openTypeformDialog).not.toHaveBeenCalled()
+    expect(useCurrentUser).not.toHaveBeenCalled()
+    expect(useTelemetry).not.toHaveBeenCalled()
+  })
+
   it('opens the feedback form tagged with distribution and source', () => {
     openFeedbackDialog('action-bar')
 

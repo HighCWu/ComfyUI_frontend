@@ -11,6 +11,7 @@ import { useBillingContext } from '@/composables/billing/useBillingContext'
 import { useErrorHandling } from '@/composables/useErrorHandling'
 import enMessages from '@/locales/en/main.json' with { type: 'json' }
 import { useFeatureFlags } from '@/composables/useFeatureFlags'
+import { useBillingCapabilities } from '@/platform/workspace/composables/useBillingCapabilities'
 import { useWorkspaceUI } from '@/platform/workspace/composables/useWorkspaceUI'
 import type { BillingStatus } from '@/platform/workspace/api/workspaceApi'
 import { useDialogService } from '@/services/dialogService'
@@ -36,6 +37,8 @@ vi.mock(
 
 vi.mock(import('@/composables/useFeatureFlags'))
 vi.mock(import('@/composables/useErrorHandling'))
+
+vi.mock(import('@/platform/workspace/composables/useBillingCapabilities'))
 
 vi.mock(import('@/platform/workspace/composables/useWorkspaceUI'))
 
@@ -134,6 +137,7 @@ describe('CloudRunButtonWrapper', () => {
       subscription(mockSubscriptionTier.value)
     )
     vi.mocked(useBillingContext).mockReturnValue(billing)
+    useBillingCapabilities().canSubscribeSelfServe = computed(() => false)
     setCanManageSubscription(true)
     mockCanRunWorkflows.value = true
     mockIsInitialized.value = true

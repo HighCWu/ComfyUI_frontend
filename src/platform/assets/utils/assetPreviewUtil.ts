@@ -1,4 +1,7 @@
+import { z } from 'zod'
+
 import { useFeatureFlags } from '@/composables/useFeatureFlags'
+import { assetItemSchema } from '@/platform/assets/schemas/assetSchema'
 import { assetService } from '@/platform/assets/services/assetService'
 import { api } from '@/scripts/api'
 import { useAssetsStore } from '@/stores/assetsStore'
@@ -14,6 +17,20 @@ interface AssetRecord {
   user_metadata?: Record<string, unknown>
 }
 
+const assetPreviewLookupResponseSchema = z.object({
+  assets: z.array(
+    assetItemSchema.pick({
+      id: true,
+      name: true,
+      hash: true,
+      preview_url: true,
+      preview_id: true,
+      user_metadata: true
+    })
+  ),
+  has_more: z.boolean()
+})
+
 /**
  * Whether the backend can serve asset preview/thumbnail data.
  */
@@ -23,12 +40,15 @@ export function isAssetPreviewSupported(): boolean {
 
 async function fetchAssets(
   params: Record<string, string>
-): Promise<AssetRecord[]> {
-  const query = new URLSearchParams(params)
+): Promise<AssetRecord[] | undefined> {
+  const query = new URLSearchParams({ ...params, include_tags: 'output' })
   const res = await api.fetchApi(`/assets?${query}`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return data.assets ?? []
+  if (!res.ok) return undefined
+  const parsed = assetPreviewLookupResponseSchema.safeParse(await res.json())
+  if (!parsed.success) return undefined
+  const data = parsed.data
+  if (data.has_more) return undefined
+  return data.assets
 }
 
 export function resolvePreviewUrl(asset: AssetRecord): string {
@@ -47,11 +67,14 @@ export async function findOutputAsset(
   name: string
 ): Promise<AssetRecord | undefined> {
   const byHash = await fetchAssets({ hash: name })
-  const hashMatch = byHash.find((a) => a.hash === name)
-  if (hashMatch) return hashMatch
+  if (!byHash) return undefined
+  const hashMatches = byHash.filter((asset) => asset.hash === name)
+  if (hashMatches.length)
+    return hashMatches.length === 1 ? hashMatches[0] : undefined
 
   const byName = await fetchAssets({ name_contains: name })
-  return byName.find((a) => a.name === name)
+  const nameMatches = byName?.filter((asset) => asset.name === name)
+  return nameMatches?.length === 1 ? nameMatches[0] : undefined
 }
 
 export async function findServerPreviewUrl(

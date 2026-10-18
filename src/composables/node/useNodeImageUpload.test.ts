@@ -179,6 +179,19 @@ describe('useNodeImageUpload', () => {
     expect(onUploadComplete).not.toHaveBeenCalled()
   })
 
+  it('rejects a malformed upload response before updating assets', async () => {
+    vi.mocked(api.fetchApi).mockResolvedValueOnce(
+      Response.json({ name: 42, subfolder: 'pasted' })
+    )
+
+    await capturedDragOnDrop([createFile()])
+
+    expect(mockInvalidateInputs).not.toHaveBeenCalled()
+    expect(onUploadComplete).not.toHaveBeenCalled()
+    expect(onUploadError).toHaveBeenCalledOnce()
+    expect(useToast().warning).toHaveBeenCalledWith('g.uploadFailed')
+  })
+
   it('shows a file-too-large toast on a 413 with no known upload limit', async () => {
     vi.mocked(api.getServerFeature).mockReturnValue(undefined)
     vi.mocked(api.fetchApi).mockResolvedValueOnce(failResponse(413))

@@ -11,7 +11,7 @@ import { z } from 'zod'
 import { growAutogrowInput } from '@/core/graph/widgets/dynamicWidgets'
 import type { INodeFlags } from '@/lib/litegraph/src/interfaces'
 import type { INodeInputSlot } from '@/lib/litegraph/src/types/slots'
-import type { LGraphCanvas } from '@/lib/litegraph/src/LGraphCanvas'
+import { LGraphCanvas } from '@/lib/litegraph/src/LGraphCanvas'
 import { withGraphIntentSource } from '@/lib/litegraph/src/graphIntents'
 import { detachSerialisedLinks } from '@/lib/litegraph/src/linkDeduplication'
 import { LGraphNode, LiteGraph } from '@/lib/litegraph/src/litegraph'
@@ -41,6 +41,11 @@ import {
 } from './agentSubgraphDefinitions'
 import type { PlacementRect } from './batchPlacement'
 import { placementOffset } from './batchPlacement'
+import { projectInteriorLinks } from './interiorTopologyProjection'
+import {
+  documentInteriorWidgetValue,
+  interiorWidgetNodeKey
+} from './interiorWidgetTarget'
 
 export type NodeChange = 'add' | 'update' | 'delete'
 
@@ -55,6 +60,12 @@ export interface FrameChanges {
   widgets: ReadonlyMap<string, ReadonlySet<string> | 'all'>
   resyncNodes: ReadonlySet<string>
   links: ReadonlySet<string>
+  interiorTopology?: ReadonlySet<string>
+  registeredDefinitions?: ReadonlySet<string>
+  interiorWidgets?: ReadonlyMap<
+    string,
+    ReadonlyMap<string, ReadonlySet<string> | 'all'>
+  >
 }
 
 export interface RemoteApplyContext {
@@ -79,6 +90,7 @@ export interface LiveGraphApplierDeps {
 export interface ApplyResult {
   createdNodeIds: NodeId[]
   failureCount: number
+  deferredInteriorTopology?: ReadonlySet<string>
 }
 
 /**
@@ -138,6 +150,26 @@ interface ApplyWidgetOptions {
 function plain(value: unknown): unknown {
   if (value instanceof Y.Map || value instanceof Y.Array) return value.toJSON()
   return structuredClone(value)
+}
+
+function activeInteriorWidgetValues(
+  source: ISerialisedNode
+): DocNode['widgets'] {
+  const widgets = source.widgets_values_named ?? source.widgets_values
+  if (!widgets || Array.isArray(widgets)) return widgets
+  const selectors = (source.inputs ?? [])
+    .filter((input) => input.type === 'COMFY_DYNAMICCOMBO_V3')
+    .map((input) => `${input.name}.`)
+  if (!selectors.length) return widgets
+  const active = new Set(
+    (source.inputs ?? []).map((input) => input.widget?.name)
+  )
+  return Object.fromEntries(
+    Object.entries(widgets).filter(
+      ([name]) =>
+        !selectors.some((prefix) => name.startsWith(prefix)) || active.has(name)
+    )
+  )
 }
 
 /**
@@ -374,7 +406,9 @@ export function readDocWidgetValue(
   widget: string
 ): unknown {
   const widgets = nodesMap(doc).get(nodeId)?.get('widgets')
-  return widgets instanceof Y.Map ? plain(widgets.get(widget)) : undefined
+  return widgets instanceof Y.Map
+    ? plain(widgets.get(widget))
+    : documentInteriorWidgetValue(doc, nodeId, widget)
 }
 
 export function docLinksIncident(doc: Y.Doc, nodeId: string): DocLink[] {
@@ -550,7 +584,6 @@ export class LiveGraphApplier {
     this.deps = deps
   }
 
-  /** Applies the collected changes of one delivered frame to the live graph. */
   applyChanges(
     doc: Y.Doc,
     changes: FrameChanges,
@@ -564,19 +597,33 @@ export class LiveGraphApplier {
       return this.write(graph, context, () => {
         if (mode === 'replace') this.removeAbsent(graph, doc, context)
         const created: NodeId[] = []
+        const interiorTopology = new Set(changes.interiorTopology)
+        if (changes.registeredDefinitions?.size) {
+          const definitions = allSubgraphDefinitions(
+            readSubgraphDefinitions(doc)
+          )
+          for (const definition of definitions) {
+            if (!changes.registeredDefinitions.has(definition.id)) continue
+            for (const child of allSubgraphDefinitions([definition]))
+              if (graph.rootGraph.subgraphs.has(child.id))
+                interiorTopology.add(child.id)
+          }
+        }
         const touchedNodes = new Set<string>()
-        this.registerDefinitions(graph, doc)
-
         for (const [id, change] of changes.nodes) {
           if (change === 'delete') {
             this.try(context, () => this.deleteNode(graph, id))
-            continue
           }
+        }
+        this.registerDefinitions(graph, doc)
+
+        for (const [id, change] of changes.nodes) {
+          if (change === 'delete') continue
           touchedNodes.add(id)
           this.try(context, () => {
             const result = this.upsertNode(graph, doc, id, mode)
             if (result === 'created') created.push(toNodeId(id))
-            if (result === 'recreated') {
+            if (result === 'created' || result === 'recreated') {
               for (const link of docLinksIncident(doc, id)) {
                 this.connectLink(graph, doc, link)
               }
@@ -594,11 +641,27 @@ export class LiveGraphApplier {
           this.try(context, () => this.syncWidgets(graph, doc, id, names, mode))
         }
 
+        this.syncInteriorWidgets(
+          graph,
+          doc,
+          changes.interiorWidgets,
+          mode,
+          context,
+          interiorTopology
+        )
+        const deferred = this.syncInteriorTopology(
+          graph,
+          doc,
+          interiorTopology,
+          context
+        )
+
         this.applyLinks(graph, doc, [...changes.links], context)
         if (mode === 'merge') this.placeBatch(graph, created)
         return {
           createdNodeIds: created,
-          failureCount: this.currentFailureCount()
+          failureCount: this.currentFailureCount(),
+          ...(deferred.size ? { deferredInteriorTopology: deferred } : {})
         }
       })
     } finally {
@@ -713,6 +776,121 @@ export class LiveGraphApplier {
     if (node) graph.remove(node)
   }
 
+  private syncInteriorWidgets(
+    graph: LGraph,
+    doc: Y.Doc,
+    changes: FrameChanges['interiorWidgets'],
+    mode: ApplyMode,
+    context: RemoteApplyContext,
+    topology?: FrameChanges['interiorTopology']
+  ): void {
+    if (!changes?.size && !topology?.size) return
+    for (const definition of allSubgraphDefinitions(
+      readSubgraphDefinitions(doc)
+    )) {
+      const writes = topology?.has(definition.id)
+        ? new Map(
+            (definition.nodes ?? []).map((node) => [
+              String(node.id),
+              'all' as const
+            ])
+          )
+        : changes?.get(definition.id)
+      if (!writes) continue
+      const live = graph.rootGraph.subgraphs.get(definition.id)
+      if (
+        topology?.has(definition.id) &&
+        this.holdsInteriorDefinition(graph, definition)
+      )
+        continue
+      for (const [id, names] of writes) {
+        const source = definition.nodes?.find((node) => String(node.id) === id)
+        const node = live?.getNodeById(toNodeId(id))
+        if (!source || !node || node.type !== source.type) {
+          this.reportOnce(
+            `interior:${definition.id}:${id}`,
+            'Interior widget target does not match the live definition.',
+            'agent_graph_widget_missing',
+            { definitionId: definition.id, nodeId: id }
+          )
+          continue
+        }
+        const widgets = activeInteriorWidgetValues(source)
+        this.try(context, () =>
+          this.applyWidgets(
+            node,
+            names === 'all' || Array.isArray(widgets) || widgets === undefined
+              ? widgets
+              : Object.fromEntries(
+                  Object.entries(widgets).filter(([name]) =>
+                    changed(node, name, names)
+                  )
+                ),
+            mode,
+            { documentWidgets: widgets }
+          )
+        )
+      }
+    }
+  }
+
+  private holdsInteriorDefinition(
+    graph: LGraph,
+    definition: ExportedSubgraph
+  ): boolean {
+    const live = graph.rootGraph.subgraphs.get(definition.id)
+    return (definition.nodes ?? []).some((source) => {
+      const node = live?.getNodeById(toNodeId(source.id))
+      const widgets = source.widgets_values_named ?? source.widgets_values
+      return node && widgets
+        ? ordinaryWidgetEntries(node, widgets)
+            .filter(isWidgetEntry)
+            .some(([name, value]) => this.holdsLocalWrite(node, name, value))
+        : false
+    })
+  }
+
+  private syncInteriorTopology(
+    graph: LGraph,
+    doc: Y.Doc,
+    changes: FrameChanges['interiorTopology'],
+    context: RemoteApplyContext
+  ): Set<string> {
+    const deferred = new Set<string>()
+    if (!changes?.size) return deferred
+    const definitions = new Map(
+      allSubgraphDefinitions(readSubgraphDefinitions(doc)).map((source) => [
+        source.id,
+        source
+      ])
+    )
+    for (const id of changes) {
+      this.try(context, () => {
+        const definition = definitions.get(id)
+        const live = graph.rootGraph.subgraphs.get(id)
+        if (!definition && !live) return
+        const outcome =
+          !definition || !live
+            ? 'missing-definition'
+            : this.holdsInteriorDefinition(graph, definition)
+              ? 'local-write-pending'
+              : projectInteriorLinks(live, definition)
+        if (outcome === 'applied') return
+        if (outcome === 'local-write-pending') {
+          deferred.add(id)
+          return
+        }
+        this.reportOnce(
+          `interior-topology:${id}:${outcome}`,
+          `Interior topology could not be projected: ${outcome}`,
+          'agent_graph_interior_topology_unresolved',
+          { definitionId: id, outcome }
+        )
+      })
+    }
+    return deferred
+  }
+
   private upsertNode(
     graph: LGraph,
     doc: Y.Doc,
@@ -722,6 +900,19 @@ export class LiveGraphApplier {
     const docNode = this.readDocNode(doc, id)
     if (!docNode) return 'skipped'
     const live = graph.getNodeById(toNodeId(id))
+    const interiorOwner = [...graph.rootGraph.subgraphs.values()].find(
+      (definition) =>
+        definition !== graph && definition.getNodeById(toNodeId(id)) !== null
+    )
+    if (!live && interiorOwner) {
+      this.reportOnce(
+        `node-owner:${id}`,
+        `Cannot restore root node ${id}: its identity belongs to a local subgraph`,
+        'agent_graph_node_ownership_conflict',
+        { nodeId: id, definitionId: interiorOwner.id }
+      )
+      return 'skipped'
+    }
     if (live && live.type === docNode.type) {
       this.applyFields(live, docNode)
       this.applyWidgets(live, docNode.widgets, mode)
@@ -802,11 +993,17 @@ export class LiveGraphApplier {
 
   private applyFields(node: LGraphNode, docNode: DocNode): void {
     const source = docNode.serialised
-    if (source.title !== undefined && node.title !== source.title)
-      node.title = source.title
-    if (node.mode !== source.mode) node.mode = source.mode
-    const { ghost } = node.flags
-    node.flags = ghost === undefined ? source.flags : { ...source.flags, ghost }
+    const title = source.title ?? node.constructor.title ?? ''
+    if (node.title !== title) node.title = title
+    if (node.mode !== source.mode && !node.changeMode(source.mode)) {
+      this.reportOnce(
+        `node-mode:${docNode.id}:${source.mode}`,
+        `Document node ${docNode.id} rejected mode ${source.mode}`,
+        'agent_graph_node_mode_rejected',
+        { nodeId: docNode.id, mode: source.mode }
+      )
+    }
+    applyFlags(node, source.flags)
     for (const [key, value] of Object.entries(source.properties ?? {})) {
       if (node.properties[key] !== value) node.setProperty(key, value)
     }
@@ -1041,9 +1238,11 @@ export class LiveGraphApplier {
     widget: string,
     docValue: WidgetValue
   ): boolean {
-    return (
-      this.deps.holdsLocalWrite?.(String(node.id), widget, docValue) ?? false
-    )
+    const id =
+      node.graph && node.graph !== node.graph.rootGraph
+        ? interiorWidgetNodeKey(node.graph.id, String(node.id))
+        : String(node.id)
+    return this.deps.holdsLocalWrite?.(id, widget, docValue) ?? false
   }
 
   private setWidgetValue(
@@ -1303,7 +1502,32 @@ function writeWidgetValue(
   }
 }
 
+function applyFlags(node: LGraphNode, flags: INodeFlags): void {
+  if (node.collapsed !== !!flags.collapsed) node.collapse(true)
+  if (node.pinned !== !!flags.pinned) node.pin(!!flags.pinned)
+  if (!Object.hasOwn(flags, 'collapsed'))
+    Reflect.deleteProperty(node.flags, 'collapsed')
+  if (!Object.hasOwn(flags, 'pinned'))
+    Reflect.deleteProperty(node.flags, 'pinned')
+  for (const [key, value] of Object.entries({ ...node.flags, ...flags })) {
+    if (['ghost', 'collapsed', 'pinned'].includes(key)) continue
+    if (key in flags) {
+      Object.assign(node.flags, { [key]: value })
+    } else {
+      Reflect.deleteProperty(node.flags, key)
+    }
+  }
+}
+
 function applyAppearance(node: LGraphNode, source: ISerialisedNode): void {
+  const color = source.color ?? node.color
+  const bgcolor = source.bgcolor ?? node.bgcolor
+  if (node.color !== color || node.bgcolor !== bgcolor) {
+    const option = Object.values(LGraphCanvas.node_colors).find(
+      (option) => option.color === color && option.bgcolor === bgcolor
+    )
+    if (option) node.setColorOption(option)
+  }
   for (const key of SYNCED_APPEARANCE_FIELDS) {
     const value = source[key]
     if (value !== undefined && node[key] !== value) {

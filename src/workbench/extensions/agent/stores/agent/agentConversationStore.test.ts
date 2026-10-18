@@ -154,6 +154,33 @@ function messageTexts(
 }
 
 describe('useAgentConversationStore', () => {
+  it('routes native post-refresh deltas and completion by turn ID rather than SDK row ID', () => {
+    vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+    const store = useAgentConversationStore()
+    store.setThreadId('th')
+    store.hydrate([
+      historyRow(1, 'user', 'turn-a', 'Prompt', 'user-row'),
+      {
+        ...historyRow(2, 'assistant', 'turn-a', 'Partial', 'sdk-row'),
+        status: 'streaming'
+      }
+    ])
+    expect(store.activeTurnId).toBe('turn-a')
+    store.ingest(delta('turn-a', ' continued'))
+    store.ingest(done('turn-a'))
+    expect(store.activeTurnId).toBeNull()
+    expect(store.messages).toMatchObject([
+      {
+        id: 'turn-a',
+        streaming: false,
+        parts: [
+          { type: 'text', text: 'Partial', state: 'done' },
+          { type: 'text', text: ' continued', state: 'done' }
+        ]
+      }
+    ])
+  })
+
   it('publishes a turn identity before its live status', () => {
     const store = useAgentConversationStore()
     const observations: [typeof store.status, TurnId | null][] = []
@@ -838,6 +865,7 @@ describe('useAgentConversationStore', () => {
     expect(store.messages[0].parts).toContainEqual({
       type: 'runApproval',
       askId: 'turn-1:call-1',
+      prompt: 'Run workflow “Portrait workflow”?',
       workflowId: 'workflow-1',
       workflowName: 'Portrait workflow'
     })
@@ -908,6 +936,54 @@ describe('useAgentConversationStore', () => {
     expect(store.activeTurnId).toBe('assistant-message-1')
     store.ingest(delta('assistant-message-1', 'Running it now.'))
     expect(partTexts(store)).toContain('Running it now.')
+  })
+
+  it('restores a committed question answer during same-session hydration', () => {
+    const store = useAgentConversationStore()
+    store.setThreadId('th')
+    const transcript = [
+      historyRow(1, 'user', 'turn-1', 'Choose output', 'user-message-1'),
+      zAgentMessages.parse([
+        {
+          id: 'assistant-message-1',
+          thread_id: 'th',
+          seq: 2,
+          role: 'assistant',
+          status: 'streaming',
+          turn_id: 'turn-1',
+          pending_ask: {
+            message_id: 'assistant-message-1',
+            ask_id: 'turn-1:call-1',
+            kind: 'ask_user',
+            prompt: 'Choose output',
+            options: [
+              { id: 'png', label: 'PNG' },
+              { id: 'jpeg', label: 'JPEG' }
+            ],
+            min_selections: 1,
+            max_selections: 2,
+            allow_other: true
+          }
+        }
+      ])[0]
+    ]
+    const resolution = {
+      status: 'answered' as const,
+      selected: ['png'],
+      otherText: 'Preserve alpha'
+    }
+    store.hydrate(transcript)
+    store.retireAsk('turn-1:call-1', 'th', resolution)
+
+    store.hydrate(transcript)
+
+    expect(store.messages[0].parts).toContainEqual(
+      expect.objectContaining({
+        type: 'runApproval',
+        askId: 'turn-1:call-1',
+        resolution
+      })
+    )
   })
 
   // PM-1658, raised in review on #18801. An answer settles on the thread it
@@ -2095,7 +2171,7 @@ describe('useAgentConversationStore', () => {
       )
     })
 
-    it('reports an ask kind the panel has no card for', () => {
+    it('reports an unknown ask kind with a normalized tag', () => {
       const store = useAgentConversationStore()
       store.setThreadId('th')
       store.startTurn(T1)
@@ -2112,7 +2188,7 @@ describe('useAgentConversationStore', () => {
           errorType: 'failure_delivering_agent_approval_ask',
           tags: expect.objectContaining({
             reason: 'unknown-kind',
-            ask_kind: 'pick_a_model'
+            ask_kind: 'unknown'
           })
         })
       )

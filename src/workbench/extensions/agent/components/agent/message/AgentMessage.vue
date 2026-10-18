@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import type {
   ActivityPart,
+  AgentAskSelection,
   AssistantMessage,
   TextPart
 } from '../../../services/agent/agentMessageParts'
@@ -34,7 +35,7 @@ const { t } = useI18n()
 
 const emit = defineEmits<{
   feedback: [vote: 'up' | 'down' | null]
-  answerAsk: [askId: string, selection: 'run' | 'cancel']
+  answerAsk: [askId: string, selection: AgentAskSelection]
   openWorkflow: [askId: string, workflowId: string, workflowName?: string]
   approvalShown: [askId: string, turnId: string, workflowId: string | null]
   paywallAction: [action: AgentPaywallAction]

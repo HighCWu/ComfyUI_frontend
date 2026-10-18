@@ -2,6 +2,7 @@ import { assert, describe, expect, it } from 'vitest'
 
 import {
   AGENT_WS_EVENT_TYPES,
+  RENDERED_ASK_KINDS,
   isAgentEvent,
   parseAgentWsEvent,
   zAgentCancelAccepted,
@@ -10,8 +11,11 @@ import {
   zAgentMessages,
   zAgentTurnAccepted,
   zAgentWsEvent,
+  zAttachmentBoundsExceeded,
+  zAttachmentRejection,
   zPersistedToolCallSummary
 } from './agentApiSchema'
+import { nativeAcceptedAttachmentPolicy } from './nativeRunPlan.generated'
 import type { ZodTypeAny } from 'zod'
 
 const fixtureText = import.meta.glob('./__fixtures__/agent/*.jsonl', {
@@ -98,6 +102,71 @@ describe('agentApiSchema contract subtleties', () => {
     type: 'agent_message_done',
     data: { message_id: 'm1', thread_id: 't1' }
   }
+
+  it('accepts the generated 256-character attachment rejection boundary', () => {
+    const rejected = 'x'.repeat(256)
+    expect(
+      zAttachmentRejection.parse({
+        type: 'ATTACHMENT_TYPE_NOT_ACCEPTED',
+        error: 'One or more attachment types are not supported.',
+        accepted: nativeAcceptedAttachmentPolicy,
+        rejected: [rejected],
+        rejected_count: 1
+      }).rejected
+    ).toEqual([rejected])
+    expect(
+      zAttachmentRejection.safeParse({
+        type: 'ATTACHMENT_TYPE_NOT_ACCEPTED',
+        error: 'One or more attachment types are not supported.',
+        accepted: nativeAcceptedAttachmentPolicy,
+        rejected: [`${rejected}x`],
+        rejected_count: 1
+      }).success
+    ).toBe(false)
+  })
+
+  it.for([
+    {
+      type: 'ATTACHMENT_TYPE_NOT_ACCEPTED',
+      accepted: nativeAcceptedAttachmentPolicy,
+      rejected: ['archive.pdf'],
+      rejected_count: 1
+    },
+    {
+      type: 'ATTACHMENT_TYPE_NOT_ACCEPTED',
+      error: 'One or more attachment types are not supported.',
+      rejected: ['archive.pdf'],
+      rejected_count: 1
+    }
+  ])('rejects an incomplete attachment policy error', (body) => {
+    expect(zAttachmentRejection.safeParse(body).success).toBe(false)
+  })
+
+  it('accepts only actionable attachment bounds errors', () => {
+    const countExceeded = {
+      type: 'ATTACHMENT_BOUNDS_EXCEEDED',
+      error: 'Attachment references exceed the supported bounds.',
+      limits: { max_item_length: 256, max_items: 25 },
+      overlong_ref: '',
+      received_count: 26
+    } as const
+    expect(zAttachmentBoundsExceeded.parse(countExceeded)).toEqual(
+      countExceeded
+    )
+    expect(
+      zAttachmentBoundsExceeded.safeParse({
+        ...countExceeded,
+        received_count: 25
+      }).success
+    ).toBe(false)
+    expect(
+      zAttachmentBoundsExceeded.safeParse({
+        ...countExceeded,
+        overlong_ref: 'x'.repeat(256),
+        received_count: 1
+      }).success
+    ).toBe(true)
+  })
 
   it('accepts a null skill on tool-call frames', () => {
     const parsed = zAgentWsEvent.parse({
@@ -420,6 +489,87 @@ describe('agentApiSchema contract subtleties', () => {
     expect(resolved.type).toBe('agent_ask_resolved')
   })
 
+  it.for(RENDERED_ASK_KINDS)('parses the generated %s ask kind', (kind) => {
+    const parsed = zAgentWsEvent.safeParse({
+      type: 'agent_ask',
+      data: {
+        thread_id: 'th-1',
+        message_id: 'message-1',
+        ask_id: 'turn-1:call-1',
+        kind,
+        context: { future_field: true },
+        prompt: 'Continue?',
+        options: [{ id: 'continue', label: 'Continue' }],
+        min_selections: 1,
+        max_selections: 1,
+        allow_other: false
+      }
+    })
+
+    expect(parsed.success).toBe(true)
+  })
+
+  it('degrades a future ask kind without dropping its frame or context', () => {
+    const parsed = zAgentWsEvent.parse({
+      type: 'agent_ask',
+      data: {
+        thread_id: 'th-1',
+        message_id: 'message-1',
+        ask_id: 'turn-1:call-1',
+        kind: 'future_confirmation',
+        context: { operation: 'future-operation' },
+        prompt: 'Continue?',
+        options: [{ id: 'continue', label: 'Continue' }],
+        min_selections: 1,
+        max_selections: 1,
+        allow_other: false
+      }
+    })
+
+    expect(parsed).toMatchObject({
+      data: {
+        kind: 'unknown',
+        context: { operation: 'future-operation' }
+      }
+    })
+  })
+
+  it('retains the committed free-text answer on an ask resolution', () => {
+    const parsed = zAgentWsEvent.parse({
+      type: 'agent_ask_resolved',
+      data: {
+        thread_id: 'th-1',
+        message_id: 'message-1',
+        ask_id: 'turn-1:call-1',
+        status: 'answered',
+        selected: [],
+        other_text: 'Use the current selection'
+      }
+    })
+
+    expect(parsed).toMatchObject({
+      data: { other_text: 'Use the current selection' }
+    })
+  })
+
+  it('rejects an ask that is missing a generated base field', () => {
+    expect(
+      zAgentWsEvent.safeParse({
+        type: 'agent_ask',
+        data: {
+          thread_id: 'th-1',
+          message_id: 'message-1',
+          ask_id: 'turn-1:call-1',
+          kind: 'ask_user',
+          options: [],
+          min_selections: 0,
+          max_selections: 0,
+          allow_other: true
+        }
+      }).success
+    ).toBe(false)
+  })
+
   it('keeps a run-approval pending_ask on a hydrated assistant message', () => {
     const parsed = zAgentMessage.parse({
       id: 'message-1',
@@ -450,6 +600,33 @@ describe('agentApiSchema contract subtleties', () => {
     expect(parsed.pending_ask).toMatchObject({
       kind: 'run_approval',
       ask_id: 'turn-1:call-1'
+    })
+  })
+
+  it('hydrates a future pending ask through the tolerant generated contract', () => {
+    const parsed = zAgentMessage.parse({
+      id: 'message-1',
+      thread_id: 'th-1',
+      seq: 2,
+      role: 'assistant',
+      status: 'streaming',
+      turn_id: 'turn-1',
+      pending_ask: {
+        message_id: 'message-1',
+        ask_id: 'turn-1:call-1',
+        kind: 'future_confirmation',
+        context: { operation: 'future-operation' },
+        prompt: 'Continue?',
+        options: [{ id: 'continue', label: 'Continue' }],
+        min_selections: 1,
+        max_selections: 1,
+        allow_other: false
+      }
+    })
+
+    expect(parsed.pending_ask).toMatchObject({
+      kind: 'unknown',
+      context: { operation: 'future-operation' }
     })
   })
 

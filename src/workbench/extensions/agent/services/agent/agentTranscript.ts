@@ -1,14 +1,22 @@
 import type { AgentMessages, TurnId } from '../../schemas/agentApiSchema'
 import {
   toTurnId,
+  zAgentAskContext,
   zPersistedToolCallSummary
 } from '../../schemas/agentApiSchema'
 import type { WorkflowReference } from '../../types/workflowReference'
 import type { SkillReference } from '../../types/skillReference'
 import { parseSkillReferenceText } from '../../utils/skillReferenceText'
 import { parseWorkflowReferences } from '../../utils/workflowReferenceText'
-import type { AssistantMessage, ToolPart } from './agentMessageParts'
+import type {
+  AssistantMessage,
+  RunApprovalPart,
+  ToolPart
+} from './agentMessageParts'
 import { createAssistantMessage } from './agentMessageParts'
+import { agentQuestionSchema } from './agentQuestion'
+import { agentDeletionSchema } from './agentDeletion'
+import { agentPausedSchema } from './agentPaused'
 
 type AttachmentKind = 'image' | 'video' | 'audio'
 
@@ -422,20 +430,39 @@ function appendAssistantContent(
     message.parts = [...message.parts, { type: 'text', text, state: 'done' }]
 }
 
-/**
- * A row's `pending_ask` carries a `run_approval` context only while that row
- * is still mid-ask; this reads it into the flat shape the `runApproval` part
- * renders, or `undefined` once the ask is resolved or absent.
- */
 function pendingRunApproval(
   row: AgentMessages[number]
-): { askId: string; workflowId?: string; workflowName?: string } | undefined {
+): Omit<RunApprovalPart, 'type'> | undefined {
   const ask = row.pending_ask
+  if (ask?.kind === 'paused') {
+    const paused = agentPausedSchema.safeParse(ask)
+    return paused.success
+      ? { askId: ask.ask_id, prompt: ask.prompt, paused: paused.data }
+      : undefined
+  }
+  if (ask?.kind === 'delete_approval') {
+    const deletion = agentDeletionSchema.safeParse(ask)
+    return deletion.success
+      ? { askId: ask.ask_id, prompt: ask.prompt, deletion: deletion.data }
+      : undefined
+  }
+  if (ask?.kind === 'ask_user') {
+    const question = agentQuestionSchema.safeParse(ask)
+    return question.success
+      ? { askId: ask.ask_id, prompt: ask.prompt, question: question.data }
+      : undefined
+  }
   if (ask?.kind !== 'run_approval') return undefined
+  const context = zAgentAskContext.safeParse(ask.context)
   return {
     askId: ask.ask_id,
-    workflowId: ask.context?.workflow_id || undefined,
-    workflowName: ask.context?.workflow_name || undefined
+    prompt: ask.prompt,
+    workflowId: context.success
+      ? context.data.workflow_id || undefined
+      : undefined,
+    workflowName: context.success
+      ? context.data.workflow_name || undefined
+      : undefined
   }
 }
 
@@ -465,7 +492,14 @@ function applyAssistantRow(
 
   const runApproval = pendingRunApproval(row)
   if (runApproval) message.parts.push({ type: 'runApproval', ...runApproval })
-  return { messageId: toTurnId(row.id), message }
+  return {
+    messageId: toTurnId(
+      import.meta.env.VITE_AGENT_BACKEND_MODE === 'official'
+        ? row.turn_id
+        : row.id
+    ),
+    message
+  }
 }
 
 /**

@@ -2,11 +2,27 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/scripts/api'
 
-import { listSkillPacks } from './skillsApi'
+import { listSkillPacks, nativeSkillPacksEnabled } from './skillsApi'
 
 vi.mock(import('@/scripts/api'))
 
 describe('skill pack error responses', () => {
+  it.for([
+    { body: { skillPacksEnabled: true }, expected: true },
+    { body: { skillPacksEnabled: false }, expected: false },
+    { body: {}, expected: undefined },
+    { body: { skillPacksEnabled: 'true' }, expected: undefined }
+  ])('validates native capabilities $body', async ({ body, expected }) => {
+    vi.mocked(api.fetchApi).mockResolvedValue(Response.json(body))
+    expect(await nativeSkillPacksEnabled()).toBe(expected)
+  })
+
+  it('does not grant native skills on an HTTP failure', async () => {
+    vi.mocked(api.fetchApi).mockResolvedValue(
+      new Response(null, { status: 503 })
+    )
+    expect(await nativeSkillPacksEnabled()).toBeUndefined()
+  })
   it('preserves plain-text proxy failure messages', async () => {
     vi.mocked(api.fetchApi).mockResolvedValue(
       new Response('Upstream service unavailable', { status: 502 })

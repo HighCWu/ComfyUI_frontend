@@ -109,9 +109,10 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     void loadI18n()
 
     if (isCloud) {
-      await bootstrapTracer.settle('auth-gate/initialized', waitForCloudAuth)
+      if (import.meta.env.VITE_RUN_BILLING_MODE !== 'prepaid')
+        await bootstrapTracer.settle('auth-gate/initialized', waitForCloudAuth)
+      await bootCloudIdentity()
       if (import.meta.env.VITE_RUN_BILLING_MODE !== 'prepaid') {
-        await bootCloudIdentity()
         const { isAuthenticated } = storeToRefs(useAuthStore())
         await until(isAuthenticated).toBe(true)
       }

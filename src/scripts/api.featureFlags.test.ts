@@ -53,7 +53,10 @@ describe('API Feature Flags', () => {
   describe('Feature flags negotiation', () => {
     it('marks feature flags stale without clearing them when resetting the socket identity', async () => {
       const resettingApi = new ComfyApi()
-      resettingApi.serverFeatureFlags.value = { account_a_feature: true }
+      resettingApi.serverFeatureFlags.value = {
+        account_a_feature: true,
+        agent: { state: 'ready' }
+      }
       resettingApi.serverFeatureFlagsSettled.value = true
 
       const resetPromise = resettingApi.resetSocket()
@@ -136,6 +139,23 @@ describe('API Feature Flags', () => {
 
       expect(api.serverFeatureFlags.value).toEqual({})
       expect(api.serverFeatureFlagsSettled.value).toBe(true)
+    })
+
+    it('merges an agent status update without replacing unrelated server features', () => {
+      void api.init()
+      api.serverFeatureFlags.value = { supports_preview_metadata: true }
+
+      wsEventHandlers['message']({
+        data: JSON.stringify({
+          type: 'agent_status',
+          data: { state: 'failed', reason: 'temporarily_unavailable' }
+        })
+      })
+
+      expect(api.serverFeatureFlags.value).toEqual({
+        supports_preview_metadata: true,
+        agent: { state: 'failed', reason: 'temporarily_unavailable' }
+      })
     })
 
     it('should handle server without feature flags support', async () => {

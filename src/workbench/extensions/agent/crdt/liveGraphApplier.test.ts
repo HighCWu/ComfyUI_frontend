@@ -5,7 +5,7 @@ import type {
   WorkflowJSON
 } from '@comfyorg/comfy-multi-player'
 import { fromPartial } from '@total-typescript/shoehorn'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { LGraph, LGraphNode, LiteGraph } from '@/lib/litegraph/src/litegraph'
@@ -29,6 +29,7 @@ import { followedDoc } from './__fixtures__/followedDoc'
 import { LiveGraphApplier } from './liveGraphApplier'
 import type { LiveGraphApplierDeps } from './liveGraphApplier'
 import { changesForRejectedOps } from './rejectedOpChanges'
+import { mintWireOps } from './opEnvelope'
 
 vi.mock(import('@/platform/telemetry/reportError'))
 
@@ -317,6 +318,59 @@ beforeEach(() => {
 })
 
 describe('LiveGraphApplier', () => {
+  it('restores absent scalar defaults on the existing node without resetting its widgets', () => {
+    const { graph, doc, applyCollected, applyEdit } = setup({
+      nodes: [
+        {
+          ...sourceNode(1),
+          title: 'Renamed',
+          mode: 4,
+          flags: { pinned: true, collapsed: true }
+        }
+      ],
+      links: []
+    })
+    applyCollected()
+    const existing = graph.getNodeById(toNodeId(1))
+    assert.exists(existing)
+    const widget = existing.widgets?.[0]
+    assert.exists(widget)
+    const value = widget.value
+
+    applyEdit(() => {
+      applyOps(
+        doc,
+        mintWireOps(
+          [
+            { op: 'set_node_field', node_id: 1, field: 'title', value: null },
+            { op: 'set_node_field', node_id: 1, field: 'mode', value: null },
+            {
+              op: 'set_node_field',
+              node_id: 1,
+              field: 'flags.collapsed',
+              value: null
+            },
+            {
+              op: 'set_node_field',
+              node_id: 1,
+              field: 'flags.pinned',
+              value: null
+            }
+          ],
+          { actor: 'human:owner:tab', baseVersion: 2 }
+        ),
+        CATALOG
+      )
+    })
+
+    expect(existing.title).toBe(existing.constructor.title ?? '')
+    expect(existing.mode).toBe(0)
+    expect(existing.flags).toEqual({})
+    expect(existing.widgets?.[0]).toBe(widget)
+    expect(widget.value).toBe(value)
+    expect(graph.getNodeById(toNodeId(1))).toBe(existing)
+  })
+
   it('rejects a positional alias on a node without a dynamic combo', () => {
     const { graph, doc, applyCollected, applyEdit } = setup({
       nodes: [
@@ -1170,6 +1224,53 @@ describe('LiveGraphApplier', () => {
     expect(node.flags).toEqual({ collapsed: true, ghost: true })
   })
 
+  it('applies document mode and flags through the graph mutation methods', () => {
+    const { graph, doc, applyCollected, applyEdit } = setup({
+      nodes: [sourceNode(1)],
+      links: []
+    })
+    applyCollected()
+    const node = graph.getNodeById(toNodeId(1))
+    if (!node) throw new Error('node 1 was not created')
+    const changeMode = vi.spyOn(node, 'changeMode')
+    const collapse = vi.spyOn(node, 'collapse')
+    const pin = vi.spyOn(node, 'pin')
+
+    applyEdit(() => {
+      nodesMap(doc).get('1')?.set('mode', 4)
+      nodesMap(doc).get('1')?.set('flags', {
+        collapsed: true,
+        pinned: true
+      })
+    })
+
+    expect(changeMode).toHaveBeenCalledWith(4)
+    expect(collapse).toHaveBeenCalledWith(true)
+    expect(pin).toHaveBeenCalledWith(true)
+    expect(node.mode).toBe(4)
+    expect(node.collapsed).toBe(true)
+    expect(node.pinned).toBe(true)
+  })
+
+  it('uses the named colour mutation method for a matching document appearance', () => {
+    const { graph, doc, applyCollected, applyEdit } = setup({
+      nodes: [sourceNode(1)],
+      links: []
+    })
+    applyCollected()
+    const node = graph.getNodeById(toNodeId(1))
+    if (!node) throw new Error('node 1 was not created')
+    const setColorOption = vi.spyOn(node, 'setColorOption')
+
+    applyEdit(() => {
+      nodesMap(doc).get('1')?.set('color', '#322')
+      nodesMap(doc).get('1')?.set('bgcolor', '#533')
+    })
+
+    expect(setColorOption).toHaveBeenCalledTimes(1)
+    expect(node).toMatchObject({ color: '#322', bgcolor: '#533' })
+  })
+
   it('mirrors one flag register written inside the document flags map onto the live node', () => {
     const { graph, doc, collector, applier, applyCollected } = setup({
       nodes: [sourceNode(1, { flags: { pinned: true } })],
@@ -1573,6 +1674,28 @@ describe('LiveGraphApplier', () => {
       target_id: toNodeId(2)
     })
     expect(reportError).not.toHaveBeenCalled()
+  })
+
+  it('connects a dangling link when its endpoint arrives in a later frame', () => {
+    const { graph, doc, applyCollected, applyEdit } = setup({
+      nodes: [sourceNode(1), sinkNode(2)],
+      links: []
+    })
+    applyCollected()
+
+    applyEdit(() => {
+      linksMap(doc).set('7', [7, 3, 0, 2, 0, 'IMAGE'])
+    })
+    expect(graph.links.has(toLinkId(7))).toBe(false)
+
+    applyEdit(() => {
+      nodesMap(doc).set('3', new Y.Map<unknown>(Object.entries(sourceNode(3))))
+    })
+
+    expect(graph.links.get(toLinkId(7))).toMatchObject({
+      origin_id: toNodeId(3),
+      target_id: toNodeId(2)
+    })
   })
 
   it('removes a live link whose document entry now names a slot the node lacks', () => {

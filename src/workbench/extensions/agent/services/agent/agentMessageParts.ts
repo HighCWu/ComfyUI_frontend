@@ -1,4 +1,14 @@
 import type { TurnId } from '../../schemas/agentApiSchema'
+import type {
+  AgentAskConflict,
+  AgentPendingRunApproval,
+  AgentPendingDeleteApproval,
+  AgentPendingPaused,
+  AgentPendingAskUser,
+  AgentAnswerRequest
+} from '@comfyorg/ingest-types'
+
+export type AgentAskSelection = 'run' | 'cancel' | AgentAnswerRequest
 
 export type PartState = 'streaming' | 'done'
 
@@ -51,6 +61,70 @@ export interface RunApprovalPart {
   askId: string
   workflowId?: string
   workflowName?: string
+  prompt?: AgentPendingRunApproval['prompt']
+  question?: AgentPendingAskUser
+  deletion?: AgentPendingDeleteApproval
+  paused?: AgentPendingPaused
+  resolution?: AgentAskResolution
+}
+
+export type AgentAskResolution =
+  | { status: 'answered'; selected: string[]; otherText?: string }
+  | { status: 'closed' | 'unconfirmed' | 'retired' }
+
+const UNANSWERED_RESOLUTION_SCORE: Record<
+  Exclude<AgentAskResolution['status'], 'answered'>,
+  number
+> = { retired: 0, unconfirmed: 1, closed: 2 }
+
+function resolutionScore(resolution: AgentAskResolution): number {
+  if (resolution.status !== 'answered')
+    return UNANSWERED_RESOLUTION_SCORE[resolution.status]
+  if (resolution.otherText !== undefined) return 4
+  return resolution.selected.length > 0 ? 3 : 1
+}
+
+export function settleAskResolution(
+  shown: AgentAskResolution | undefined,
+  next: AgentAskResolution
+): AgentAskResolution {
+  return shown === undefined || resolutionScore(next) > resolutionScore(shown)
+    ? next
+    : shown
+}
+
+export function toAskResolution({
+  status,
+  selected,
+  other_text: otherText
+}: Pick<
+  AgentAskConflict,
+  'status' | 'selected' | 'other_text'
+>): AgentAskResolution {
+  if (status === undefined) return { status: 'retired' }
+  if (status !== 'answered') return { status: 'closed' }
+  return otherText
+    ? { status: 'answered', selected: selected ?? [], otherText }
+    : { status: 'answered', selected: selected ?? [] }
+}
+
+export function retireAskParts(
+  parts: MessagePart[],
+  askId: string,
+  resolution: AgentAskResolution
+): MessagePart[] {
+  const next = parts.flatMap((part): MessagePart[] => {
+    if (part.type !== 'runApproval' || part.askId !== askId) return [part]
+    if (!part.question && !part.deletion) return []
+    const settled = settleAskResolution(part.resolution, resolution)
+    return [
+      settled === part.resolution ? part : { ...part, resolution: settled }
+    ]
+  })
+  return next.length === parts.length &&
+    next.every((part, index) => part === parts[index])
+    ? parts
+    : next
 }
 
 export interface PaywallPart {

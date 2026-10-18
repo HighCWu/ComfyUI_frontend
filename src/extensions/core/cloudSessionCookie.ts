@@ -10,17 +10,20 @@ useExtensionService().registerExtension({
   name: 'Comfy.Cloud.SessionCookie',
 
   onAuthUserResolved: async () => {
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') return
     const { createSession } = useSessionCookie()
     await createSession()
   },
 
   onAuthTokenRefreshed: async () => {
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') return
     const { createSession } = useSessionCookie()
     await createSession()
   },
 
   onAuthUserLogout: async () => {
     clearOAuthRequestId()
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') return
     const { deleteSession } = useSessionCookie()
     await deleteSession()
   }

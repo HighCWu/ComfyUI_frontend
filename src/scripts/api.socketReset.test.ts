@@ -21,11 +21,12 @@ const releaseNextToken = async () => {
 vi.mock(import('@/platform/distribution/types'), () => ({ isCloud: true }))
 
 class FakeWebSocket {
+  static readonly CONNECTING = 0
   static readonly OPEN = 1
   static readonly CLOSED = 3
   static instances: FakeWebSocket[] = []
 
-  readyState = FakeWebSocket.OPEN
+  readyState = FakeWebSocket.CONNECTING
   binaryType = ''
   send = vi.fn()
   removeEventListener = vi.fn()
@@ -47,6 +48,10 @@ class FakeWebSocket {
   simulateOpen() {
     this.readyState = FakeWebSocket.OPEN
     this.handlers['open']?.(new Event('open'))
+  }
+
+  simulateError() {
+    this.handlers['error']?.(new Event('error'))
   }
 }
 
@@ -154,5 +159,51 @@ describe('ComfyApi realtime socket reset', () => {
     expect(api.clientId).toBeUndefined()
     expect(window.name).toBe('')
     expect(sessionStorage.getItem('clientId')).toBeNull()
+  })
+
+  it('stops queue fallback polling after a reconnect opens', async () => {
+    vi.useFakeTimers()
+    const fetchApi = vi
+      .spyOn(api, 'fetchApi')
+      .mockResolvedValue(Response.json({ exec_info: { queue_remaining: 0 } }))
+
+    try {
+      await api.resetSocket()
+      FakeWebSocket.instances[0].simulateError()
+
+      await vi.advanceTimersByTimeAsync(300)
+      expect(FakeWebSocket.instances).toHaveLength(2)
+
+      await vi.advanceTimersByTimeAsync(700)
+      expect(fetchApi).toHaveBeenCalledTimes(1)
+
+      FakeWebSocket.instances[1].simulateOpen()
+      await vi.advanceTimersByTimeAsync(5_000)
+
+      expect(fetchApi).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('turns a malformed queue fallback response into an unavailable status', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'fetchApi').mockResolvedValue(
+      Response.json({ exec_info: { queue_remaining: 'many' } })
+    )
+    const dispatch = vi.spyOn(api, 'dispatchCustomEvent')
+
+    try {
+      await api.resetSocket()
+      FakeWebSocket.instances[0].simulateError()
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(dispatch).toHaveBeenCalledWith('status', null)
+      expect(dispatch).not.toHaveBeenCalledWith('status', {
+        exec_info: { queue_remaining: 'many' }
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

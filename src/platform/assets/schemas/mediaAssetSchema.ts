@@ -56,6 +56,7 @@ const zDraggedAssetInfo = zResultItem.and(
   z.object({
     attachment_ref: z.string().min(1).optional(),
     media_kind: zMediaKindSchema.optional(),
+    size_bytes: z.number().int().nonnegative().optional(),
     preview_url: z.url().optional(),
     media_url: z.url().optional()
   })

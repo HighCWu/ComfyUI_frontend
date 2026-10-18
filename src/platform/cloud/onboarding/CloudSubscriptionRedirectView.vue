@@ -158,6 +158,10 @@ const runRedirect = wrapWithErrorHandlingAsync(async () => {
 
 onMounted(() => {
   document.getElementById('splash-loader')?.remove()
+  if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+    window.location.assign('/billing/')
+    return
+  }
   void runRedirect()
 })
 </script>

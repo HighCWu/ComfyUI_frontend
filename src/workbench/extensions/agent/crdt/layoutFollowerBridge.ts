@@ -10,7 +10,11 @@ import type {
   DocUpdate
 } from './docFrameClient'
 import { wireLog } from './crdtLog'
-import { RESEED_CONFLICT, STALE_SCHEMA_RESEED_REQUIRED } from './docFrameCodes'
+import {
+  DOC_TRANSPORT_READY_EVENT,
+  RESEED_CONFLICT,
+  STALE_SCHEMA_RESEED_REQUIRED
+} from './docFrameCodes'
 import { FollowerDoc } from './followerDoc'
 import { FollowerSchemaError, assertReadableSchema } from './schemaGuard'
 
@@ -127,6 +131,7 @@ export class LayoutFollowerBridge extends EventTarget {
     client.addEventListener('doc_subscribed', this.onDocSubscribed)
     client.addEventListener('doc_ops_result', this.forwardFrame)
     client.addEventListener('doc_reseed_result', this.onDocReseedResult)
+    client.addEventListener(DOC_TRANSPORT_READY_EVENT, this.onTransportReady)
   }
 
   /** The semantic doc this bridge currently follows. */
@@ -225,7 +230,8 @@ export class LayoutFollowerBridge extends EventTarget {
     this.reconcile()
   }
 
-  reconnect(): void {
+  reconnect(transportOwned = false): void {
+    if (this.client.ownsConnectionLifecycle && !transportOwned) return
     this.reseedBlockedUntilConfirmedWorkflowId = null
     this.reseedToken = null
     this.resubscribe()
@@ -289,6 +295,10 @@ export class LayoutFollowerBridge extends EventTarget {
       this.client.removeEventListener(
         'doc_reseed_result',
         this.onDocReseedResult
+      )
+      this.client.removeEventListener(
+        DOC_TRANSPORT_READY_EVENT,
+        this.onTransportReady
       )
       this.desiredWorkflowId = null
       this.sentWorkflowId = null
@@ -437,6 +447,8 @@ export class LayoutFollowerBridge extends EventTarget {
     this.dispatchEvent(new CustomEvent(event.type, { detail: event.detail }))
     this.rejectPreAckGap(subscribed.workflowId)
   }
+
+  private readonly onTransportReady = () => this.reconnect(true)
 
   private recordIntegratedSequence(seq: number, isCatchUp: boolean): void {
     if (isCatchUp) {

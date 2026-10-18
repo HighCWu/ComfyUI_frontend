@@ -12,7 +12,15 @@ import {
   within
 } from '@testing-library/vue'
 import userEvent from '@testing-library/user-event'
-import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi
+} from 'vitest'
 import { defineComponent, h, nextTick, ref, shallowRef } from 'vue'
 import type { ShallowRef } from 'vue'
 import type { ComponentProps } from 'vue-component-type-helpers'
@@ -327,6 +335,21 @@ describe('Composer', () => {
     expect(emitted().send).toBeUndefined()
     await userEvent.keyboard('{Enter}')
     expect(emitted().send).toHaveLength(1)
+  })
+
+  it('owns modified Enter without also triggering the global workflow shortcut', async () => {
+    const shortcut = vi.fn()
+    const listener = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') shortcut()
+    }
+    window.addEventListener('keydown', listener)
+    onTestFinished(() => window.removeEventListener('keydown', listener))
+    const { emitted } = mount()
+    await userEvent.click(screen.getByRole('textbox'))
+    await userEvent.paste('Explain this workflow')
+    await userEvent.keyboard('{Control>}{Enter}{/Control}')
+    expect(emitted().send).toHaveLength(1)
+    expect(shortcut).not.toHaveBeenCalled()
   })
 
   it('shows Stop while streaming and emits stop instead of send', async () => {
@@ -1371,6 +1394,35 @@ describe('Composer', () => {
     expect(screen.getByRole('menuitem', { name: 'Nodes' })).toBeVisible()
     expect(screen.getByRole('menuitem', { name: 'Workflows' })).toBeVisible()
   })
+
+  it.for(['mention', 'add'] as const)(
+    'distinguishes saved unadopted references from drafts in the %s menu',
+    async (entry) => {
+      mount({
+        availableWorkflows: [
+          { tabPath: 'saved.json', name: 'Saved', isPersisted: true },
+          { tabPath: 'draft.json', name: 'Draft', isPersisted: false }
+        ]
+      })
+      const open = {
+        mention: async () => {
+          await userEvent.click(screen.getByRole('textbox'))
+          await userEvent.paste('@')
+        },
+        add: async () => {
+          await openAddMenu()
+        }
+      }
+      await open[entry]()
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Workflows' }))
+      expect(
+        await screen.findByRole('menuitem', { name: 'Saved' })
+      ).toBeVisible()
+      expect(
+        screen.getByRole('menuitem', { name: /^Draft\s*Unsaved$/ })
+      ).toBeVisible()
+    }
+  )
 
   it('returns from the workflow submenu to the reference menu', async () => {
     mount()

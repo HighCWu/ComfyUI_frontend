@@ -384,12 +384,6 @@ export class ExecutableNodeDTO implements ExecutableLGraphNode {
     )
   }
 
-  /**
-   * Resolves the link inside a subgraph node, from the subgraph IO node to the node inside the subgraph.
-   * @param slot The slot index of the output on the subgraph node.
-   * @param visited A set of unique IDs to guard against infinite recursion. See {@link resolveInput}.
-   * @returns A DTO for the node, and the origin ID / slot index of the output.
-   */
   private _resolveSubgraphOutput(
     slot: number,
     type: ISlotType,
@@ -405,9 +399,21 @@ export class ExecutableNodeDTO implements ExecutableLGraphNode {
     if (!node.isSubgraphNode())
       throw new TypeError(`Node is not a subgraph node: ${node.id}`)
 
-    // Link inside the subgraph
     const innerResolved = node.resolveSubgraphOutputLink(slot)
     if (!innerResolved) return
+    if (innerResolved.subgraphInput) {
+      const inputIndex = innerResolved.link.origin_slot
+      if (this.inputs.at(inputIndex)?.linkId != null)
+        return this.resolveInput(inputIndex, visited, type)
+      const id = node.inputs.at(inputIndex)?.widgetId
+      if (!id) return
+      return {
+        node: this,
+        origin_id: this.id,
+        origin_slot: -1,
+        widgetInfo: { value: useWidgetValueStore().getWidget(id)?.value }
+      }
+    }
 
     const innerNode = innerResolved.outputNode
     if (!innerNode)
@@ -415,7 +421,6 @@ export class ExecutableNodeDTO implements ExecutableLGraphNode {
         `No output node found for id [${this.id}] slot [${slot}] ${output.name}`
       )
 
-    // Recurse into the subgraph
     const innerNodeExecutionId: ExecutionId = [
       ...this.subgraphNodePath,
       node.id,

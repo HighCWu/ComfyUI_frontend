@@ -3,7 +3,15 @@ import type {
   UploadImageResponse
 } from '@comfyorg/ingest-types'
 import { zAgentPostMessageRequest } from '@comfyorg/ingest-types/zod'
-import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi
+} from 'vitest'
 import { nextTick } from 'vue'
 
 import { useTelemetry } from '@/platform/telemetry'
@@ -31,6 +39,7 @@ import {
   zAgentTurnAccepted,
   zAgentWsEvent
 } from '../../schemas/agentApiSchema'
+import { nativeAcceptedAttachmentPolicy } from '../../schemas/nativeRunPlan.generated'
 import {
   AgentApiError,
   AgentResponseUnreadableError,
@@ -57,6 +66,11 @@ const telemetry = vi.mocked(telemetryProvider)
 
 function fakeRest(overrides: Partial<AgentRestClient> = {}): AgentRestClient {
   const base: AgentRestClient = {
+    deleteThread: vi.fn(async () => ({ ok: true as const })),
+    renameThread: vi.fn(async (id: string, title: string) => ({
+      ok: true as const,
+      thread: { id, title }
+    })),
     postMessage: vi.fn(
       async (): Promise<AgentTurnAccepted> => ({
         thread_id: 'th-1',
@@ -66,6 +80,7 @@ function fakeRest(overrides: Partial<AgentRestClient> = {}): AgentRestClient {
     ),
     getMessages: vi.fn(async (): Promise<AgentMessages> => []),
     listThreads: vi.fn(async (): Promise<AgentThreadSummary[]> => []),
+    getIdentity: vi.fn(async () => ({ userId: 'user-1' })),
     getRunMode: vi.fn(
       async (): Promise<AgentRunModePreference> => ({
         mode: 'auto',
@@ -82,6 +97,13 @@ function fakeRest(overrides: Partial<AgentRestClient> = {}): AgentRestClient {
       complete: true
     })),
     getCloudWorkflow: vi.fn(async (workflowId: string) => ({
+      id: workflowId,
+      latest_version: 1,
+      created_by: 'user-1',
+      created_at: '2026-09-11T10:00:00Z',
+      updated_at: '2026-09-11T10:00:00Z'
+    })),
+    adoptSavedWorkflow: vi.fn(async (workflowId: string) => ({
       id: workflowId,
       latest_version: 1,
       created_by: 'user-1',
@@ -221,7 +243,30 @@ const runApproval = (id: string, askId = 'turn-1:call-1') =>
       allow_other: false
     }
   })
-const askResolved = (id: string, askId = 'turn-1:call-1') =>
+const questionAsk = (id: string, askId = 'turn-1:call-1') =>
+  wire({
+    type: 'agent_ask',
+    data: {
+      thread_id: 'th-1',
+      message_id: id,
+      ask_id: askId,
+      kind: 'ask_user',
+      prompt: 'Choose output',
+      options: [
+        { id: 'png', label: 'PNG' },
+        { id: 'jpeg', label: 'JPEG' }
+      ],
+      min_selections: 1,
+      max_selections: 2,
+      allow_other: true
+    }
+  })
+const askResolved = (
+  id: string,
+  askId = 'turn-1:call-1',
+  selected = ['run'],
+  otherText?: string
+) =>
   wire({
     type: 'agent_ask_resolved',
     data: {
@@ -229,7 +274,8 @@ const askResolved = (id: string, askId = 'turn-1:call-1') =>
       message_id: id,
       ask_id: askId,
       status: 'answered',
-      selected: ['run']
+      selected,
+      ...(otherText ? { other_text: otherText } : {})
     }
   })
 const deltaIn = (threadId: string, id: string, text: string) =>
@@ -372,11 +418,161 @@ async function restoredTurnStaysStreaming(
 }
 
 describe('useAgentSession (v1 composition root)', () => {
+  it('cancels a restored native SDK response using its canonical turn ID', async () => {
+    vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+    const cancelMessage = vi.fn<AgentRestClient['cancelMessage']>(async () => ({
+      status: 'cancelling'
+    }))
+    const { source, emit, status } = fakeEvents()
+    const session = useAgentSession({
+      rest: fakeRest({
+        cancelMessage,
+        getMessages: async () => [
+          historyRow(1, 'user', 'turn-native', 'Prompt', 'user-row'),
+          {
+            ...historyRow(2, 'assistant', 'turn-native', 'Partial', 'sdk-row'),
+            status: 'streaming'
+          }
+        ]
+      }),
+      events: source
+    })
+    onTestFinished(() => session.stop())
+    session.start()
+    status(true)
+    await session.loadThread('th-1')
+    expect(session.isStreaming.value).toBe(true)
+    await session.stopTurn()
+    expect(cancelMessage).toHaveBeenCalledExactlyOnceWith('th-1', 'turn-native')
+    emit({
+      type: 'agent_message_done',
+      data: { thread_id: 'th-1', message_id: 'turn-native' }
+    })
+    expect(session.isStreaming.value).toBe(false)
+  })
+
   beforeEach(() => {
     localStorage.clear()
     sessionStorage.clear()
     vi.mocked(reportError).mockClear()
     telemetry.trackAgentStopClicked.mockClear()
+  })
+
+  it.for([
+    {
+      name: 'confirmed target',
+      ready: true,
+      resolvedId: 'wf-restored',
+      bound: 'wf-restored'
+    },
+    {
+      name: 'failed restoration',
+      ready: false,
+      resolvedId: 'wf-restored',
+      bound: null
+    },
+    {
+      name: 'different target',
+      ready: true,
+      resolvedId: 'wf-other',
+      bound: null
+    },
+    { name: 'unbound draft', ready: true, resolvedId: undefined, bound: null }
+  ])(
+    'restores the subscription identity only for a $name',
+    async ({ ready, resolvedId, bound }) => {
+      let finish = (_ready: boolean) => {}
+      const restoration = new Promise<boolean>((resolve) => {
+        finish = resolve
+      })
+      let started = () => {}
+      const restorationStarted = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      const session = useAgentSession({
+        rest: fakeRest({
+          getMessages: async () => [
+            {
+              id: 'user-restored',
+              thread_id: 'th-restored',
+              turn_id: 'turn-restored',
+              workflow_id: 'wf-restored',
+              role: 'user',
+              seq: 0,
+              status: 'complete',
+              content: { text: 'Explain' }
+            }
+          ]
+        }),
+        events: fakeEvents().source,
+        workflow: {
+          current: () => ({
+            id: resolvedId,
+            tabPath: 'workflows/Restored.json'
+          }),
+          adopted: vi.fn(),
+          restored: () => {
+            started()
+            return restoration
+          }
+        }
+      })
+      onTestFinished(() => session.stop())
+      session.start()
+      const loading = session.loadThread('th-restored')
+      await restorationStarted
+      expect(session.boundWorkflowId.value).toBeNull()
+      finish(ready)
+      expect(await loading).toBe(ready)
+      expect(session.boundWorkflowId.value).toBe(bound)
+    }
+  )
+
+  it('does not bind a superseded restoration after starting a new chat', async () => {
+    let finish = (_ready: boolean) => {}
+    const restoration = new Promise<boolean>((resolve) => {
+      finish = resolve
+    })
+    let started = () => {}
+    const restorationStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const session = useAgentSession({
+      rest: fakeRest({
+        getMessages: async () => [
+          {
+            id: 'user-restored',
+            thread_id: 'th-restored',
+            turn_id: 'turn-restored',
+            workflow_id: 'wf-restored',
+            role: 'user',
+            seq: 0,
+            status: 'complete',
+            content: { text: 'Explain' }
+          }
+        ]
+      }),
+      events: fakeEvents().source,
+      workflow: {
+        current: () => ({
+          id: 'wf-restored',
+          tabPath: 'workflows/Restored.json'
+        }),
+        adopted: vi.fn(),
+        restored: () => {
+          started()
+          return restoration
+        }
+      }
+    })
+    onTestFinished(() => session.stop())
+    session.start()
+    const loading = session.loadThread('th-restored')
+    await restorationStarted
+    session.newChat()
+    finish(true)
+    expect(await loading).toBe(false)
+    expect(session.boundWorkflowId.value).toBeNull()
   })
 
   it.for<{
@@ -1996,6 +2192,52 @@ describe('useAgentSession (v1 composition root)', () => {
       'assistant'
     ])
     expect(session.isStreaming.value).toBe(false)
+  })
+
+  it('answers a native question once and keeps the committed answer visible', async () => {
+    const answer = vi.fn(
+      async (): Promise<AgentAnswerAccepted> => ({
+        status: 'answered',
+        selected: ['png'],
+        other_text: 'Alpha'
+      })
+    )
+    const { source, emit } = fakeEvents()
+    const session = useAgentSession({
+      rest: fakeRest({ answerAsk: answer }),
+      events: source
+    })
+    session.start()
+    await session.sendMessage('Help')
+    emit(questionAsk('msg-1'))
+    const result = session.answerAsk('turn-1:call-1', {
+      selected: ['png'],
+      other_text: 'Alpha'
+    })
+    await expect(
+      session.answerAsk('turn-1:call-1', { selected: ['jpeg'] })
+    ).resolves.toBe(false)
+    await expect(result).resolves.toBe(true)
+    expect(answer).toHaveBeenCalledOnce()
+    expect(answer).toHaveBeenCalledWith(
+      'th-1',
+      'turn-1:call-1',
+      ['png'],
+      'Alpha'
+    )
+    expect(session.answeringAskIds.value.has('turn-1:call-1')).toBe(true)
+    emit(askResolved('msg-1', 'turn-1:call-1', ['png'], 'Alpha'))
+    expect(useAgentConversationStore().messages[0].parts).toContainEqual(
+      expect.objectContaining({
+        type: 'runApproval',
+        askId: 'turn-1:call-1',
+        resolution: {
+          status: 'answered',
+          selected: ['png'],
+          otherText: 'Alpha'
+        }
+      })
+    )
   })
 
   it('answers a run approval once and stays busy until its resolution event', async () => {
@@ -4437,6 +4679,37 @@ describe('useAgentSession (v1 composition root)', () => {
     })
   })
 
+  it('preserves root and subgraph identities for colliding selected node IDs in native mode', async () => {
+    vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+    const rest = fakeRest()
+    const session = useAgentSession({ rest, events: fakeEvents().source })
+    const tags: SelectedNode[] = [
+      { id: '5', title: 'Root node' },
+      {
+        id: '5',
+        title: 'Subgraph node',
+        locatorId: createNodeLocatorId(
+          '00000000-0000-0000-0000-000000000001',
+          toNodeId('5')
+        )
+      },
+      { id: 'root:node', title: 'Root node with colon' }
+    ]
+    onTestFinished(() => session.stop())
+    session.start()
+
+    await session.sendMessage('explain', undefined, tags)
+
+    expect(vi.mocked(rest.postMessage).mock.calls[0][1].selection).toEqual({
+      node_ids: ['5', '5', 'root:node'],
+      node_locators: [
+        '5',
+        '00000000-0000-0000-0000-000000000001:5',
+        '~root:root%3Anode'
+      ]
+    })
+  })
+
   it('sends a skill invocation unchanged as ordinary message content', async () => {
     const rest = fakeRest()
     const session = useAgentSession({ rest, events: fakeEvents().source })
@@ -6409,8 +6682,70 @@ describe('app:agent_error telemetry (TEL-8)', () => {
 
     expect(reportError).toHaveBeenCalledWith(expect.any(AgentApiError), {
       surface: 'agent',
-      errorType: 'agent_send_message_failed'
+      errorType: 'agent_send_message_failed',
+      tags: { status: 500, operation: undefined, retryAfterSeconds: undefined }
     })
+  })
+
+  it('keeps rejected attachment names inline without reporting them', async () => {
+    const message =
+      'private-client-name.pdf is not a file type the agent accepts'
+    const rest = fakeRest({
+      postMessage: vi.fn(async () => {
+        throw new AgentApiError(message, 422, {
+          type: 'ATTACHMENT_TYPE_NOT_ACCEPTED',
+          error: 'One or more attachment types are not supported.',
+          accepted: nativeAcceptedAttachmentPolicy,
+          rejected: ['private-client-name.pdf'],
+          rejected_count: 1
+        })
+      })
+    })
+    const session = useAgentSession({ rest, events: fakeEvents().source })
+    session.start()
+
+    expect(await session.sendMessage('use this attachment')).toBe(false)
+    expect(session.entries.value.at(-1)).toMatchObject({
+      role: 'assistant',
+      parts: [
+        {
+          type: 'notice',
+          level: 'error',
+          text: `Message failed to send: ${message}`
+        }
+      ]
+    })
+    expect(reportError).not.toHaveBeenCalled()
+  })
+
+  it('keeps attachment bounds errors inline without reporting them', async () => {
+    const message = 'Only 25 files can be attached to one message'
+    const rest = fakeRest({
+      postMessage: vi.fn(async () => {
+        throw new AgentApiError(message, 422, {
+          type: 'ATTACHMENT_BOUNDS_EXCEEDED',
+          error: 'Attachment references exceed the supported bounds.',
+          limits: { max_item_length: 256, max_items: 25 },
+          overlong_ref: '',
+          received_count: 26
+        })
+      })
+    })
+    const session = useAgentSession({ rest, events: fakeEvents().source })
+    session.start()
+
+    expect(await session.sendMessage('use these attachments')).toBe(false)
+    expect(session.entries.value.at(-1)).toMatchObject({
+      role: 'assistant',
+      parts: [
+        {
+          type: 'notice',
+          level: 'error',
+          text: `Message failed to send: ${message}`
+        }
+      ]
+    })
+    expect(reportError).not.toHaveBeenCalled()
   })
 
   it('keeps the expected 404 history and 409 cancel races out of the sinks', async () => {

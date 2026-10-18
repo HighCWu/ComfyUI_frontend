@@ -5,6 +5,8 @@ import {
 
 import { parseErrorResponse } from '@/platform/remote/comfyui/errors'
 import { api } from '@/scripts/api'
+import { reportError } from '@/platform/telemetry/reportError'
+import { nativeSkillCapabilitiesSchema } from '@/platform/skills/nativeSkillCapabilities.generated'
 
 import type { SkillPack, SkillPackPublishRequest } from '../types'
 import { MAX_NAME_LENGTH, PACK_NAME_PATTERN } from '../types'
@@ -49,6 +51,39 @@ export async function listSkillPacks(): Promise<SkillPack[]> {
   const response = await api.fetchApi('/agent/skills')
   if (!response.ok) throw await toApiError(response)
   return zAgentSkillListResponse.parse(await response.json()).skills
+}
+
+export async function nativeSkillPacksEnabled(): Promise<boolean | undefined> {
+  try {
+    const response = await api.fetchApi('/agent/capabilities', {
+      cache: 'no-store',
+      credentials: 'same-origin'
+    })
+    if (!response.ok) {
+      await response.body?.cancel()
+      reportError('Native skill capabilities unavailable', {
+        errorType: 'agent_skill_packs_flag_gate_failure',
+        surface: 'agent',
+        context: { status: response.status }
+      })
+      return undefined
+    }
+    const parsed = nativeSkillCapabilitiesSchema.safeParse(
+      await response.json()
+    )
+    if (!parsed.success)
+      reportError('Invalid native skill capabilities', {
+        errorType: 'agent_skill_packs_flag_gate_failure',
+        surface: 'agent'
+      })
+    return parsed.success ? parsed.data.skillPacksEnabled : undefined
+  } catch (error) {
+    reportError(error, {
+      errorType: 'agent_skill_packs_flag_gate_failure',
+      surface: 'agent'
+    })
+    return undefined
+  }
 }
 
 /** Publishing an existing name replaces that pack. */

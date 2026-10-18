@@ -7,6 +7,7 @@ import type * as DistributionTypes from '@/platform/distribution/types'
 import { remoteConfig } from '@/platform/remoteConfig/remoteConfig'
 import { api } from '@/scripts/api'
 import {
+  ComfyModelDef,
   ResourceState,
   effectiveModelExtensions,
   getModelPreviewUrl,
@@ -152,6 +153,42 @@ describe('useModelStore', () => {
     expect(model.author).toBe('')
     expect(model.description).toBe('')
     expect(model.resolution).toBe('')
+  })
+
+  it.for([
+    { name: 'empty response', fail: () => Promise.resolve(null) },
+    {
+      name: 'request rejection',
+      fail: () => Promise.reject(new TypeError('offline'))
+    }
+  ])('allows an explicit metadata retry after $name', async ({ fail }) => {
+    vi.mocked(api.viewMetadata)
+      .mockImplementationOnce(fail)
+      .mockResolvedValueOnce({ title: 'Recovered model' })
+    const model = new ComfyModelDef('model.safetensors', 'checkpoints', 0)
+
+    await model.load()
+    expect(model.has_loaded_metadata).toBe(false)
+    await model.load()
+
+    expect(model.title).toBe('Recovered model')
+    expect(model.has_loaded_metadata).toBe(true)
+  })
+
+  it('coalesces overlapping metadata requests and retains successful metadata', async () => {
+    const pending = Promise.withResolvers<{ title: string }>()
+    vi.mocked(api.viewMetadata).mockReturnValueOnce(pending.promise)
+    const model = new ComfyModelDef('model.safetensors', 'checkpoints', 0)
+
+    const first = model.load()
+    await model.load()
+    expect(api.viewMetadata).toHaveBeenCalledTimes(1)
+    pending.resolve({ title: 'Loaded once' })
+    await first
+    await model.load()
+
+    expect(model.title).toBe('Loaded once')
+    expect(api.viewMetadata).toHaveBeenCalledTimes(1)
   })
 
   it('should cache model information', async () => {
@@ -852,6 +889,49 @@ describe('useModelStore', () => {
     beforeEach(() => {
       mockDistribution.isCloud = true
     })
+
+    it('reads advertised catalogue metadata and reuses its authenticated preview without a disk scan', async () => {
+      featureState.serverFeatures.model_library_metadata = true
+      vi.mocked(api.viewMetadata).mockResolvedValueOnce({
+        'modelspec.title': 'Catalogue model',
+        'modelspec.trigger_phrase': 'catalogue-trigger',
+        'modelspec.thumbnail': '/api/model-preview/catalogue-model'
+      })
+      const model = new ComfyModelDef(
+        'nested/model.safetensors',
+        'checkpoints',
+        0
+      )
+
+      await model.load()
+      await model.load()
+
+      expect(api.viewMetadata).toHaveBeenCalledExactlyOnceWith(
+        'checkpoints',
+        'nested/model.safetensors'
+      )
+      expect(model.title).toBe('Catalogue model')
+      expect(model.trigger_phrase).toBe('catalogue-trigger')
+      expect(model.has_loaded_metadata).toBe(true)
+      expect(getModelPreviewUrl(model)).toBe(
+        '/api/model-preview/catalogue-model'
+      )
+      expect(assetService.seedModelAssets).not.toHaveBeenCalled()
+    })
+
+    it.for([false, 'true', 1])(
+      'does not infer catalogue metadata support from %s',
+      async (capability) => {
+        featureState.serverFeatures.model_library_metadata = capability
+        const model = new ComfyModelDef('model.safetensors', 'checkpoints', 0)
+
+        await model.load()
+
+        expect(api.viewMetadata).not.toHaveBeenCalled()
+        expect(model.has_loaded_metadata).toBe(false)
+        expect(getModelPreviewUrl(model)).toBe('')
+      }
+    )
 
     it('does not read safetensors metadata from disk on cloud', async () => {
       enableMocks(true)

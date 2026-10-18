@@ -1,6 +1,6 @@
 <template>
   <Button
-    v-if="isCloud && isFreeTier && !subscribeToRunPromptVisible"
+    v-if="isCloud && !prepaid && isFreeTier && !subscribeToRunPromptVisible"
     class="mr-2 shrink-0 whitespace-nowrap"
     variant="subscribe"
     size="sm"
@@ -21,6 +21,7 @@ import { isCloud } from '@/platform/distribution/types'
 const { isFreeTier } = useBillingContext()
 const subscribeToRunPromptVisible = useSubscribeToRunPromptPresence()
 const subscriptionDialog = useSubscriptionDialog()
+const prepaid = import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
 
 function handleClick() {
   subscriptionDialog.showPricingTable({ reason: 'subscribe_now_button' })

@@ -7,7 +7,11 @@ import { api } from '@/scripts/api'
 
 import { reportError } from '@/platform/telemetry/reportError'
 
-import { listSkillPacks, SkillPacksApiError } from '../api/skillsApi'
+import {
+  listSkillPacks,
+  nativeSkillPacksEnabled,
+  SkillPacksApiError
+} from '../api/skillsApi'
 import type { SkillPack } from '../types'
 
 const AGENT_EXPERIENCE_FLAG = 'agent-in-app-experience'
@@ -32,6 +36,9 @@ export const useSkillPacksStore = defineStore('skillPacks', () => {
   const enabled = computed(() => flagsEnabled.value && routesAvailable.value)
 
   let flagGateStarted = false
+  let gateRequested = false
+  let nativeGateGeneration = 0
+  let nativeGateRequest: Promise<void> | undefined
   let fetchGeneration = 0
   let inFlight: Promise<void> | undefined
   let catalogRequested = false
@@ -48,6 +55,12 @@ export const useSkillPacksStore = defineStore('skillPacks', () => {
   const scope = ref(currentScope())
 
   function invalidateCatalog(): void {
+    if (import.meta.env.VITE_AGENT_BACKEND_MODE === 'official') {
+      nativeGateGeneration++
+      nativeGateRequest = undefined
+      flagGateStarted = false
+      flagsEnabled.value = false
+    }
     fetchGeneration++
     inFlight = undefined
     packs.value = []
@@ -63,6 +76,14 @@ export const useSkillPacksStore = defineStore('skillPacks', () => {
     (next) => {
       scope.value = next
       invalidateCatalog()
+      if (
+        import.meta.env.VITE_AGENT_BACKEND_MODE === 'official' &&
+        gateRequested &&
+        resolvedUserInfo.value
+      ) {
+        void startFlagGate({ fetch: catalogRequested })
+        return
+      }
       if (catalogRequested && flagsEnabled.value && resolvedUserInfo.value)
         void ensurePacks()
     },
@@ -72,7 +93,33 @@ export const useSkillPacksStore = defineStore('skillPacks', () => {
   async function startFlagGate({
     fetch = true
   }: { fetch?: boolean } = {}): Promise<void> {
+    gateRequested = true
     catalogRequested ||= fetch
+    syncScope()
+    if (import.meta.env.VITE_AGENT_BACKEND_MODE === 'official') {
+      if (nativeGateRequest) return nativeGateRequest
+      if (!flagGateStarted) {
+        if (!resolvedUserInfo.value) return
+        const generation = nativeGateGeneration
+        const requestScope = scope.value
+        const request = nativeSkillPacksEnabled()
+          .then(async (available) => {
+            if (
+              !isCurrentScope(requestScope) ||
+              generation !== nativeGateGeneration
+            )
+              return
+            flagsEnabled.value = available === true
+            flagGateStarted = available === true
+            if (available && catalogRequested) await ensurePacks()
+          })
+          .finally(() => {
+            if (nativeGateRequest === request) nativeGateRequest = undefined
+          })
+        nativeGateRequest = request
+        return request
+      }
+    }
     if (flagGateStarted) {
       if (fetch && flagsEnabled.value) {
         if (!routesAvailable.value) void fetchPacks().catch(reportFetchFailure)
@@ -89,13 +136,11 @@ export const useSkillPacksStore = defineStore('skillPacks', () => {
           posthog.isFeatureEnabled(AGENT_EXPERIENCE_FLAG) === true &&
           posthog.isFeatureEnabled(SKILL_PACKS_FLAG) === true
         if (wasEnabled && !flagsEnabled.value) invalidateCatalog()
-        // Probe because backend availability can disagree with PostHog.
         if (!wasEnabled && flagsEnabled.value && catalogRequested) {
           void fetchPacks().catch(reportFetchFailure)
         }
       }
       posthog.onFeatureFlags((_flags, _variants, context) => {
-        // Ignore failed flag deliveries.
         if (context?.errorsLoading) return
         sync()
       })

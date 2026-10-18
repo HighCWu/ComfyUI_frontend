@@ -4,7 +4,7 @@ import { isCrdtDebugEnabled } from './crdtDebugGate'
 import { wireLog } from './crdtLog'
 import type { DocFrameTransport } from './docFrameClient'
 
-export const apiTransport: DocFrameTransport = {
+const comfyApiTransport: DocFrameTransport = {
   send(frame) {
     if (api.socket?.readyState !== WebSocket.OPEN) return false
     api.socket.send(frame)
@@ -15,6 +15,53 @@ export const apiTransport: DocFrameTransport = {
   },
   removeEventListener(type, listener) {
     api.removeCustomEventListener(type, listener)
+  }
+}
+
+const boundTransports: DocFrameTransport[] = []
+const listenerRoutes: Array<{
+  type: string
+  listener: EventListener
+  transport: DocFrameTransport
+}> = []
+
+function currentTransport(): DocFrameTransport {
+  return boundTransports.at(-1) ?? comfyApiTransport
+}
+
+function listenerRouteIndex(type: string, listener: EventListener): number {
+  for (let index = listenerRoutes.length - 1; index >= 0; index--) {
+    const route = listenerRoutes[index]
+    if (route.type === type && route.listener === listener) return index
+  }
+  return -1
+}
+
+export const apiTransport: DocFrameTransport = {
+  get ownsConnectionLifecycle() {
+    return currentTransport().ownsConnectionLifecycle === true
+  },
+  send: (frame) => currentTransport().send(frame),
+  addEventListener(type, listener) {
+    const transport = currentTransport()
+    listenerRoutes.push({ type, listener, transport })
+    transport.addEventListener(type, listener)
+  },
+  removeEventListener(type, listener) {
+    const index = listenerRouteIndex(type, listener)
+    const route = index === -1 ? undefined : listenerRoutes.splice(index, 1)[0]
+    const transport = route?.transport ?? currentTransport()
+    transport.removeEventListener(type, listener)
+  }
+}
+
+export function bindAgentCrdtTransport(
+  transport: DocFrameTransport
+): () => void {
+  boundTransports.push(transport)
+  return () => {
+    const index = boundTransports.lastIndexOf(transport)
+    if (index !== -1) boundTransports.splice(index, 1)
   }
 }
 
@@ -40,6 +87,9 @@ function traceableFrame(frame: string): Record<string, unknown> | null {
 
 export function createLoggedTransport(): DocFrameTransport {
   return {
+    get ownsConnectionLifecycle() {
+      return apiTransport.ownsConnectionLifecycle
+    },
     send(frame) {
       const delivered = apiTransport.send(frame)
       const parsed = traceableFrame(frame)

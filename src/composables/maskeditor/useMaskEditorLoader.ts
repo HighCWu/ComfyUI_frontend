@@ -1,5 +1,9 @@
 import { IMAGE_WIDGET } from '@/composables/maskeditor/imageWidgetAdapter'
+import { zGetMaskLayersResponse } from '@comfyorg/ingest-types/zod'
+import { z } from 'zod'
+
 import { getNodeWidgetValue } from '@/core/graph/widgets/nodeWidgetValues'
+import { t } from '@/i18n'
 import { useMaskEditorDataStore } from '@/stores/maskEditorDataStore'
 import type { ImageRef, ImageLayer } from '@/stores/maskEditorDataStore'
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
@@ -29,12 +33,15 @@ interface ImageLayerFilenames {
   paintedMaskedImage: string
 }
 
-interface MaskLayersResponse {
-  painted_masked?: string
-  painted?: string
-  paint?: string
-  mask?: string
-}
+const zLaimonMaskLayersResponse = zGetMaskLayersResponse.extend({
+  subfolder: z.string().optional()
+})
+
+type MaskLayersResponse = z.infer<typeof zLaimonMaskLayersResponse>
+
+type MaskEditorLoadResult =
+  | { ok: true }
+  | { ok: false; title: string; message: string }
 
 const paintedMaskedImagePrefix = 'clipspace-painted-masked-'
 
@@ -89,7 +96,9 @@ export function useMaskEditorLoader() {
   const dataStore = useMaskEditorDataStore()
   const nodeOutputStore = useNodeOutputStore()
 
-  const loadFromNode = async (node: LGraphNode): Promise<void> => {
+  const loadFromNode = async (
+    node: LGraphNode
+  ): Promise<MaskEditorLoadResult> => {
     dataStore.setLoading(true)
 
     try {
@@ -102,20 +111,20 @@ export function useMaskEditorLoader() {
       const widgetFilename = extractWidgetStringValue(
         getNodeWidgetValue(node, IMAGE_WIDGET)
       )
+      const parsedWidget =
+        widgetFilename && !widgetFilename.startsWith('$')
+          ? parseImageWidgetValue(widgetFilename)
+          : undefined
 
-      // If we have a widget filename, we should prioritize it over the node image
-      // because the node image might be stale (e.g. from a previous save)
-      // while the widget value reflects the current selection.
-      // Skip internal reference formats (e.g. "$35-0" used by some plugins like Impact-Pack)
-      if (widgetFilename && !widgetFilename.startsWith('$')) {
-        const parsed = parseImageWidgetValue(widgetFilename)
+      if (parsedWidget) {
         nodeImageRef = {
-          filename: parsed.filename,
-          type: parsed.type || 'input',
-          subfolder: parsed.subfolder || undefined
+          filename: parsedWidget.filename,
+          type: parsedWidget.type || 'input',
+          subfolder: parsedWidget.subfolder || undefined
         }
-        nodeImageUrl = mkFileUrl({ ref: nodeImageRef })
       }
+
+      if (parsedWidget) nodeImageUrl = mkFileUrl({ ref: nodeImageRef })
 
       const fileToQuery = widgetFilename || nodeImageRef.filename
 
@@ -123,13 +132,15 @@ export function useMaskEditorLoader() {
       if (isCloud) {
         try {
           const response = await api.fetchApi(
-            `/files/mask-layers?filename=${fileToQuery}`
+            `/files/mask-layers?filename=${encodeURIComponent(fileToQuery)}`
           )
           if (response.ok) {
-            maskLayersFromApi = await response.json()
+            maskLayersFromApi = zLaimonMaskLayersResponse.parse(
+              await response.json()
+            )
           }
         } catch {
-          // Fallback to pattern matching if API call fails
+          maskLayersFromApi = undefined
         }
       }
 
@@ -139,7 +150,9 @@ export function useMaskEditorLoader() {
 
       if (maskLayersFromApi) {
         const baseFile =
-          maskLayersFromApi.painted_masked || maskLayersFromApi.painted
+          maskLayersFromApi.mask ||
+          maskLayersFromApi.painted_masked ||
+          maskLayersFromApi.painted
 
         if (baseFile) {
           imageLayerFilenames = {
@@ -151,13 +164,8 @@ export function useMaskEditorLoader() {
         }
       }
 
-      // Pattern-matched layer files live next to the painted-masked image the
-      // widget points at: the input root for saves under the unified upload
-      // contract (#12318), or the clipspace subfolder for saves made before
-      // it. Cloud resolves the hash filenames from its mask-layers API
-      // server-side, so its refs keep the subfolder they always used.
       const layerSubfolder = maskLayersFromApi
-        ? 'clipspace'
+        ? (maskLayersFromApi.subfolder ?? 'clipspace')
         : (nodeImageRef.subfolder ?? '')
 
       const layeredBaseUrl = imageLayerFilenames?.maskedImage
@@ -222,12 +230,17 @@ export function useMaskEditorLoader() {
 
       dataStore.sourceNode = node
       dataStore.setLoading(false)
+      return { ok: true }
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to load from node'
       console.error('[MaskEditorLoader]', errorMessage, error)
       dataStore.setLoading(false, errorMessage)
-      throw error
+      return {
+        ok: false,
+        title: t('maskEditor.loadFailed'),
+        message: errorMessage
+      }
     }
   }
 

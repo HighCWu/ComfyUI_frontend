@@ -23,12 +23,21 @@ export class DocChangeCollector {
   private readonly links = new Set<string>()
   private readonly nodesMap: Y.Map<Y.Map<unknown>>
   private readonly linksMap: Y.Map<unknown>
+  private readonly definitions: Y.Map<unknown>
+  private readonly interiorTopology = new Set<string>()
+  private readonly registeredDefinitions = new Set<string>()
+  private readonly interiorWidgets = new Map<
+    string,
+    Map<string, Set<string> | 'all'>
+  >()
 
   constructor(doc: Y.Doc) {
     this.nodesMap = nodesMap(doc)
     this.linksMap = linksMap(doc)
+    this.definitions = doc.getMap('definitions')
     this.nodesMap.observeDeep(this.onNodesChanged)
     this.linksMap.observe(this.onLinksChanged)
+    this.definitions.observeDeep(this.onDefinitionsChanged)
   }
 
   /** Returns everything collected so far without clearing it. */
@@ -37,7 +46,28 @@ export class DocChangeCollector {
       nodes: new Map(this.nodes),
       widgets: new Map(this.widgets),
       resyncNodes: new Set(this.resyncNodes),
-      links: new Set(this.links)
+      links: new Set(this.links),
+      ...(this.registeredDefinitions.size
+        ? { registeredDefinitions: new Set(this.registeredDefinitions) }
+        : {}),
+      ...(this.interiorTopology.size
+        ? { interiorTopology: new Set(this.interiorTopology) }
+        : {}),
+      ...(this.interiorWidgets.size
+        ? {
+            interiorWidgets: new Map(
+              [...this.interiorWidgets].map(([id, nodes]) => [
+                id,
+                new Map(
+                  [...nodes].map(([node, names]) => [
+                    node,
+                    names === 'all' ? names : new Set(names)
+                  ])
+                )
+              ])
+            )
+          }
+        : {})
     }
   }
 
@@ -53,11 +83,15 @@ export class DocChangeCollector {
     this.widgets.clear()
     this.resyncNodes.clear()
     this.links.clear()
+    this.interiorWidgets.clear()
+    this.interiorTopology.clear()
+    this.registeredDefinitions.clear()
   }
 
   destroy(): void {
     this.nodesMap.unobserveDeep(this.onNodesChanged)
     this.linksMap.unobserve(this.onLinksChanged)
+    this.definitions.unobserveDeep(this.onDefinitionsChanged)
     this.discard()
   }
 
@@ -110,5 +144,78 @@ export class DocChangeCollector {
 
   private readonly onLinksChanged = (event: Y.YMapEvent<unknown>): void => {
     for (const id of event.keysChanged) this.links.add(id)
+  }
+
+  private readonly onDefinitionsChanged = (
+    events: Y.YEvent<Y.AbstractType<unknown>>[]
+  ): void => {
+    for (const event of events) {
+      this.collectInteriorTopology(event)
+      const at = event.path.lastIndexOf('nodes')
+      if (at < 1) continue
+      const named =
+        event instanceof Y.YMapEvent &&
+        event.path.length === at + 3 &&
+        event.path.at(-1) === 'widgets'
+      const replaced =
+        event instanceof Y.YMapEvent &&
+        event.path.length === at + 2 &&
+        (event.keysChanged.has('widgets') ||
+          event.keysChanged.has(OPAQUE_WIDGETS_KEY))
+      const opaque =
+        event instanceof Y.YArrayEvent &&
+        event.path.length === at + 3 &&
+        event.path.at(-1) === OPAQUE_WIDGETS_KEY
+      if (!named && !replaced && !opaque) continue
+      const definitionId = String(event.path[at - 1])
+      const nodeId = String(event.path[at + 1])
+      const nodes =
+        this.interiorWidgets.get(definitionId) ??
+        new Map<string, Set<string> | 'all'>()
+      const prior = nodes.get(nodeId)
+      nodes.set(
+        nodeId,
+        prior === 'all' || !named
+          ? 'all'
+          : new Set([...(prior ?? []), ...event.keysChanged])
+      )
+      this.interiorWidgets.set(definitionId, nodes)
+    }
+  }
+
+  private collectInteriorTopology(
+    event: Y.YEvent<Y.AbstractType<unknown>>
+  ): void {
+    let offset = 0
+    while (
+      event.path[offset + 1] === 'definitions' &&
+      event.path[offset + 2] === 'subgraphs'
+    )
+      offset += 3
+    if (event.path.length === offset && event instanceof Y.YMapEvent) {
+      for (const [id, change] of event.changes.keys)
+        if (change.action === 'add') this.registeredDefinitions.add(id)
+        else this.interiorTopology.add(id)
+      return
+    }
+    const id = event.path[offset]
+    if (typeof id !== 'string') return
+    const path = event.path.slice(offset + 1)
+    const structuralFields = new Set(['nodes', 'links', 'inputs', 'outputs'])
+    if (
+      (path.length === 0 &&
+        event instanceof Y.YMapEvent &&
+        [...event.keysChanged].some((key) => structuralFields.has(key))) ||
+      ['links', 'inputs', 'outputs'].includes(String(path[0])) ||
+      (path[0] === 'nodes' &&
+        (path.length === 1 ||
+          (path.length === 2 &&
+            event instanceof Y.YMapEvent &&
+            [...event.keysChanged].some((key) =>
+              ['type', 'inputs', 'outputs'].includes(key)
+            )) ||
+          ['inputs', 'outputs'].includes(String(path[2]))))
+    )
+      this.interiorTopology.add(id)
   }
 }

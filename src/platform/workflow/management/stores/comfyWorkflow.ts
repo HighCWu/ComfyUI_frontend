@@ -249,11 +249,17 @@ export class ComfyWorkflow extends UserFile {
   }
 
   override async save() {
-    this.content = JSON.stringify(this.activeState)
-    // Force save to ensure the content is updated in remote storage incase
-    // the isModified state is screwed by changeTracker.
+    const submittedContent = JSON.stringify(this.activeState)
+    const tracker = this.changeTracker
+    const path = this.path
+    this.content = submittedContent
     const ret = await super.save({ force: true })
-    this.changeTracker?.reset()
+    if (this.path !== path || this.changeTracker !== tracker) return ret
+    if (JSON.stringify(this.activeState) !== submittedContent) {
+      this.isModified = true
+      return ret
+    }
+    tracker?.reset()
     this.isModified = false
     workflowRuntime().removeDraft(this.path)
     return ret

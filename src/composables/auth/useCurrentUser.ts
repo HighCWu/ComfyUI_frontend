@@ -5,12 +5,16 @@ import { desktopHostUser } from '@/platform/auth/desktopHost/desktopHostSession'
 import { useApiKeyAuthStore } from '@/stores/apiKeyAuthStore'
 import { useCommandStore } from '@/stores/commandStore'
 import { useAuthStore } from '@/stores/authStore'
+import { usePrepaidSessionStore } from '@/stores/prepaidSessionStore'
 import type { AuthUserInfo } from '@/types/authTypes'
 
 export const useCurrentUser = () => {
   const authStore = useAuthStore()
   const commandStore = useCommandStore()
   const apiKeyStore = useApiKeyAuthStore()
+  const prepaid = import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
+  const prepaidSession = usePrepaidSessionStore()
+  if (prepaid) void prepaidSession.initialize()
 
   const sessionUser = computed(() => authStore.sessionUser)
   const firebaseForSession = computed(() => {
@@ -25,16 +29,23 @@ export const useCurrentUser = () => {
   const isApiKeyLogin = computed(
     () =>
       apiKeyStore.isAuthenticated &&
+      !prepaid &&
       authStore.currentUser === null &&
       !sessionUser.value &&
       !desktopHostUser.value
   )
-  const isLoggedIn = computed(
-    () => isApiKeyLogin.value || authStore.isAuthenticated
+  const isLoggedIn = computed(() =>
+    prepaid
+      ? !!prepaidSession.user
+      : isApiKeyLogin.value || authStore.isAuthenticated
   )
-  const isAuthInitialized = computed(() => authStore.isInitialized)
+  const isAuthInitialized = computed(() =>
+    prepaid ? prepaidSession.initialized : authStore.isInitialized
+  )
 
   const resolvedUserInfo = computed<AuthUserInfo | null>(() => {
+    if (prepaid)
+      return prepaidSession.user ? { id: prepaidSession.user.id } : null
     if (isApiKeyLogin.value && apiKeyStore.currentUser) {
       return { id: apiKeyStore.currentUser.id }
     }
@@ -57,6 +68,7 @@ export const useCurrentUser = () => {
   }
 
   const userDisplayName = computed(() => {
+    if (prepaid) return prepaidSession.user?.name
     if (desktopHostUser.value) return undefined
     if (isApiKeyLogin.value) {
       return apiKeyStore.currentUser?.name
@@ -65,6 +77,7 @@ export const useCurrentUser = () => {
   })
 
   const userEmail = computed(() => {
+    if (prepaid) return prepaidSession.user?.email
     if (isApiKeyLogin.value) {
       return apiKeyStore.currentUser?.email
     }
@@ -114,7 +127,7 @@ export const useCurrentUser = () => {
   })
 
   const needsFirebaseSignIn = computed(
-    () => !!sessionUser.value && !firebaseForSession.value
+    () => !prepaid && !!sessionUser.value && !firebaseForSession.value
   )
 
   const userPhotoUrl = computed(() => {
@@ -131,6 +144,10 @@ export const useCurrentUser = () => {
   }
 
   const handleSignIn = async () => {
+    if (prepaid) {
+      window.location.assign('/auth/login')
+      return
+    }
     await commandStore.execute('Comfy.User.OpenSignInDialog')
   }
 

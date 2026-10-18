@@ -58,7 +58,10 @@ const icon = computed(() => {
     : 'icon-[comfy--workflow] size-3.5'
 })
 const unsavedWorkflow = computed(
-  () => match.kind === 'workflow' && match.workflow.id === undefined
+  () =>
+    match.kind === 'workflow' &&
+    match.workflow.id === undefined &&
+    match.workflow.isPersisted !== true
 )
 const nodeId = computed(() =>
   match.kind === 'node' && duplicateNodeTitles.has(match.node.title)

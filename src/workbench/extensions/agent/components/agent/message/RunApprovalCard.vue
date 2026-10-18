@@ -4,7 +4,13 @@ import { useI18n } from 'vue-i18n'
 
 import Button from '@/components/ui/button/Button.vue'
 
-import type { RunApprovalPart } from '../../../services/agent/agentMessageParts'
+import type {
+  RunApprovalPart,
+  AgentAskSelection
+} from '../../../services/agent/agentMessageParts'
+import QuestionCard from './QuestionCard.vue'
+import DeleteApprovalCard from './DeleteApprovalCard.vue'
+import PausedCard from './PausedCard.vue'
 import { agentBoundWorkflowIdKey } from '../agentBoundWorkflowId'
 
 const { part, answering = false } = defineProps<{
@@ -16,12 +22,15 @@ const hideWorkflowName = computed(
   () => !!boundWorkflowId.value && part.workflowId === boundWorkflowId.value
 )
 const emit = defineEmits<{
-  answer: [askId: string, selection: 'run' | 'cancel']
+  answer: [askId: string, selection: AgentAskSelection]
   openWorkflow: [askId: string, workflowId: string, workflowName?: string]
   shown: [askId: string, workflowId: string | null]
 }>()
 
-onMounted(() => emit('shown', part.askId, part.workflowId ?? null))
+onMounted(() => {
+  if (!part.question && !part.deletion && !part.paused)
+    emit('shown', part.askId, part.workflowId ?? null)
+})
 
 const { t } = useI18n()
 const workflowLabel = computed(
@@ -33,7 +42,32 @@ const workflowLabel = computed(
 </script>
 
 <template>
+  <PausedCard
+    v-if="part.paused"
+    :key="part.paused.ask_id"
+    :paused="part.paused"
+    :answering
+    @answer="(askId, selection) => emit('answer', askId, selection)"
+  />
+  <DeleteApprovalCard
+    v-else-if="part.deletion"
+    :key="part.deletion.ask_id"
+    :approval="part.deletion"
+    :answering
+    :resolution="part.resolution"
+    @answer="(askId, selection) => emit('answer', askId, selection)"
+  />
+  <QuestionCard
+    v-else-if="part.question"
+    :key="part.question.ask_id"
+    :question="part.question"
+    :answering
+    :resolution="part.resolution"
+    @answer="(askId, selection) => emit('answer', askId, selection)"
+  />
   <div
+    v-else
+    data-testid="agent-run-approval-card"
     class="flex w-full flex-col gap-2 overflow-hidden rounded-lg border border-component-node-border bg-secondary-background p-4 shadow-interface"
   >
     <div class="flex min-w-0 flex-col gap-0.5 text-sm/5">
@@ -76,10 +110,17 @@ const workflowLabel = computed(
       <p class="m-0 text-muted-foreground">
         {{ t('agent.runApproval.question') }}
       </p>
+      <p
+        v-if="part.prompt?.trim()"
+        class="m-0 wrap-break-word whitespace-pre-line text-muted-foreground"
+      >
+        {{ part.prompt }}
+      </p>
     </div>
 
     <div class="flex h-6 w-full justify-end gap-2">
       <Button
+        data-testid="agent-run-approval-cancel"
         variant="secondary"
         size="sm"
         :disabled="answering"
@@ -89,6 +130,7 @@ const workflowLabel = computed(
         {{ t('agent.runApproval.cancel') }}
       </Button>
       <Button
+        data-testid="agent-run-approval-run"
         variant="primary"
         size="sm"
         :disabled="answering"

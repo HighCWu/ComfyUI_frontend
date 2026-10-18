@@ -134,6 +134,22 @@ describe('bootstrapStore', () => {
       mockReportError.mockReset()
     })
 
+    it('waits for cookie identity before loading prepaid editor stores without a Firebase user', async () => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      useAuthStore().isInitialized = false
+      const identityReady = Promise.withResolvers<void>()
+      vi.mocked(bootCloudIdentity).mockReturnValueOnce(identityReady.promise)
+      const startup = useBootstrapStore().startStoreBootstrap()
+      await vi.waitFor(() => expect(bootCloudIdentity).toHaveBeenCalledOnce())
+      expect(useSettingStore().isReady).toBe(false)
+      expect(useWorkflowStore().loadWorkflows).not.toHaveBeenCalled()
+      identityReady.resolve()
+      await startup
+      expect(useAuthStore().currentUser).toBeNull()
+      expect(useSettingStore().isReady).toBe(true)
+      expect(useWorkflowStore().loadWorkflows).toHaveBeenCalledOnce()
+    })
+
     it('waits for Firebase init before loading stores, then resumes after sign-in', async () => {
       const store = useBootstrapStore()
       const settingStore = useSettingStore()

@@ -2,7 +2,6 @@ import { fromPartial } from '@total-typescript/shoehorn'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { mergeCustomNodesI18n, resolveNodeDefText } from '@/i18n'
-import type { ComfyNodeDef as ComfyNodeDefV1 } from '@/schemas/nodeDefSchema'
 import { api } from '@/scripts/api'
 import type { ComfyApi } from '@/scripts/api'
 import { app as comfyApp } from '@/scripts/app'
@@ -17,8 +16,11 @@ vi.mock(import('@/scripts/api'), () => ({
   })
 }))
 
-function nodeDef(overrides: Partial<ComfyNodeDefV1>): ComfyNodeDefV1 {
-  return {
+type ApiNodeDefs = Awaited<ReturnType<typeof api.getNodeDefs>>
+type ApiNodeDef = Omit<ApiNodeDefs[string], 'name'> & { name: string }
+
+function nodeDef(overrides: Partial<ApiNodeDef>): ApiNodeDef {
+  return fromPartial<ApiNodeDef>({
     name: 'TestNode',
     display_name: 'Test Node',
     category: 'test',
@@ -28,11 +30,13 @@ function nodeDef(overrides: Partial<ComfyNodeDefV1>): ComfyNodeDefV1 {
     output_node: false,
     python_module: 'test.module',
     ...overrides
-  }
+  })
 }
 
-function mockDefs(...defs: ComfyNodeDefV1[]) {
-  const record = Object.fromEntries(defs.map((def) => [def.name, def]))
+function mockDefs(...defs: ApiNodeDef[]) {
+  const record: ApiNodeDefs = Object.fromEntries(
+    defs.map((def) => [def.name, def])
+  )
   vi.mocked(api.getNodeDefs).mockResolvedValue(record)
   return record
 }
@@ -97,7 +101,7 @@ describe('ComfyApp.getNodeDefs', () => {
     'tolerates a node-def response of %j',
     async ([response]) => {
       vi.mocked(api.getNodeDefs).mockResolvedValue(
-        response as unknown as Record<string, ComfyNodeDefV1>
+        response as unknown as ApiNodeDefs
       )
 
       await expect(comfyApp.getNodeDefs()).resolves.toEqual({})
@@ -134,7 +138,7 @@ describe('ComfyApp.getNodeDefs', () => {
       NumericCategory: { name: 'NumericCategory', category: 1 },
       NamelessEntry: { category: 'test' },
       StringEntry: 'nope'
-    } as unknown as Record<string, ComfyNodeDefV1>)
+    } as unknown as ApiNodeDefs)
 
     const result = await comfyApp.getNodeDefs()
 

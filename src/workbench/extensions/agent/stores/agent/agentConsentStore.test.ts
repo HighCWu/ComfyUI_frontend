@@ -2,7 +2,15 @@ vi.mock(import('firebase/auth'))
 import type { GlobalSetting } from '@comfyorg/ingest-types'
 import { useAuthStore } from '@/stores/authStore'
 import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
-import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import {
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi
+} from 'vitest'
 import { computed, ref } from 'vue'
 
 import { fromPartial } from '@total-typescript/shoehorn'
@@ -12,11 +20,15 @@ import type {
   WebSessionRequests
 } from '@/platform/auth/session/webSessionFetch'
 import { useCurrentUser } from '@/composables/auth/useCurrentUser'
+import type {
+  getGlobalSetting,
+  setGlobalSetting
+} from '@/platform/settings/globalSettingsApi'
 import { useAgentConsentStore } from './agentConsentStore'
 
 const accountApi = vi.hoisted(() => ({
-  get: vi.fn(),
-  set: vi.fn()
+  get: vi.fn<typeof getGlobalSetting>(),
+  set: vi.fn<typeof setGlobalSetting>()
 }))
 vi.mock(import('@/platform/settings/globalSettingsApi'), () => ({
   getGlobalSetting: accountApi.get,
@@ -41,6 +53,112 @@ function deferred<T>() {
 }
 
 describe('agentConsentStore', () => {
+  it('loads and saves prepaid consent on our session cookie without requesting upstream bearer credentials', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    vi.mocked(useAuthStore().getAuthHeader).mockResolvedValue(null)
+    const request = vi
+      .mocked(fetch)
+      .mockImplementation(async () => Response.json(stored))
+    accountApi.get.mockImplementation(async (_key, auth) => {
+      assert(typeof auth === 'function')
+      await auth('/api/global-settings/Comfy.AgentPanel.ConsentAccepted', {
+        cache: 'no-store'
+      })
+      return undefined
+    })
+    accountApi.set.mockImplementation(async (setting, auth) => {
+      assert(typeof auth === 'function')
+      await auth('/api/global-settings', {
+        method: 'POST',
+        body: JSON.stringify(setting)
+      })
+      return stored
+    })
+    const store = useAgentConsentStore()
+    expect(await store.load()).toBe(false)
+    expect(await store.accept()).toBe(true)
+    expect(store.accepted).toBe(true)
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      '/api/global-settings/Comfy.AgentPanel.ConsentAccepted',
+      {
+        cache: 'no-store',
+        credentials: 'include'
+      }
+    )
+    expect(request).toHaveBeenNthCalledWith(2, '/api/global-settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        key: 'Comfy.AgentPanel.ConsentAccepted',
+        value: true
+      }),
+      credentials: 'include'
+    })
+    expect(useAuthStore().getAuthHeader).not.toHaveBeenCalled()
+    expect(useAuthStore().getWorkspaceAuthHeader).not.toHaveBeenCalled()
+  })
+
+  it('persists prepaid consent under the account without requiring an official workspace', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    Object.assign(useTeamWorkspaceStore(), { activeWorkspaceId: null })
+    vi.mocked(useAuthStore().getAuthHeader).mockResolvedValue({
+      Authorization: 'Bearer prepaid-token'
+    })
+    const store = useAgentConsentStore()
+    const identity = await store.ensureScope()
+    expect(identity).toBe(JSON.stringify(['account-a', 'account']))
+    expect(await store.accept(identity!)).toBe(true)
+    expect(store.accepted).toBe(true)
+  })
+
+  it('rechecks prepaid consent when bootstrap restores the same account in a new epoch', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const current = ref<{ id: string } | null>({ id: 'account-a' })
+    useCurrentUser().resolvedUserInfo = computed(() => current.value)
+    const first = deferred<GlobalSetting | undefined>()
+    accountApi.get
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(undefined)
+    const store = useAgentConsentStore()
+
+    const request = store.load()
+    await vi.waitFor(() => expect(accountApi.get).toHaveBeenCalledOnce())
+    current.value = null
+    current.value = { id: 'account-a' }
+    first.resolve(undefined)
+
+    await expect(request).resolves.toBe(false)
+    expect(accountApi.get).toHaveBeenCalledTimes(2)
+    expect(store).toMatchObject({ isChecking: false, accepted: false })
+  })
+
+  it('keeps a prepaid panel click pending while the same account is temporarily absent', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const current = ref<{ id: string } | null>({ id: 'account-a' })
+    useCurrentUser().resolvedUserInfo = computed(() => current.value)
+    const first = deferred<GlobalSetting | undefined>()
+    accountApi.get
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(undefined)
+    const store = useAgentConsentStore()
+
+    const request = store.load()
+    await vi.waitFor(() => expect(accountApi.get).toHaveBeenCalledOnce())
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+    current.value = null
+    first.resolve(undefined)
+    await Promise.resolve()
+    current.value = { id: 'account-a' }
+    await vi.advanceTimersByTimeAsync(250)
+
+    await expect(request).resolves.toBe(false)
+    expect(accountApi.get).toHaveBeenCalledTimes(2)
+    expect(store).toMatchObject({ isChecking: false, accepted: false })
+  })
+
   beforeEach(() => {
     useCurrentUser().resolvedUserInfo = computed(() => ({ id: 'account-a' }))
     Object.assign(useTeamWorkspaceStore(), { activeWorkspaceId: 'workspace-a' })

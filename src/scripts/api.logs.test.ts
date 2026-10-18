@@ -30,6 +30,38 @@ describe('api.getLogs', () => {
     await expect(api.getLogs()).resolves.toBe(expected)
   })
 
+  it('validates and normalizes the structured terminal snapshot', async () => {
+    vi.mocked(axios.get).mockResolvedValueOnce({
+      data: {
+        entries: [{ m: 'ready\n', t: 17 }, {}],
+        size: { cols: 120, rows: 40 }
+      }
+    })
+
+    await expect(api.getRawLogs()).resolves.toEqual({
+      entries: [{ m: 'ready\n', t: 17 }, { m: '' }],
+      size: { cols: 120, rows: 40 }
+    })
+  })
+
+  it('fills optional native terminal fields', async () => {
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: {} })
+
+    await expect(api.getRawLogs()).resolves.toEqual({
+      entries: [],
+      size: { cols: 80, rows: 24 }
+    })
+  })
+
+  it.for([null, [], { entries: 'ready' }, { size: { rows: '40' } }])(
+    'rejects a malformed structured terminal snapshot %#',
+    async (data) => {
+      vi.mocked(axios.get).mockResolvedValueOnce({ data })
+
+      await expect(api.getRawLogs()).rejects.toThrow()
+    }
+  )
+
   it('collects a report through the real API with the cloud log response', async () => {
     vi.mocked(axios.get).mockResolvedValueOnce({
       data: [{ level: 'info', message: 'System is running normally' }]
@@ -44,6 +76,7 @@ describe('api.getLogs', () => {
           enabled: true,
           connected: false,
           workflowId: 'doc-1',
+          terminal: null,
           updatesApplied: 0,
           lastFrameType: null,
           outcomes: {

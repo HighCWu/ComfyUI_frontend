@@ -3,10 +3,18 @@ import { t } from '@/i18n'
 import { openTypeformDialog } from '@/platform/surveys/openTypeformDialog'
 import { useTelemetry } from '@/platform/telemetry'
 
-import { FEEDBACK_TYPEFORM_ID, buildFeedbackHiddenFields } from './config'
+import {
+  FEEDBACK_TYPEFORM_ID,
+  buildFeedbackHiddenFields,
+  buildSupportUrl
+} from './config'
 import type { FeedbackSource } from './config'
 
 export function openFeedbackDialog(source: FeedbackSource) {
+  if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+    window.open(buildSupportUrl(), '_blank', 'noopener,noreferrer')
+    return
+  }
   const { userEmail } = useCurrentUser()
 
   useTelemetry()?.trackUiButtonClicked({

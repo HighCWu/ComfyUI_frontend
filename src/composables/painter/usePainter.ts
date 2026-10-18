@@ -1,4 +1,4 @@
-import type { UploadImageResponse } from '@comfyorg/ingest-types'
+import { zUploadImageResponse } from '@comfyorg/ingest-types/zod'
 import type { Ref } from 'vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useElementSize } from '@vueuse/core'
@@ -648,9 +648,9 @@ export function usePainter(nodeId: NodeId, options: UsePainterOptions) {
       throw new Error(err)
     }
 
-    let data: UploadImageResponse
+    let data
     try {
-      data = await resp.json()
+      data = zUploadImageResponse.parse(await resp.json())
     } catch (e) {
       const err = t('painter.uploadError', {
         status: resp.status,

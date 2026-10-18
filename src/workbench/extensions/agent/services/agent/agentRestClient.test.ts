@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { zAgentThreadSummary } from '@comfyorg/ingest-types/zod'
 
 import {
   markErrorReported,
@@ -8,7 +9,9 @@ import type { AuthCredential, AuthScheme } from '@/types/authTypes'
 import * as authRejection from '@/platform/auth/authRejection'
 import { api } from '@/scripts/api'
 
+import { RENDERED_ASK_KINDS } from '../../schemas/agentApiSchema'
 import type { CloudWorkflowEntry } from '../../schemas/agentApiSchema'
+import { nativeAcceptedAttachmentPolicy } from '../../schemas/nativeRunPlan.generated'
 
 vi.mock(import('@/scripts/api'))
 vi.mock(import('@/platform/telemetry/reportError'))
@@ -97,7 +100,192 @@ const turnAccepted = {
   workflow_id: 'w1'
 }
 
+it('loads every native history page in server order without duplicating a repeated thread', async () => {
+  vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+  const thread = (id: string) =>
+    zAgentThreadSummary.parse({
+      id,
+      title: id,
+      created_at: '2026-10-15T00:00:00Z',
+      updated_at: '2026-10-15T00:00:00Z',
+      last_message_at: '2026-10-15T00:00:00Z',
+      message_count: 0,
+      preview: '',
+      workflow_id: '',
+      status: 'active'
+    })
+  respond(
+    jsonResponse(200, {
+      threads: [thread('newest'), thread('middle')],
+      pagination: {
+        has_more: true,
+        limit: 20,
+        offset: 0,
+        total: 3,
+        next_cursor: 'page/2'
+      }
+    })
+  )
+  respond(
+    jsonResponse(200, {
+      threads: [thread('middle'), thread('oldest')],
+      pagination: { has_more: false, limit: 20, offset: 0, total: 3 }
+    })
+  )
+  expect((await makeClient().listThreads()).map((row) => row.id)).toEqual([
+    'newest',
+    'middle',
+    'oldest'
+  ])
+  expect(vi.mocked(api.fetchApi).mock.calls.map(([route]) => route)).toEqual([
+    '/agent/threads?limit=20',
+    '/agent/threads?limit=20&after=page%2F2'
+  ])
+})
+
+it('loads native history beyond eleven pages without discarding older conversations', async () => {
+  vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+  const threads = Array.from({ length: 241 }, (_, index) =>
+    zAgentThreadSummary.parse({
+      id: `thread-${index}`,
+      title: `Conversation ${index}`,
+      created_at: '2026-10-15T00:00:00Z',
+      updated_at: '2026-10-15T00:00:00Z',
+      last_message_at: '2026-10-15T00:00:00Z',
+      message_count: 0,
+      preview: '',
+      workflow_id: '',
+      status: 'active'
+    })
+  )
+  vi.mocked(api.fetchApi).mockImplementation(async (route) => {
+    const offset = Number(
+      new URL(route, 'https://example.test').searchParams.get('after') ?? 0
+    )
+    return jsonResponse(200, {
+      threads: threads.slice(offset, offset + 20),
+      pagination: {
+        has_more: offset + 20 < 241,
+        limit: 20,
+        offset,
+        total: 241,
+        next_cursor: String(offset + 20)
+      }
+    })
+  })
+
+  expect(await makeClient().listThreads()).toEqual(threads)
+})
+
+it('bounds native history traversal even when the server keeps returning new cursors', async () => {
+  vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+  let cursor = 0
+  vi.mocked(api.fetchApi).mockImplementation(async () =>
+    jsonResponse(200, {
+      threads: [],
+      pagination: {
+        has_more: true,
+        limit: 20,
+        offset: 0,
+        total: 20,
+        next_cursor: String(++cursor)
+      }
+    })
+  )
+
+  await expect(makeClient().listThreads()).rejects.toBeInstanceOf(
+    AgentResponseUnreadableError
+  )
+  expect(api.fetchApi).toHaveBeenCalledTimes(2)
+})
+
+it('rejects a repeated native history cursor instead of looping or showing an incomplete list', async () => {
+  vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+  const page = {
+    threads: [],
+    pagination: {
+      has_more: true,
+      limit: 20,
+      offset: 0,
+      total: 25,
+      next_cursor: 'same'
+    }
+  }
+  respond(jsonResponse(200, page))
+  respond(jsonResponse(200, page))
+  await expect(makeClient().listThreads()).rejects.toBeInstanceOf(
+    AgentResponseUnreadableError
+  )
+  expect(api.fetchApi).toHaveBeenCalledTimes(2)
+})
+
+it('does not silently return a partial native history when its next page fails', async () => {
+  vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+  respond(
+    jsonResponse(200, {
+      threads: [],
+      pagination: {
+        has_more: true,
+        limit: 20,
+        offset: 0,
+        total: 25,
+        next_cursor: 'next'
+      }
+    })
+  )
+  respond(jsonResponse(503, { error: 'History unavailable' }))
+  await expect(makeClient().listThreads()).rejects.toMatchObject({
+    status: 503
+  })
+})
+
 describe('agentRestClient route + method', () => {
+  it('reads the backend identity used for document actors', async () => {
+    respond(
+      jsonResponse(200, {
+        user_id: 'backend-user',
+        workspace_id: 'backend-workspace'
+      })
+    )
+
+    await expect(makeClient().getIdentity()).resolves.toEqual({
+      userId: 'backend-user'
+    })
+    expect(lastCall()).toMatchObject({
+      route: '/agent/identity',
+      init: { method: 'GET' }
+    })
+  })
+
+  it('rejects an incomplete backend identity', async () => {
+    respond(jsonResponse(200, { user_id: 'backend-user' }))
+
+    await expect(makeClient().getIdentity()).rejects.toThrow()
+  })
+
+  it('deletes one exact encoded thread and validates the acknowledgement identity', async () => {
+    respond(jsonResponse(200, { id: 'agt_a/b' }))
+
+    await expect(makeClient().deleteThread('agt_a/b')).resolves.toEqual({
+      ok: true
+    })
+    expect(lastCall()).toMatchObject({
+      route: '/agent/threads/agt_a%2Fb',
+      init: { method: 'DELETE' }
+    })
+  })
+
+  it('reports a failed or mismatched thread deletion without exposing the response body', async () => {
+    respond(jsonResponse(200, { id: 'agt_other' }))
+    await expect(makeClient().deleteThread('agt_expected')).resolves.toEqual({
+      ok: false
+    })
+    expect(reportError).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ errorType: 'agent_thread_delete_failed' })
+    )
+  })
+
   it('postMessage targets the literal "new" thread path to open a thread', async () => {
     respond(jsonResponse(202, turnAccepted))
     await makeClient().postMessage('new', { content: 'hi' })
@@ -196,7 +384,7 @@ describe('agentRestClient route + method', () => {
   })
 
   it('answerAsk POSTs the selected option to the encoded ask path', async () => {
-    respond(jsonResponse(202, { status: 'answered' }))
+    respond(jsonResponse(202, { status: 'answered', selected: ['run'] }))
     await makeClient().answerAsk('t7/x', 'turn-1:call/1', ['run'])
 
     const { route, init } = lastCall()
@@ -205,21 +393,68 @@ describe('agentRestClient route + method', () => {
     expect(JSON.parse(init.body as string)).toEqual({ selected: ['run'] })
   })
 
-  it.for([
-    {
-      name: 'a status-only 202 from an older backend',
-      body: { status: 'answered' }
-    },
-    {
-      name: 'a 202 that reports the committed answer',
-      body: { status: 'answered', selected: ['run'] }
-    }
-  ])('answerAsk accepts $name', async ({ body }) => {
+  it('answerAsk returns the committed answer reported by the server', async () => {
+    const body = { status: 'answered', selected: ['run'] }
     respond(jsonResponse(202, body))
 
     await expect(
       makeClient().answerAsk('t7', 'ask-1', ['run'])
     ).resolves.toEqual(body)
+  })
+
+  it('answerAsk rejects a status-only acknowledgement', async () => {
+    respond(jsonResponse(202, { status: 'answered' }))
+
+    await expect(
+      makeClient().answerAsk('t7', 'ask-1', ['run'])
+    ).rejects.toThrow()
+  })
+
+  it('preserves an exact saved-file path in the native workflow listing', async () => {
+    respond(
+      jsonResponse(200, {
+        data: [
+          {
+            id: 'wf-path',
+            name: 'Portrait',
+            editor_path: 'workflows/原稿/Portrait.json'
+          }
+        ],
+        pagination: { offset: 0, limit: 100, total: 1, has_more: false }
+      })
+    )
+    await expect(makeClient().listCloudWorkflows()).resolves.toEqual({
+      entries: [
+        {
+          id: 'wf-path',
+          name: 'Portrait',
+          editor_path: 'workflows/原稿/Portrait.json'
+        }
+      ],
+      complete: true
+    })
+  })
+
+  it('explicitly adopts the exact saved graph through the native adapter', async () => {
+    const metadata = {
+      id: 'wf-adopted',
+      latest_version: 1,
+      created_by: 'user-1',
+      created_at: '2026-10-16T00:00:00Z',
+      updated_at: '2026-10-16T00:00:00Z'
+    }
+    const content = { nodes: [], links: [] }
+    respond(jsonResponse(200, metadata))
+    await expect(
+      makeClient().adoptSavedWorkflow('workflows/原稿.json', content)
+    ).resolves.toEqual(metadata)
+    const [route, init] = vi.mocked(api.fetchApi).mock.calls[0]
+    expect(route).toBe('/agent/workflows/adopt')
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({
+      path: 'workflows/原稿.json',
+      content
+    })
   })
 
   it('listCloudWorkflows GETs the paginated workflows path until has_more is false', async () => {
@@ -453,6 +688,71 @@ describe('postMessage wire body', () => {
 })
 
 describe('uploadImage multipart', () => {
+  const attachmentPolicy = {
+    maxFiles: 4,
+    maxFileBytes: 4 * 1024 * 1024,
+    maxTotalBytes: 8 * 1024 * 1024,
+    filenamePattern: '\\.(?:png|jpe?g|webp)$'
+  }
+
+  it.for([
+    { name: 'video.mp4', bytes: 10, enabled: true },
+    { name: 'empty.png', bytes: 0, enabled: true },
+    { name: 'large.png', bytes: 4 * 1024 * 1024 + 1, enabled: true },
+    { name: 'disabled.png', bytes: 10, enabled: false }
+  ])(
+    'refuses $name before multipart upload in native mode',
+    async ({ name, bytes, enabled }) => {
+      vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+      respond(jsonResponse(200, { attachments: enabled, attachmentPolicy }))
+      const image = new Blob([new Uint8Array(bytes)], { type: 'image/png' })
+      await expect(
+        makeClient().uploadImage(image, name)
+      ).rejects.toBeInstanceOf(AgentApiError)
+      expect(api.fetchApi).toHaveBeenCalledOnce()
+      expect(lastCall().route).toBe('/agent/capabilities')
+    }
+  )
+
+  it('uses current server limits and preserves the native multipart transport', async () => {
+    vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+    respond(
+      jsonResponse(200, {
+        attachments: true,
+        attachmentPolicy: { ...attachmentPolicy, maxFileBytes: 5 }
+      })
+    )
+    respond(
+      jsonResponse(200, { name: 'uploaded.png', subfolder: '', type: 'input' })
+    )
+    const controller = new AbortController()
+    await makeClient().uploadImage(
+      new Blob(['image']),
+      'photo.PNG',
+      controller.signal
+    )
+    expect(api.fetchApi).toHaveBeenCalledTimes(2)
+    expect(lastCall().route).toBe('/upload/image')
+    expect(lastCall().init.signal).toBe(controller.signal)
+    expect(lastCall().init.body).toBeInstanceOf(FormData)
+  })
+
+  it.for([
+    {},
+    { attachments: true },
+    { attachments: true, attachmentPolicy: { maxFileBytes: -1 } }
+  ])(
+    'refuses missing or malformed attachment capabilities before upload',
+    async (body) => {
+      vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+      respond(jsonResponse(200, body))
+      await expect(
+        makeClient().uploadImage(new Blob(['image']), 'photo.png')
+      ).rejects.toThrow()
+      expect(api.fetchApi).toHaveBeenCalledOnce()
+    }
+  )
+
   it('posts FormData with the blob appended under "image" with the filename, no manual Content-Type', async () => {
     respond(jsonResponse(200, { name: 'x.png', subfolder: '', type: 'input' }))
     const appendSpy = vi.spyOn(FormData.prototype, 'append')
@@ -469,6 +769,39 @@ describe('uploadImage multipart', () => {
     expect(contentType(init)).toBeUndefined()
     appendSpy.mockRestore()
   })
+})
+
+it('negotiates only rendered cards in native mode and preserves the generic answer body', async () => {
+  vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'official')
+  respond(jsonResponse(202, turnAccepted))
+  await makeClient().postMessage('thread', { content: 'Help' })
+  expect(JSON.parse(String(lastCall().init.body))).toMatchObject({
+    ask_kinds: RENDERED_ASK_KINDS
+  })
+  respond(
+    jsonResponse(202, {
+      status: 'answered',
+      selected: ['png'],
+      other_text: 'Alpha'
+    })
+  )
+  const result = await makeClient().answerAsk('thread', 'ask', ['png'], 'Alpha')
+  expect(JSON.parse(String(lastCall().init.body))).toEqual({
+    selected: ['png'],
+    other_text: 'Alpha'
+  })
+  expect(result).toMatchObject({ selected: ['png'], other_text: 'Alpha' })
+})
+
+it('does not negotiate native ask cards outside official mode', async () => {
+  vi.stubEnv('VITE_AGENT_BACKEND_MODE', 'upstream')
+  respond(jsonResponse(202, turnAccepted))
+
+  await makeClient().postMessage('thread', { content: 'Help' })
+
+  expect(JSON.parse(String(lastCall().init.body))).not.toHaveProperty(
+    'ask_kinds'
+  )
 })
 
 describe('success response parsing', () => {
@@ -595,6 +928,62 @@ describe('error mapping', () => {
     expect((error as AgentApiError).message).toBe(
       'Agent request failed (HTTP 503)'
     )
+  })
+
+  it('maps an attachment rejection to a bounded user-facing message', async () => {
+    respond(
+      jsonResponse(422, {
+        type: 'ATTACHMENT_TYPE_NOT_ACCEPTED',
+        error: 'One or more attachment types are not supported.',
+        accepted: nativeAcceptedAttachmentPolicy,
+        rejected: ['private-name.pdf'],
+        rejected_count: 1
+      })
+    )
+
+    const error = await makeClient()
+      .postMessage('t1', { content: 'use this' })
+      .catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(AgentApiError)
+    expect((error as AgentApiError).message).toBe(
+      'private-name.pdf is not a file type the agent accepts'
+    )
+  })
+
+  it('maps attachment bounds errors without exposing the rejected reference', async () => {
+    respond(
+      jsonResponse(422, {
+        type: 'ATTACHMENT_BOUNDS_EXCEEDED',
+        error: 'Attachment references exceed the supported bounds.',
+        limits: { max_item_length: 256, max_items: 25 },
+        overlong_ref: 'private-reference',
+        received_count: 1
+      })
+    )
+
+    const error = await makeClient()
+      .postMessage('t1', { content: 'use this' })
+      .catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(AgentApiError)
+    expect((error as AgentApiError).message).toBe(
+      'An attachment reference cannot exceed 256 characters'
+    )
+    expect((error as AgentApiError).message).not.toContain('private-reference')
+  })
+
+  it('retains the bounded operation name on non-auth failures', async () => {
+    respond(new Response('', { status: 503 }))
+
+    const error = await makeClient()
+      .postMessage('t1', { content: 'try it' })
+      .catch((caught: unknown) => caught)
+
+    expect(error).toMatchObject({
+      operation: 'post_thread_message',
+      status: 503
+    })
   })
 
   it('throws zod when a success body violates the response schema (anti-drift)', async () => {

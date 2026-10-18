@@ -245,7 +245,12 @@ useEventListener(
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" v-reka-z-index class="agent-scope fixed inset-0">
+    <div
+      v-if="visible"
+      v-reka-z-index
+      data-testid="agent-onboarding-coach"
+      class="agent-scope fixed inset-0"
+    >
       <div class="absolute inset-0" />
       <div
         aria-hidden="true"
@@ -323,9 +328,13 @@ useEventListener(
                 @click="previous"
                 >{{ $t('onboardingCoachmarks.back') }}</Button
               >
-              <Button variant="secondary" size="md" @click="onSkip">{{
-                $t('agent.skip')
-              }}</Button>
+              <Button
+                variant="secondary"
+                size="md"
+                data-testid="agent-onboarding-skip"
+                @click="onSkip"
+                >{{ $t('agent.skip') }}</Button
+              >
               <Button variant="inverted" size="md" @click="onNext">{{
                 $t(isLast ? 'onboardingCoachmarks.done' : 'g.next')
               }}</Button>

@@ -1,6 +1,7 @@
 import { toValue } from 'vue'
 import type { ComputedRef, MaybeRefOrGetter, Ref } from 'vue'
-import type { UploadImageResponse } from '@comfyorg/ingest-types'
+import { zUploadImageResponse } from '@comfyorg/ingest-types/zod'
+import { z } from 'zod'
 
 import { useErrorHandling } from '@/composables/useErrorHandling'
 import { useToast } from '@/components/ui/toast/toastStore'
@@ -22,9 +23,11 @@ import { isExtensionlessVideo } from '@/utils/mediaUploadUtil'
 import { isResultItemType } from '@/utils/typeGuardUtil'
 
 const BYTES_PER_MB = 1024 * 1024
-interface UploadResponse extends UploadImageResponse {
-  asset?: { preview_id?: string }
-}
+const uploadResponseSchema = zUploadImageResponse.extend({
+  name: z.string().min(1),
+  asset: z.object({ preview_id: z.string().optional() }).optional()
+})
+type UploadResponse = z.infer<typeof uploadResponseSchema>
 
 function buildUploadErrorMessage(resp: Response) {
   if (resp.status === 413) {
@@ -133,7 +136,7 @@ export function useWidgetSelectActions(options: UseWidgetSelectActionsOptions) {
       return null
     }
 
-    const data: UploadResponse = await resp.json()
+    const data = uploadResponseSchema.parse(await resp.json())
 
     if (formFields.type === 'input' || (!formFields.type && !isPasted)) {
       await useAssetsStore().inputAssets.invalidate()

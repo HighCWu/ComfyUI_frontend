@@ -30,7 +30,7 @@
     </Teleport>
 
     <template v-if="activeView === 'overview'">
-      <SubscriptionPanelContentWorkspace v-if="isCloud" />
+      <SubscriptionPanelContentWorkspace v-if="isCloud && !prepaidBilling" />
       <div
         v-else
         class="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto"
@@ -38,6 +38,7 @@
       >
         <CreditsPanel embedded />
         <SubscriptionFooterLinks
+          v-if="!prepaidBilling"
           class="mt-auto shrink-0"
           :show-invoice-history="false"
           :show-usage-activity="false"
@@ -71,11 +72,15 @@ const { isHeaderCollapsed, handlePanelScroll, resetHeaderCollapse } =
 
 const { t } = useI18n()
 const { permissions } = useWorkspaceUI()
+const prepaidBilling = computed(
+  () => import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
+)
 
 // Invoices covers a workspace-wide charge, so it is billing-manager only, and
 // the upcoming amount and Stripe portal only exist on cloud.
 const canSeeInvoices = computed(
-  () => isCloud && permissions.value.canManageSubscription
+  () =>
+    isCloud && !prepaidBilling.value && permissions.value.canManageSubscription
 )
 
 const tabs = computed<{ key: View; label: string }[]>(() => [

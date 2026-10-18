@@ -8,7 +8,8 @@ import { useAgentPanelStore } from '@/workbench/extensions/agent/stores/agent/ag
 import type { DocOp } from './docFrameClient'
 import type { GraphOperation } from './graphOperations'
 
-const bridgeState = vi.hoisted(() => {
+const bridgeState = await vi.hoisted(async () => {
+  const { Doc } = await import('yjs')
   const transport = { up: true }
   class FakeBridge extends EventTarget {
     subscribe = vi.fn((workflowId: string) => {
@@ -24,14 +25,12 @@ const bridgeState = vi.hoisted(() => {
     resubscribe = vi.fn()
     reconnect = vi.fn()
     reconcile = vi.fn()
-    destroy = vi.fn()
+    destroy = vi.fn(() => this.follower.doc.destroy())
     subscribedWorkflowId: string | null = null
     lastSequence = 0
     follower = {
       updatesApplied: 0,
-      doc: {
-        getMap: () => ({ toJSON: () => ({}) })
-      }
+      doc: new Doc()
     }
   }
 

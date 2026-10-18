@@ -20,7 +20,6 @@ export class PromptCapacityRetryCancelledError extends Error {
 }
 
 export interface PromptCapacityRetryOptions {
-  /** Set false outside an instance-bound workspace editor iframe. */
   enabled?: boolean
   signal?: AbortSignal
   onRetry?: (attempt: number, delayMs: number) => void
@@ -67,7 +66,7 @@ export const retryPromptWhenCapacityPreparing = async <T>(
   const startedAt = now()
   let attempt = 0
 
-  while (true) {
+  for (;;) {
     if (options.signal?.aborted) {
       throw new PromptCapacityRetryCancelledError()
     }
@@ -95,7 +94,6 @@ export const retryPromptWhenCapacityPreparing = async <T>(
   }
 }
 
-export const isWorkspaceEditorIframe = (): boolean =>
+export const isManagedEditorSession = (): boolean =>
   typeof window !== 'undefined' &&
-  window.top !== window.self &&
-  /^eds_/.test(window.name)
+  /^eds_[a-zA-Z0-9_-]{1,124}$/.test(window.name)

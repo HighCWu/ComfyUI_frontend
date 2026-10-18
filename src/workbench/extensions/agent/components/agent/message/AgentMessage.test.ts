@@ -609,6 +609,69 @@ describe('AgentMessage run approval', () => {
     thinking: false
   })
 
+  it('renders a native question and forwards its answer instead of a Run consent', async () => {
+    const { emitted } = render(AgentMessage, {
+      props: {
+        message: approvalMessage({
+          question: {
+            kind: 'ask_user',
+            ask_id: 'question-1',
+            message_id: 'turn',
+            prompt: 'Choose format',
+            options: [{ id: 'png', label: 'PNG' }],
+            min_selections: 1,
+            max_selections: 1,
+            allow_other: false
+          }
+        })
+      },
+      global: { plugins: [i18n] }
+    })
+    await userEvent.click(screen.getByRole('checkbox', { name: 'PNG' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    expect(emitted().answerAsk).toEqual([['question-1', { selected: ['png'] }]])
+    expect(emitted().approvalShown).toBeUndefined()
+  })
+
+  it('does not carry selected options into a different question in the same message', async () => {
+    const question = {
+      kind: 'ask_user' as const,
+      ask_id: 'question-1',
+      message_id: 'turn',
+      prompt: 'Choose format',
+      options: [{ id: 'png', label: 'PNG' }],
+      min_selections: 1,
+      max_selections: 1,
+      allow_other: false
+    }
+    const { rerender } = render(AgentMessage, {
+      props: { message: approvalMessage({ question }) },
+      global: { plugins: [i18n] }
+    })
+    await userEvent.click(screen.getByRole('checkbox', { name: 'PNG' }))
+    expect(screen.getByRole('button', { name: 'Send answer' })).toBeEnabled()
+    await rerender({
+      message: approvalMessage({
+        question: { ...question, ask_id: 'question-2' }
+      })
+    })
+    expect(screen.getByRole('checkbox', { name: 'PNG' })).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Send answer' })).toBeDisabled()
+  })
+
+  it('shows the server reservation disclosure as text before the original Run action', () => {
+    const prompt =
+      'Up to 20 credits will be reserved. Unused credits are released. <img src=x onerror=alert(1)>'
+    render(AgentMessage, {
+      props: { message: approvalMessage({ prompt }) },
+      global: { plugins: [i18n] }
+    })
+    expect(screen.getByText(prompt)).toBeVisible()
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
+  })
+
   it('renders the Figma copy and emits workflow, cancel, and run actions', async () => {
     const { emitted } = render(AgentMessage, {
       props: { message: approvalMessage() },

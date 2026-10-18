@@ -1,4 +1,5 @@
 import { resolveUnifiedWebSession } from '@comfyorg/account-core/webSessionFlag'
+import { zGetFeaturesResponse } from '@comfyorg/ingest-types/zod'
 
 import { isCloud } from '@/platform/distribution/types'
 
@@ -34,6 +35,22 @@ let refreshGeneration = 0
 let authenticatedLoadingGeneration: number | undefined
 let agentGrantExpiryTimer: ReturnType<typeof setTimeout> | undefined
 const activeRefreshControllers = new Set<AbortController>()
+
+function parseRemoteConfig(
+  value: unknown
+): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined
+  }
+  const generated = zGetFeaturesResponse.safeParse(value)
+  if (!generated.success) {
+    return undefined
+  }
+  // Laimon publishes reviewed deployment extensions that are intentionally
+  // outside Comfy's generated core schema. Validate the known generated
+  // fields, then retain the original object so those extensions survive.
+  return value as Record<string, unknown>
+}
 
 function clearSessionAgentGrant(): void {
   clearTimeout(agentGrantExpiryTimer)
@@ -77,7 +94,11 @@ export function invalidateRemoteConfig(): void {
 async function fetchRemoteConfig(
   useAuth: boolean,
   signal?: AbortSignal
-): Promise<{ response: Response; authenticated: boolean }> {
+): Promise<{
+  response: Response
+  authenticated: boolean
+  identityUnchanged?: () => boolean
+}> {
   const { api } = await import('@/scripts/api')
   if (!useAuth) {
     return {
@@ -86,6 +107,23 @@ async function fetchRemoteConfig(
         signal
       }),
       authenticated: false
+    }
+  }
+  if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+    const { usePrepaidSessionStore } =
+      await import('@/stores/prepaidSessionStore')
+    const session = usePrepaidSessionStore()
+    const ownerId = session.user?.id
+    const response = await fetch(api.apiURL('/features?authenticated=1'), {
+      credentials: 'include',
+      cache: 'no-store',
+      signal
+    })
+    return {
+      response,
+      authenticated:
+        !!ownerId && response.headers.get('X-Laimon-Config-User') === ownerId,
+      identityUnchanged: () => session.user?.id === ownerId
     }
   }
   let authenticated = false
@@ -196,6 +234,13 @@ export async function refreshRemoteConfig(
   options: RefreshRemoteConfigOptions = {}
 ): Promise<void> {
   const { useAuth = true, signal } = options
+  if (
+    !useAuth &&
+    import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid' &&
+    ['loading', 'authenticated'].includes(authenticatedRemoteConfigState.value)
+  ) {
+    return
+  }
   const generation = ++refreshGeneration
   const previousAuthenticatedState = authenticatedRemoteConfigState.value
   if (useAuth && previousAuthenticatedState !== 'authenticated') {
@@ -214,17 +259,24 @@ export async function refreshRemoteConfig(
   )
 
   try {
-    const { response, authenticated } = await fetchRemoteConfig(
-      useAuth,
-      controller.signal
-    )
+    const { response, authenticated, identityUnchanged } =
+      await fetchRemoteConfig(useAuth, controller.signal)
     if (generation !== refreshGeneration) return
     if (signal?.aborted) return
+    if (identityUnchanged && !identityUnchanged()) return
 
     if (response.ok) {
-      const config = await response.json()
+      const config = parseRemoteConfig(await response.json())
+      if (!config) {
+        commitRemoteConfigException(
+          'Remote config returned an invalid response',
+          useAuth
+        )
+        return
+      }
       if (generation !== refreshGeneration) return
       if (signal?.aborted) return
+      if (identityUnchanged && !identityUnchanged()) return
       if (useAuth && !authenticated) {
         authenticatedRemoteConfigState.value = 'error'
         authenticatedLoadingGeneration = undefined
