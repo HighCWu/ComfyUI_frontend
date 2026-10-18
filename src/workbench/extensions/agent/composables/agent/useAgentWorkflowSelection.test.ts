@@ -217,7 +217,7 @@ describe('historical workflow restoration', () => {
       isTemporary: false,
       activeState: current.activeState
     })
-    vi.spyOn(reference, 'delete').mockResolvedValue(undefined)
+    reference.delete = vi.fn(async () => undefined)
     reference.load = vi.fn(async () => {
       await workflows.deleteWorkflow(reference)
       return reference
