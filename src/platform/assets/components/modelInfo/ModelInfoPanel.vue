@@ -36,32 +36,7 @@
           getAssetFilename(asset)
         }}</span>
       </ModelInfoField>
-      <ModelInfoField
-        v-if="sourceUrl"
-        :label="t('assetBrowser.modelInfo.source')"
-      >
-        <a
-          :href="sourceUrl"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="inline-flex items-center gap-1.5 text-muted-foreground no-underline transition-colors hover:text-base-foreground"
-        >
-          <img
-            v-if="sourceName === 'Civitai'"
-            src="/assets/images/civitai.svg"
-            alt=""
-            class="size-4 shrink-0"
-          />
-          <img
-            v-else-if="sourceName === 'Hugging Face'"
-            src="/assets/images/hf-logo.svg"
-            alt=""
-            class="size-4 shrink-0"
-          />
-          {{ t('assetBrowser.modelInfo.viewOnSource', { source: sourceName }) }}
-          <i class="icon-[lucide--external-link] size-4 shrink-0" />
-        </a>
-      </ModelInfoField>
+      <ModelCatalogueInfo :asset />
     </PropertiesAccordionItem>
 
     <PropertiesAccordionItem :class="accordionClass">
@@ -246,17 +221,16 @@ import {
   getAssetDescription,
   getAssetDisplayName,
   getAssetFilename,
-  getAssetSourceUrl,
   getAssetTriggerPhrases,
   getAssetUserDescription,
   getEditableModelType,
-  getSourceName,
   resolveModelTypeTagUpdate
 } from '@/platform/assets/utils/assetMetadataUtils'
 import { useAssetsStore } from '@/stores/assetsStore'
 import { cn } from '@comfyorg/tailwind-utils'
 
 import ModelInfoField from './ModelInfoField.vue'
+import ModelCatalogueInfo from './ModelCatalogueInfo.vue'
 
 const { t } = useI18n()
 const { copyToClipboard } = useCopyToClipboard()
@@ -297,10 +271,6 @@ const modelTypeReadonlyReason = computed(() =>
 const modelTypeReadonlyReasonId = useId()
 const displayName = computed(
   () => pendingUpdates.value.name ?? getAssetDisplayName(asset)
-)
-const sourceUrl = computed(() => getAssetSourceUrl(asset))
-const sourceName = computed(() =>
-  sourceUrl.value ? getSourceName(sourceUrl.value) : ''
 )
 const description = computed(() => getAssetDescription(asset))
 const triggerPhrases = computed(() => getAssetTriggerPhrases(asset))
