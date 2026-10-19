@@ -214,6 +214,35 @@ export function useAgentWorkflowSelection({
     }
   }
 
+  async function prepareTargetForSend(): Promise<boolean> {
+    const tab = selectedTarget.value
+    if (
+      !adoptSavedWorkflow ||
+      !tab ||
+      tab.isTemporary ||
+      cloudIdFor(tab) !== undefined
+    )
+      return true
+    if (workflowSelection.value) return false
+    const path = tab.path
+    const generation = ++targetSelectionGeneration
+    workflowSelection.value = { purpose: 'target', workflow: tab }
+    const isCurrent = () =>
+      generation === targetSelectionGeneration &&
+      selectedTarget.value === tab &&
+      tab.path === path &&
+      workflowStore.openWorkflows.includes(tab)
+    try {
+      const workflowId = await prepareWorkflowSelection(tab, isCurrent)
+      if (workflowId === undefined || !isCurrent()) return false
+      commitWorkflowTarget(tab, workflowId, 'selector_chip')
+      return true
+    } finally {
+      if (workflowSelection.value.workflow === tab)
+        workflowSelection.value = null
+    }
+  }
+
   async function onSelectWorkflowReference(
     option: WorkflowReferenceOption
   ): Promise<WorkflowReferenceMetadata | undefined> {
@@ -369,6 +398,7 @@ export function useAgentWorkflowSelection({
     savingReference,
     onVisibleWorkflowChanged,
     selectTarget: onSelectWorkflowTarget,
+    prepareTargetForSend,
     selectReference: onSelectWorkflowReference,
     restoreTarget: onWorkflowRestored,
     requestReferences: onRequestWorkflowReferences,

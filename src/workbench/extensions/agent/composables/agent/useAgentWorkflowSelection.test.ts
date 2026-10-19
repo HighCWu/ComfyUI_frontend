@@ -273,6 +273,77 @@ describe('historical workflow restoration', () => {
     expect(toRaw(workflows.activeWorkflow)).toBe(toRaw(current))
   })
 
+  it('adopts the exact retained saved target on first send without reopening or resaving it', async () => {
+    const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>()
+    const { selection, current, panel, listCloudWorkflows, bindings } =
+      setup(adopt)
+    listCloudWorkflows.mockResolvedValue(listing([]))
+    current.load = vi.fn(async () => current)
+    panel.setWorkflowTarget(current)
+    adopt.mockImplementation(async (path) => {
+      listCloudWorkflows.mockResolvedValue(
+        listing([{ id: 'wf-adopted', name: 'current', editor_path: path }])
+      )
+      return {
+        id: 'wf-adopted',
+        latest_version: 1,
+        created_by: 'user-1',
+        created_at: '2026-10-19T00:00:00Z',
+        updated_at: '2026-10-19T00:00:00Z'
+      }
+    })
+
+    expect(await selection.prepareTargetForSend()).toBe(true)
+    expect(adopt).toHaveBeenCalledWith(current.path, current.activeState)
+    expect(bindings.workflowIdFor(current.path)).toBe('wf-adopted')
+    expect(useWorkflowService().openWorkflow).not.toHaveBeenCalled()
+    expect(useWorkflowService().saveWorkflowAs).not.toHaveBeenCalled()
+    expect(await selection.prepareTargetForSend()).toBe(true)
+    expect(adopt).toHaveBeenCalledOnce()
+  })
+
+  it('refuses first-send preparation after adoption fails without creating an unbound replacement', async () => {
+    const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>(async () => {
+      throw new AgentApiError('Save first', 409, null)
+    })
+    const { selection, current, panel, listCloudWorkflows, bindings } =
+      setup(adopt)
+    listCloudWorkflows.mockResolvedValue(listing([]))
+    current.load = vi.fn(async () => current)
+    panel.setWorkflowTarget(current)
+
+    expect(await selection.prepareTargetForSend()).toBe(false)
+    expect(bindings.workflowIdFor(current.path)).toBeUndefined()
+    expect(useWorkflowService().openWorkflow).not.toHaveBeenCalled()
+    expect(selection.isSelecting.value).toBe(false)
+  })
+
+  it('does not bind a first-send target renamed during adoption', async () => {
+    const response = Promise.withResolvers<WorkflowResponse>()
+    const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>(
+      () => response.promise
+    )
+    const { selection, current, panel, listCloudWorkflows, bindings } =
+      setup(adopt)
+    listCloudWorkflows.mockResolvedValue(listing([]))
+    current.load = vi.fn(async () => current)
+    panel.setWorkflowTarget(current)
+    const preparing = selection.prepareTargetForSend()
+    await waitFor(() => expect(adopt).toHaveBeenCalledOnce())
+    current.path = 'workflows/renamed.json'
+    response.resolve({
+      id: 'wf-adopted',
+      latest_version: 1,
+      created_by: 'user-1',
+      created_at: '2026-10-19T00:00:00Z',
+      updated_at: '2026-10-19T00:00:00Z'
+    })
+
+    expect(await preparing).toBe(false)
+    expect(bindings.workflowIdFor(current.path)).toBeUndefined()
+    expect(selection.isSelecting.value).toBe(false)
+  })
+
   it('adopts an explicitly chosen saved reference without changing the active target', async () => {
     const adopt = vi.fn<AgentRestClient['adoptSavedWorkflow']>()
     const { selection, current, panel, listCloudWorkflows, bindings } =

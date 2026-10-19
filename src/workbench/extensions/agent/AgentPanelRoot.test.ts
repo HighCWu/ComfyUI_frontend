@@ -4793,6 +4793,10 @@ describe('AgentPanelRoot history', () => {
         }
       )
       workflowStore.activeWorkflow = addTab('workflows/new-chat.json')
+      useAgentWorkflowTabBindingStore().bind(
+        'wf-new',
+        workflowStore.activeWorkflow.path
+      )
       renderWithSelectedTarget()
 
       await userEvent.click(

@@ -481,6 +481,7 @@ const {
   savingReference,
   onVisibleWorkflowChanged,
   selectTarget: onSelectWorkflowTarget,
+  prepareTargetForSend,
   selectReference: onSelectWorkflowReference,
   restoreTarget: onWorkflowRestored,
   requestReferences: onRequestWorkflowReferences,
@@ -1687,7 +1688,6 @@ const { submit: onSend } = useAgentDraftSubmission({
     replace: replaceSelectionTags,
     exit: canvasStore.stopNodePicking
   },
-  // fallow-ignore-next-line complexity -- Existing PR logic; this lane changes only the composing panel test.
   send: async (text, attachments, nodes, references, meta) => {
     if (nativeRunPlanUi && !isLoggedIn.value) {
       if (isAuthInitialized.value) await handleSignIn()
@@ -1700,10 +1700,8 @@ const { submit: onSend } = useAgentDraftSubmission({
     )
       return false
 
-    // The same origin `performSend` pins the turn to, taken in the same tick,
-    // so the report follows the tab the turn is posted against. Everything but
-    // the workflow id is captured now, like the thread; the id here is only
-    // the fallback for a send that never reaches the refresh.
+    if (!(await prepareTargetForSend())) return false
+
     const originContext = targetWorkflowTurnContext()
     pendingSend = {
       metadata: {
@@ -1732,14 +1730,9 @@ const { submit: onSend } = useAgentDraftSubmission({
         nodes,
         references,
         () => (selectionWorkflow ? cloudIdFor(selectionWorkflow) : undefined),
-        // The same id reported on app:agent_message_sent just above. Sent to the
-        // server so it can echo it onto agent_turn_started, which is what makes
-        // the message -> turn step attributable instead of only countable.
         meta.clientMessageId
       )
     } finally {
-      // Normally already consumed by the refresh. A send rejected before it
-      // gets that far still reports here, so the funnel counts the attempt.
       reportPendingSend()
     }
   }
