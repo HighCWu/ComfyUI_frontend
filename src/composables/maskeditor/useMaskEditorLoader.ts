@@ -352,10 +352,42 @@ export function useMaskEditorLoader() {
       img.crossOrigin = 'anonymous'
 
       img.onload = () => resolve(img)
-      img.onerror = () => reject(new Error(`Failed to load image: ${url}`))
+      img.onerror = () => {
+        void imageLoadFailureMessage(url).then((message) =>
+          reject(new Error(message))
+        )
+      }
 
       img.src = url
     })
+  }
+
+  async function imageLoadFailureMessage(url: string): Promise<string> {
+    const fallback = t('maskEditor.imageLoadFailed')
+    if (import.meta.env.VITE_RUN_BILLING_MODE !== 'prepaid') return fallback
+    try {
+      const target = new URL(url, window.location.origin)
+      const view = new URL(api.apiURL('/view'), window.location.origin)
+      if (
+        target.origin !== view.origin ||
+        target.pathname !== view.pathname ||
+        !['rgb', 'a'].includes(target.searchParams.get('channel') ?? '')
+      )
+        return fallback
+      const response = await api.fetchApi(
+        `/view?${target.searchParams.toString()}`,
+        {
+          signal: AbortSignal.timeout(5000),
+          redirect: 'error'
+        }
+      )
+      await response.body?.cancel()
+      if (response.status === 413) return t('maskEditor.imageTooLarge')
+      if (response.status === 415) return t('maskEditor.imageFormatUnsupported')
+      return fallback
+    } catch {
+      return fallback
+    }
   }
 
   async function loadPaintLayer(url: string): Promise<ImageLayer> {

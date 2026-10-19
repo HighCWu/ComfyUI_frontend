@@ -229,25 +229,31 @@ describe('MaskEditorContent', () => {
   })
 
   describe('init error', () => {
-    it('shows a useful error and stops initialization when loading is refused', async () => {
-      const message = 'Image channel loading failed'
-      mockMaskEditorLoader.loadFromNode.mockResolvedValueOnce({
-        ok: false,
-        title: t('maskEditor.loadFailed'),
-        message
-      })
+    it.for([
+      'maskEditor.imageTooLarge',
+      'maskEditor.imageFormatUnsupported'
+    ] as const)(
+      'shows %s and stops initialization when loading is refused',
+      async (key) => {
+        const message = t(key)
+        mockMaskEditorLoader.loadFromNode.mockResolvedValueOnce({
+          ok: false,
+          title: t('maskEditor.loadFailed'),
+          message
+        })
 
-      renderContent()
+        renderContent()
 
-      await waitFor(() => {
-        expect(useDialogStore().closeDialog).toHaveBeenCalledTimes(1)
-      })
-      expect(useToast().error).toHaveBeenCalledWith(
-        t('maskEditor.loadFailed'),
-        { description: message }
-      )
-      expect(mockImageLoader.loadImages).not.toHaveBeenCalled()
-    })
+        await waitFor(() => {
+          expect(useDialogStore().closeDialog).toHaveBeenCalledTimes(1)
+        })
+        expect(useToast().error).toHaveBeenCalledWith(
+          t('maskEditor.loadFailed'),
+          { description: message }
+        )
+        expect(mockImageLoader.loadImages).not.toHaveBeenCalled()
+      }
+    )
 
     it('should close the dialog and log when loader.loadFromNode rejects', async () => {
       mockMaskEditorLoader.loadFromNode.mockRejectedValueOnce(

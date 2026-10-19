@@ -1462,6 +1462,9 @@
   "maskEditor": {
     "title": "Mask Editor",
     "loadFailed": "Could not open Mask Editor",
+    "imageLoadFailed": "Could not load the image. Try again or upload it again.",
+    "imageTooLarge": "This image is too large for Mask Editor. Reduce its dimensions or file size and upload it again.",
+    "imageFormatUnsupported": "Mask Editor supports PNG, JPEG, and WebP. Convert this image to one of these formats and upload it again.",
     "openMaskEditor": "Open in Mask Editor",
     "invert": "Invert",
     "clear": "Clear",
