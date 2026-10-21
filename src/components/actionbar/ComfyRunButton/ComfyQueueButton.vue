@@ -1,5 +1,5 @@
 <template>
-  <PrepaidRunStrategyPicker v-slot="{ selectedName }" :enabled="isPrepaid">
+  <PrepaidRunStrategyPicker :enabled="isPrepaid">
     <ButtonGroup
       class="queue-button-group h-8 rounded-lg bg-secondary-background"
     >
@@ -20,9 +20,6 @@
       >
         <i :class="cn(iconClass, 'size-4')" data-testid="queue-button-icon" />
         {{ queueButtonLabel }}
-        <span v-if="isPrepaid && selectedName" class="text-xs opacity-80">{{
-          selectedName
-        }}</span>
       </Button>
 
       <PopoverTrigger v-if="isPrepaid" as-child>

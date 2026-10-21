@@ -158,6 +158,7 @@ it('runs immediately in prepaid mode without waiting for the strategy reference'
   vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
   vi.spyOn(api, 'fetchApi').mockReturnValue(new Promise(() => {}))
   const { user } = renderQueueButton()
+  expect(screen.getByTestId('queue-button')).toHaveTextContent(/^Run$/)
   await user.click(screen.getByTestId('queue-button'))
   expect(useCommandStore().execute).toHaveBeenCalledExactlyOnceWith(
     'Comfy.QueuePrompt',

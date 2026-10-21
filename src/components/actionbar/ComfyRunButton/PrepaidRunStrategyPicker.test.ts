@@ -92,3 +92,21 @@ it('keeps the Run control available when the read-only reference fails', async (
   await user.click(screen.getByRole('button', { name: 'Run' }))
   expect(run).toHaveBeenCalledOnce()
 })
+
+it('opens with one touch instead of opening on pointer entry and immediately closing again', async () => {
+  vi.spyOn(api, 'fetchApi').mockResolvedValue(Response.json(strategies))
+  render(
+    {
+      components: { PrepaidRunStrategyPicker, PopoverTrigger },
+      template:
+        '<PrepaidRunStrategyPicker enabled><PopoverTrigger>Choose strategy</PopoverTrigger></PrepaidRunStrategyPicker>'
+    },
+    { global: { plugins: [i18n] } }
+  )
+  const user = userEvent.setup()
+  await user.pointer({
+    keys: '[TouchA]',
+    target: screen.getByRole('button', { name: 'Choose strategy' })
+  })
+  expect(await screen.findByRole('radio', { name: 'RTX 4090' })).toBeVisible()
+})

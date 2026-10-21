@@ -45,7 +45,8 @@ const { start: scheduleClose, stop: cancelClose } = useTimeoutFn(
 )
 const controller = new AbortController()
 
-function hover() {
+function hover(event: PointerEvent) {
+  if (event.pointerType === 'touch') return
   cancelClose()
   if (enabled && mode.value === 'closed') {
     restoreFocus = false
