@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useTimeoutFn } from '@vueuse/core'
-import { PopoverAnchor } from 'reka-ui'
+import { PopoverAnchor, PopoverTrigger } from 'reka-ui'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { z } from 'zod'
 
 import Popover from '@/components/ui/popover/Popover.vue'
+import Button from '@/components/ui/button/Button.vue'
 import PopoverContent from '@/components/ui/popover/PopoverContent.vue'
 import RadioGroup from '@/components/ui/radio-group/RadioGroup.vue'
 import RadioGroupItem from '@/components/ui/radio-group/RadioGroupItem.vue'
@@ -30,12 +31,6 @@ const open = computed({
     } else mode.value = 'closed'
   }
 })
-const selectedName = computed(
-  () =>
-    data.value?.strategies.find(
-      (item) => item.id === selectedPrepaidRunStrategy.value
-    )?.name
-)
 const { start: scheduleClose, stop: cancelClose } = useTimeoutFn(
   () => {
     if (mode.value === 'hover') mode.value = 'closed'
@@ -58,6 +53,14 @@ function autoFocus(event: Event) {
 }
 function closeAutoFocus(event: Event) {
   if (!restoreFocus) event.preventDefault()
+}
+function pinHoveredPanel(event: MouseEvent) {
+  if (mode.value !== 'hover') return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  cancelClose()
+  restoreFocus = true
+  mode.value = 'explicit'
 }
 
 onMounted(async () => {
@@ -90,8 +93,22 @@ onUnmounted(() => controller.abort())
 <template>
   <Popover v-model:open="open">
     <PopoverAnchor as-child>
-      <div class="flex" @pointerenter="hover" @pointerleave="scheduleClose()">
-        <slot :selected-name="selectedName" />
+      <div
+        class="flex items-center gap-1"
+        @pointerenter="hover"
+        @pointerleave="scheduleClose()"
+      >
+        <slot />
+        <PopoverTrigger v-if="enabled" as-child>
+          <Button
+            variant="secondary"
+            size="icon"
+            :aria-label="t('prepaidRun.strategies')"
+            @click.capture="pinHoveredPanel"
+          >
+            <i class="icon-[lucide--cpu]" aria-hidden="true" />
+          </Button>
+        </PopoverTrigger>
       </div>
     </PopoverAnchor>
     <PopoverContent

@@ -1,10 +1,12 @@
 import userEvent from '@testing-library/user-event'
 import { render, screen, waitFor } from '@testing-library/vue'
-import { PopoverTrigger } from 'reka-ui'
 import { expect, it, vi } from 'vitest'
+import { createI18n } from 'vue-i18n'
 
 import { api } from '@/scripts/api'
 import { i18n } from '@/i18n'
+import en from '@/locales/en/main.json'
+import zh from '@/locales/zh/main.json'
 import PrepaidRunStrategyPicker from './PrepaidRunStrategyPicker.vue'
 
 const strategies = {
@@ -31,15 +33,15 @@ it('opens on hover while direct Run stays immediate and never requests a quote',
   const run = vi.fn()
   render(
     {
-      components: { PrepaidRunStrategyPicker, PopoverTrigger },
+      components: { PrepaidRunStrategyPicker },
       setup: () => ({ run }),
       template:
-        '<PrepaidRunStrategyPicker enabled><template #default="{ selectedName }"><button @click="run">Run {{ selectedName }}</button><PopoverTrigger>Choose strategy</PopoverTrigger></template></PrepaidRunStrategyPicker>'
+        '<PrepaidRunStrategyPicker enabled><button @click="run">Run</button></PrepaidRunStrategyPicker>'
     },
     { global: { plugins: [i18n] } }
   )
   const user = userEvent.setup()
-  const button = await screen.findByRole('button', { name: 'Run RTX 4090' })
+  const button = screen.getByRole('button', { name: /^Run$/ })
   await user.hover(button)
   expect(
     await screen.findByRole('radio', { name: 'RTX 4090' })
@@ -57,9 +59,8 @@ it('supports explicit keyboard opening and Escape without running a task', async
   vi.spyOn(api, 'fetchApi').mockResolvedValue(Response.json(strategies))
   render(
     {
-      components: { PrepaidRunStrategyPicker, PopoverTrigger },
-      template:
-        '<PrepaidRunStrategyPicker enabled><PopoverTrigger>Choose strategy</PopoverTrigger></PrepaidRunStrategyPicker>'
+      components: { PrepaidRunStrategyPicker },
+      template: '<PrepaidRunStrategyPicker enabled />'
     },
     { global: { plugins: [i18n] } }
   )
@@ -69,7 +70,7 @@ it('supports explicit keyboard opening and Escape without running a task', async
   expect(await screen.findByRole('radio', { name: 'RTX 4090' })).toBeVisible()
   await user.keyboard('{Escape}')
   await waitFor(() => expect(screen.queryByRole('radio')).toBeNull())
-  expect(screen.getByRole('button', { name: 'Choose strategy' })).toHaveFocus()
+  expect(screen.getByRole('button', { name: 'Run strategy' })).toHaveFocus()
 })
 
 it('keeps the Run control available when the read-only reference fails', async () => {
@@ -79,10 +80,10 @@ it('keeps the Run control available when the read-only reference fails', async (
   const run = vi.fn()
   render(
     {
-      components: { PrepaidRunStrategyPicker, PopoverTrigger },
+      components: { PrepaidRunStrategyPicker },
       setup: () => ({ run }),
       template:
-        '<PrepaidRunStrategyPicker enabled><button @click="run">Run</button><PopoverTrigger>Choose strategy</PopoverTrigger></PrepaidRunStrategyPicker>'
+        '<PrepaidRunStrategyPicker enabled><button @click="run">Run</button></PrepaidRunStrategyPicker>'
     },
     { global: { plugins: [i18n] } }
   )
@@ -97,16 +98,64 @@ it('opens with one touch instead of opening on pointer entry and immediately clo
   vi.spyOn(api, 'fetchApi').mockResolvedValue(Response.json(strategies))
   render(
     {
-      components: { PrepaidRunStrategyPicker, PopoverTrigger },
-      template:
-        '<PrepaidRunStrategyPicker enabled><PopoverTrigger>Choose strategy</PopoverTrigger></PrepaidRunStrategyPicker>'
+      components: { PrepaidRunStrategyPicker },
+      template: '<PrepaidRunStrategyPicker enabled />'
     },
     { global: { plugins: [i18n] } }
   )
   const user = userEvent.setup()
   await user.pointer({
     keys: '[TouchA]',
-    target: screen.getByRole('button', { name: 'Choose strategy' })
+    target: screen.getByRole('button', { name: 'Run strategy' })
   })
   expect(await screen.findByRole('radio', { name: 'RTX 4090' })).toBeVisible()
+})
+
+it('pins a hovered panel on icon click and closes it on the next click', async () => {
+  vi.spyOn(api, 'fetchApi').mockResolvedValue(Response.json(strategies))
+  render(PrepaidRunStrategyPicker, {
+    props: { enabled: true },
+    global: { plugins: [i18n] }
+  })
+  const user = userEvent.setup()
+  const trigger = screen.getByRole('button', { name: 'Run strategy' })
+  await user.hover(trigger)
+  expect(await screen.findByRole('radio', { name: 'RTX 4090' })).toBeVisible()
+  await user.click(trigger)
+  expect(screen.getByRole('radio', { name: 'RTX 4090' })).toBeVisible()
+  await user.unhover(trigger)
+  expect(screen.getByRole('radio', { name: 'RTX 4090' })).toBeVisible()
+  await user.click(trigger)
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+})
+
+it('updates an open panel when the shared locale changes and falls back to English', async () => {
+  const fetcher = vi
+    .spyOn(api, 'fetchApi')
+    .mockResolvedValue(Response.json(strategies))
+  const locale = createI18n({
+    legacy: false,
+    locale: 'en',
+    fallbackLocale: 'en',
+    messages: { en, zh, ja: {} }
+  })
+  render(PrepaidRunStrategyPicker, {
+    props: { enabled: true },
+    global: { plugins: [locale] }
+  })
+  const user = userEvent.setup()
+  await user.hover(screen.getByRole('button', { name: 'Run strategy' }))
+  expect(
+    await screen.findByText('Provider reference: US$0.890/hour')
+  ).toBeVisible()
+  locale.global.locale.value = 'zh'
+  expect(await screen.findByRole('dialog', { name: '运行策略' })).toBeVisible()
+  expect(screen.getByText('供应商参考价：US$0.890/小时')).toBeVisible()
+  expect(screen.getByRole('link', { name: '查看余额与计费明细' })).toBeVisible()
+  locale.global.locale.value = 'ja'
+  expect(
+    await screen.findByRole('dialog', { name: 'Run strategy' })
+  ).toBeVisible()
+  expect(screen.getByText('Provider reference: US$0.890/hour')).toBeVisible()
+  expect(fetcher).toHaveBeenCalledOnce()
 })

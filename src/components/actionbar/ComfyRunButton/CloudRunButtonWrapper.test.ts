@@ -73,7 +73,17 @@ vi.mock<unknown>(
 )
 
 function renderWrapper() {
-  return render(CloudRunButtonWrapper)
+  return render(CloudRunButtonWrapper, {
+    global: {
+      plugins: [
+        createI18n({
+          legacy: false,
+          locale: 'en',
+          messages: { en: enMessages }
+        })
+      ]
+    }
+  })
 }
 
 function setCanManageSubscription(value: boolean) {

@@ -1,12 +1,12 @@
 <template>
+  <PrepaidRunStrategyPicker v-if="isPrepaid" enabled>
+    <ComfyQueueButton />
+  </PrepaidRunStrategyPicker>
   <ComfyQueueButton
-    v-if="
-      isPrepaid ||
-      !showsSubscribeToRunPrompt ||
-      paymentRecoveryLock ||
-      isSalesManagedPlan
+    v-else-if="
+      !showsSubscribeToRunPrompt || paymentRecoveryLock || isSalesManagedPlan
     "
-    :payment-recovery-lock="isPrepaid ? null : paymentRecoveryLock"
+    :payment-recovery-lock="paymentRecoveryLock"
     @payment-recovery-click="showPaymentRecoveryDialog"
   />
   <SubscribeToRunButton v-else />
@@ -16,6 +16,7 @@ import { useEventListener } from '@vueuse/core'
 import { computed, onUnmounted, ref } from 'vue'
 
 import ComfyQueueButton from '@/components/actionbar/ComfyRunButton/ComfyQueueButton.vue'
+import PrepaidRunStrategyPicker from './PrepaidRunStrategyPicker.vue'
 import { useBillingContext } from '@/composables/billing/useBillingContext'
 import { useErrorHandling } from '@/composables/useErrorHandling'
 import { useFeatureFlags } from '@/composables/useFeatureFlags'
