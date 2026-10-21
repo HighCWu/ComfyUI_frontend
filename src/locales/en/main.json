@@ -1,4 +1,8 @@
 {
+  "laimonOnboarding": {
+    "surveyTitle": "How will you use Laimon?",
+    "surveyIntro": "A few questions about your interests and experience."
+  },
   "prepaidRun": {
     "strategies": "Run strategy",
     "loading": "Loading rate reference…",

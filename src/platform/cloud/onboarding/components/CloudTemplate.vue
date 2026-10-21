@@ -10,7 +10,13 @@
         <div
           class="mx-auto flex min-h-full w-full max-w-md flex-col px-6 py-8 lg:max-w-lg xl:py-10 2xl:max-w-xl"
         >
+          <span
+            v-if="presentation.wordmark"
+            class="flex h-9 shrink-0 items-center font-inter text-2xl font-semibold lg:h-10 2xl:h-11"
+            >{{ presentation.wordmark }}</span
+          >
           <img
+            v-else
             src="/assets/images/comfy-logo-wordmark.svg"
             :alt="t('g.comfyOrgLogoAlt')"
             class="h-9 w-auto shrink-0 object-contain object-left lg:h-10 2xl:h-11"
@@ -38,10 +44,12 @@ import CloudHeroCarousel from '@/platform/cloud/onboarding/components/CloudHeroC
 import CloudTemplateFooter from '@/platform/cloud/onboarding/components/CloudTemplateFooter.vue'
 import CloudTermsNotice from '@/platform/cloud/onboarding/components/CloudTermsNotice.vue'
 import { useDocumentDarkTheme } from '@/platform/cloud/onboarding/composables/useDocumentDarkTheme'
+import { getOnboardingPresentation } from '@/platform/cloud/onboarding/onboardingPresentation'
 
 import '../assets/css/fonts.css'
 
 const { t } = useI18n()
+const presentation = getOnboardingPresentation()
 const route = useRoute()
 useDocumentDarkTheme()
 const isWideViewport = useBreakpoints(breakpointsTailwind).greaterOrEqual('xl')

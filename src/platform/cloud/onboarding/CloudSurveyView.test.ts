@@ -60,7 +60,7 @@ const SurveyFormStub = defineComponent({
   }
 })
 
-async function renderView() {
+async function renderView(realForm = false) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -84,7 +84,7 @@ async function renderView() {
         }),
         router
       ],
-      stubs: { DynamicSurveyForm: SurveyFormStub }
+      stubs: realForm ? {} : { DynamicSurveyForm: SurveyFormStub }
     }
   })
   return { router, ...result }
@@ -104,6 +104,22 @@ describe('CloudSurveyView', () => {
     vi.mocked(useTelemetry).mockReturnValue(
       fromPartial({ trackSurvey: mocks.trackSurvey })
     )
+  })
+
+  it('shows Laimon copy without promising personalized setup in prepaid mode', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    await renderView(true)
+    expect(
+      screen.getByRole('heading', { name: 'How will you use Laimon?' })
+    ).toBeVisible()
+    expect(
+      screen.getByText('A few questions about your interests and experience.')
+    ).toBeVisible()
+    expect(
+      screen.queryByText(
+        'A few quick questions so we can set up ComfyUI for you.'
+      )
+    ).not.toBeInTheDocument()
   })
 
   it('tracks and advances after storing a first survey', async () => {

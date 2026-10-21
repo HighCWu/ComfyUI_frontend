@@ -6,7 +6,7 @@
       {{ t('auth.login.termsText') }}
       <br />
       <a
-        href="https://comfy.org/terms-of-service/"
+        :href="presentation.terms"
         target="_blank"
         rel="noopener noreferrer"
         class="text-primary-comfy-canvas underline"
@@ -15,7 +15,7 @@
       </a>
       {{ t('auth.login.andText') }}
       <a
-        href="https://comfy.org/privacy-policy/"
+        :href="presentation.privacy"
         target="_blank"
         rel="noopener noreferrer"
         class="text-primary-comfy-canvas underline"
@@ -26,7 +26,7 @@
     <p class="my-4 text-xs/relaxed">
       {{ t('cloudWaitlist_questionsText') }}
       <a
-        href="https://support.comfy.org"
+        :href="presentation.support"
         target="_blank"
         rel="noopener noreferrer"
         class="text-primary-comfy-canvas underline"
@@ -40,5 +40,8 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 
+import { getOnboardingPresentation } from '@/platform/cloud/onboarding/onboardingPresentation'
+
 const { t } = useI18n()
+const presentation = getOnboardingPresentation()
 </script>
