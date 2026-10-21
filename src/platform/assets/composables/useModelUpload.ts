@@ -31,6 +31,12 @@ export function useModelUpload(
   }
 
   function showUploadDialog() {
+    if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid') {
+      if (flags.modelUploadButtonEnabled) {
+        window.open('/models/upload', '_blank', 'noopener,noreferrer')
+      }
+      return
+    }
     if (!flags.privateModelsEnabled) {
       dialogStore.showDialog({
         key: 'upload-model-upgrade',
