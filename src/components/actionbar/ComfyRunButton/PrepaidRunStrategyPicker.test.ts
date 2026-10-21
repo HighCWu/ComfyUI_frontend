@@ -1,6 +1,6 @@
 import userEvent from '@testing-library/user-event'
 import { render, screen, waitFor } from '@testing-library/vue'
-import { expect, it, vi } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
 
 import { api } from '@/scripts/api'
@@ -71,6 +71,28 @@ it('supports explicit keyboard opening and Escape without running a task', async
   await user.keyboard('{Escape}')
   await waitFor(() => expect(screen.queryByRole('radio')).toBeNull())
   expect(screen.getByRole('button', { name: 'Run strategy' })).toHaveFocus()
+})
+
+it('dismisses from the focused trigger before native Escape bindings and preserves them while closed', async () => {
+  vi.spyOn(api, 'fetchApi').mockResolvedValue(Response.json(strategies))
+  const nativeEscape = vi.fn((event: KeyboardEvent) => event.preventDefault())
+  window.addEventListener('keydown', nativeEscape)
+  onTestFinished(() => window.removeEventListener('keydown', nativeEscape))
+  render(PrepaidRunStrategyPicker, {
+    props: { enabled: true },
+    global: { plugins: [i18n] }
+  })
+  const user = userEvent.setup()
+  const trigger = screen.getByRole('button', { name: 'Run strategy' })
+  await user.click(trigger)
+  expect(await screen.findByRole('radio', { name: 'RTX 4090' })).toBeVisible()
+  expect(trigger).toHaveFocus()
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(trigger).toHaveFocus()
+  expect(nativeEscape).not.toHaveBeenCalled()
+  await user.keyboard('{Escape}')
+  expect(nativeEscape).toHaveBeenCalledOnce()
 })
 
 it('keeps the Run control available when the read-only reference fails', async () => {

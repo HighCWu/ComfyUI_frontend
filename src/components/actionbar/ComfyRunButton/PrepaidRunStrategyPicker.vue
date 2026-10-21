@@ -62,6 +62,12 @@ function pinHoveredPanel(event: MouseEvent) {
   restoreFocus = true
   mode.value = 'explicit'
 }
+function dismissOnEscape(event: KeyboardEvent) {
+  if (!open.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  open.value = false
+}
 
 onMounted(async () => {
   if (!enabled) return
@@ -97,6 +103,7 @@ onUnmounted(() => controller.abort())
         class="flex items-center gap-1"
         @pointerenter="hover"
         @pointerleave="scheduleClose()"
+        @keydown.esc="dismissOnEscape"
       >
         <slot />
         <PopoverTrigger v-if="enabled" as-child>
