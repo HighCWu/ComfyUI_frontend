@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
 import { useAppMode } from '@/composables/useAppMode'
+import { useToast } from '@/components/ui/toast/toastStore'
 import { useTelemetry } from '@/platform/telemetry'
 import { app } from '@/scripts/app'
 import { api } from '@/scripts/api'
@@ -2664,6 +2665,19 @@ describe('useExecutionStore - WebSocket event handlers', () => {
   })
 
   describe('notification', () => {
+    it('shows the server budget warning without cancelling locally or changing initialization state', () => {
+      fire('notification', {
+        id: 'budget-job',
+        value: 'LAIMON_PREPAID_BUDGET_LOW'
+      })
+      expect(useToast().toasts).toEqual([
+        expect.objectContaining({
+          kind: 'warning',
+          title: expect.stringContaining('credit')
+        })
+      ])
+      expect(store.initializingJobIds.has('budget-job')).toBe(false)
+    })
     it('marks a job as initializing when text indicates waiting for a machine', () => {
       fire('notification', {
         id: 'job-9',

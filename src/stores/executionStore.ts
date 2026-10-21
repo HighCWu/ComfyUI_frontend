@@ -1,4 +1,6 @@
 import { createEventHook } from '@vueuse/core'
+import { useToast } from '@/components/ui/toast/toastStore'
+import { t } from '@/i18n'
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef, watch } from 'vue'
 
@@ -839,16 +841,15 @@ export const useExecutionStore = defineStore('execution', () => {
     return true
   }
 
-  /**
-   * Notification handler used for frontend/cloud initialization tracking.
-   * Marks a job as initializing when cloud notifies it is waiting for a machine.
-   */
   function handleNotification(e: CustomEvent<NotificationWsMessage>) {
     const payload = e.detail
     const text = payload.value || ''
     const id = payload.id ? payload.id : ''
     if (!id) return
-    // Until cloud implements a proper message
+    if (text === 'LAIMON_PREPAID_BUDGET_LOW') {
+      useToast().warning(t('prepaidRun.lowBudget'))
+      return
+    }
     if (text.includes('Waiting for a machine')) {
       const next = new Set(initializingJobIds.value)
       next.add(id)

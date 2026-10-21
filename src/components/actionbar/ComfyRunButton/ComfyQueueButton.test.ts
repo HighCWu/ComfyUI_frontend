@@ -21,6 +21,7 @@ import { useQueueSettingsStore } from '@/stores/queueSettingsStore'
 import { TaskItemImpl, useQueueStore } from '@/stores/queueStore'
 
 import ComfyQueueButton from './ComfyQueueButton.vue'
+import { api } from '@/scripts/api'
 vi.mock(import('firebase/auth'))
 
 vi.mock(import('@/platform/distribution/types'), () => ({
@@ -152,6 +153,23 @@ function renderQueueButton(
 
   return { ...result, user }
 }
+
+it('runs immediately in prepaid mode without waiting for the strategy reference', async () => {
+  vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+  vi.spyOn(api, 'fetchApi').mockReturnValue(new Promise(() => {}))
+  const { user } = renderQueueButton()
+  await user.click(screen.getByTestId('queue-button'))
+  expect(useCommandStore().execute).toHaveBeenCalledExactlyOnceWith(
+    'Comfy.QueuePrompt',
+    {
+      metadata: { subscribe_to_run: false, trigger_source: 'button' }
+    }
+  )
+  expect(api.fetchApi).toHaveBeenCalledExactlyOnceWith(
+    '/run-strategies',
+    expect.any(Object)
+  )
+})
 
 describe('ComfyQueueButton', () => {
   it('renders the batch count control before the run button', () => {

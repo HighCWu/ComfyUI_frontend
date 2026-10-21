@@ -1,59 +1,76 @@
 <template>
-  <ButtonGroup
-    class="queue-button-group h-8 rounded-lg bg-secondary-background"
-  >
-    <BatchCountEdit />
-    <Button
-      :tooltip="queueButtonTooltip"
-      tooltip-side="bottom"
-      :variant="queueButtonVariant"
-      size="unset"
-      :class="
-        cn(
-          'h-full gap-1.5 rounded-l-lg rounded-r-none px-4',
-          paymentRecoveryLock ? 'font-medium' : 'font-light'
-        )
-      "
-      data-testid="queue-button"
-      @click="queuePrompt"
+  <PrepaidRunStrategyPicker v-slot="{ selectedName }" :enabled="isPrepaid">
+    <ButtonGroup
+      class="queue-button-group h-8 rounded-lg bg-secondary-background"
     >
-      <i :class="cn(iconClass, 'size-4')" data-testid="queue-button-icon" />
-      {{ queueButtonLabel }}
-    </Button>
+      <BatchCountEdit />
+      <Button
+        :tooltip="isPrepaid ? undefined : queueButtonTooltip"
+        tooltip-side="bottom"
+        :variant="queueButtonVariant"
+        size="unset"
+        :class="
+          cn(
+            'h-full gap-1.5 rounded-l-lg rounded-r-none px-4',
+            paymentRecoveryLock ? 'font-medium' : 'font-light'
+          )
+        "
+        data-testid="queue-button"
+        @click="queuePrompt"
+      >
+        <i :class="cn(iconClass, 'size-4')" data-testid="queue-button-icon" />
+        {{ queueButtonLabel }}
+        <span v-if="isPrepaid && selectedName" class="text-xs opacity-80">{{
+          selectedName
+        }}</span>
+      </Button>
 
-    <Menu side="bottom" :side-offset="4" class="min-w-44">
-      <template #trigger>
+      <PopoverTrigger v-if="isPrepaid" as-child>
         <Button
           :variant="queueMenuTriggerVariant"
           size="unset"
-          :disabled="Boolean(paymentRecoveryLock)"
-          :class="
-            cn(
-              queueMenuTriggerClass,
-              queueMenuTriggerVariantClass[queueMenuTriggerVariant]
-            )
-          "
-          :aria-label="t('menu.runOptions')"
-          data-testid="queue-mode-menu-trigger"
+          :class="queueMenuTriggerClass"
+          :aria-label="t('prepaidRun.strategies')"
         >
           <TinyChevronIcon />
         </Button>
-      </template>
-      <MenuRadioGroup
-        :model-value="selectedQueueMode"
-        :options="queueModeMenuItems"
-        @select.prevent
-      />
-    </Menu>
-  </ButtonGroup>
+      </PopoverTrigger>
+      <Menu v-else side="bottom" :side-offset="4" class="min-w-44">
+        <template #trigger>
+          <Button
+            :variant="queueMenuTriggerVariant"
+            size="unset"
+            :disabled="Boolean(paymentRecoveryLock)"
+            :class="
+              cn(
+                queueMenuTriggerClass,
+                queueMenuTriggerVariantClass[queueMenuTriggerVariant]
+              )
+            "
+            :aria-label="t('menu.runOptions')"
+            data-testid="queue-mode-menu-trigger"
+          >
+            <TinyChevronIcon />
+          </Button>
+        </template>
+        <MenuRadioGroup
+          :model-value="selectedQueueMode"
+          :options="queueModeMenuItems"
+          @select.prevent
+        />
+      </Menu>
+    </ButtonGroup>
+  </PrepaidRunStrategyPicker>
 </template>
 
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
+import { PopoverTrigger } from 'reka-ui'
 import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import BatchCountEdit from '@/components/actionbar/BatchCountEdit.vue'
+import PrepaidRunStrategyPicker from './PrepaidRunStrategyPicker.vue'
 import TinyChevronIcon from '@/components/actionbar/TinyChevronIcon.vue'
 import Button from '@/components/ui/button/Button.vue'
 import ButtonGroup from '@/components/ui/button-group/ButtonGroup.vue'
@@ -72,6 +89,7 @@ import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { cn } from '@comfyorg/tailwind-utils'
 
 const workspaceStore = useWorkspaceStore()
+const isPrepaid = import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
 const { mode: queueMode, batchCount } = storeToRefs(useQueueSettingsStore())
 const { hasMissingError } = storeToRefs(useExecutionErrorStore())
 

@@ -42,6 +42,7 @@ import {
 import { scopeMediaRoute } from '@/platform/auth/session/sessionMediaUrl'
 import { webSessionRequests } from '@/platform/auth/session/webSessionFetch'
 import { FETCH_RESPONSE_HEADERS_TIMEOUT_MS } from '@/scripts/apiTimeouts'
+import { selectedPrepaidRunStrategy } from '@/scripts/prepaidRunStrategy'
 import { getDevOverride } from '@/utils/devFeatureFlagOverride'
 import { getSessionOverride } from '@/utils/sessionFeatureFlagOverride'
 import type {
@@ -1414,7 +1415,10 @@ export class ComfyApi extends EventTarget {
     const res = await this.fetchApi('/prompt', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...(import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid' && {
+          'X-Laimon-Run-Strategy': selectedPrepaidRunStrategy.value
+        })
       },
       body: JSON.stringify(body)
     })

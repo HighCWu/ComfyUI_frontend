@@ -1,4 +1,14 @@
 {
+  "prepaidRun": {
+    "strategies": "Run strategy",
+    "loading": "Loading rate reference…",
+    "unavailable": "Rate reference unavailable. Run uses the default RTX 4090 strategy; the server rechecks availability.",
+    "rate": "Provider reference: US${amount}/hour",
+    "coverage": "Cost-coverage hold: up to {percent}%",
+    "policy": "GPU use is billed at the assigned machine's actual rate. Model storage and operating costs follow the published sharing rules. This is not a total-price quote. Credits are reserved automatically; unused credits are returned. A low-credit warning precedes interruption at the run's prepaid limit.",
+    "details": "Balance and billing details",
+    "lowBudget": "This run's available credits are nearly exhausted. It will be interrupted at the prepaid limit; usage already incurred will still be charged."
+  },
   "dynamicGroup": {
     "add": "Add {group}",
     "remove": "Remove {row}",
