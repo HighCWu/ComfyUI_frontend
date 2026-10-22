@@ -1,7 +1,16 @@
 import { useCommandStore } from '@/stores/commandStore'
+import { useToast } from '@/components/ui/toast/toastStore'
 import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
 import { useSettingStore } from '@/platform/settings/settingStore'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi
+} from 'vitest'
 import { createApp, defineComponent, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
 
@@ -109,6 +118,7 @@ const mocks = vi.hoisted(() => {
   const apiMock = {
     clientId: 'test-client',
     initialClientId: 'test-client',
+    fetchApi: vi.fn(),
     addEventListener: vi.fn((event: string, handler: () => void) => {
       if (event === 'graphChanged') {
         state.graphChangedHandler = handler
@@ -263,6 +273,69 @@ describe('useWorkflowPersistenceV2', () => {
 
       expect(resetSpy).toHaveBeenCalledOnce()
     })
+  })
+  it('keeps an explicit saved selection active instead of restoring an older tab', async () => {
+    const previousName = window.name
+    window.name = 'eds_saved_selection'
+    onTestFinished(() => {
+      window.name = previousName
+    })
+    const store = useWorkflowStore()
+    const older = store.createTemporary('Older.json')
+    const selected = store.createTemporary('Selected.json')
+    writeTabState([older.path], 0)
+    vi.spyOn(store, 'syncWorkflows').mockResolvedValue(undefined)
+    mocks.apiMock.fetchApi.mockResolvedValue(
+      Response.json({
+        launch: {
+          label: 'Selected.json',
+          saved_workflow: { path: selected.path }
+        }
+      })
+    )
+    openWorkflowMock.mockResolvedValue(true)
+    const persistence = mountWorkflowPersistence()
+    expect(await persistence.initializeWorkflow()).toBe('restored')
+    await persistence.restoreWorkflowTabsState()
+    expect(openWorkflowMock).toHaveBeenCalledExactlyOnceWith(selected, {
+      force: true
+    })
+  })
+  it('leaves a refused selection blank without restoring another saved tab', async () => {
+    const previousName = window.name
+    window.name = 'eds_stale_selection'
+    onTestFinished(() => {
+      window.name = previousName
+    })
+    const older = useWorkflowStore().createTemporary('Older.json')
+    writeTabState([older.path], 0)
+    mocks.apiMock.fetchApi.mockResolvedValue(
+      new Response(null, { status: 409 })
+    )
+    const persistence = mountWorkflowPersistence()
+    expect(await persistence.initializeWorkflow()).toBe('restored')
+    await persistence.restoreWorkflowTabsState()
+    expect(loadBlankWorkflowMock).toHaveBeenCalledOnce()
+    expect(openWorkflowMock).not.toHaveBeenCalled()
+    expect(useToast().toasts.map((toast) => toast.title)).toContain(
+      'loadWorkflowWarning.editorLaunchFailed'
+    )
+  })
+  it('still restores saved tabs for an ordinary editor session with no explicit selection', async () => {
+    const previousName = window.name
+    window.name = 'eds_unselected'
+    onTestFinished(() => {
+      window.name = previousName
+    })
+    const store = useWorkflowStore()
+    const previous = store.createTemporary('Previous.json')
+    writeTabState([previous.path], 0)
+    vi.spyOn(store, 'loadWorkflows').mockResolvedValue(undefined)
+    mocks.apiMock.fetchApi.mockResolvedValue(Response.json({ launch: null }))
+    const persistence = mountWorkflowPersistence()
+    await persistence.initializeWorkflow()
+    await persistence.restoreWorkflowTabsState()
+    expect(openWorkflowMock).toHaveBeenCalledExactlyOnceWith(previous)
   })
 
   describe('loadPreviousWorkflowFromStorage', () => {

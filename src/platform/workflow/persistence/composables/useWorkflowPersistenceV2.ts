@@ -53,6 +53,7 @@ export function useWorkflowPersistenceV2() {
   const sharedWorkflowUrlLoader = useSharedWorkflowUrlLoader()
   const templateUrlLoader = useTemplateUrlLoader()
   const editorLaunchWorkflow = useEditorLaunchWorkflow()
+  let editorLaunchState: 'not-present' | 'loaded' | 'failed' = 'not-present'
   const TEMPLATE_NAMESPACE = PRESERVED_QUERY_NAMESPACES.TEMPLATE
   const SHARE_NAMESPACE = PRESERVED_QUERY_NAMESPACES.SHARE
   const draftStore = useWorkflowDraftStoreV2()
@@ -258,15 +259,19 @@ export function useWorkflowPersistenceV2() {
   }
 
   const initializeWorkflow = async (): Promise<StartupOutcome> => {
-    if (await editorLaunchWorkflow.loadEditorLaunchWorkflow()) return 'restored'
+    editorLaunchState = await editorLaunchWorkflow.loadEditorLaunchWorkflow()
+    if (editorLaunchState === 'loaded') return 'restored'
+    if (editorLaunchState === 'failed') {
+      toast.error(t('loadWorkflowWarning.editorLaunchFailed'))
+      await useWorkflowService().loadBlankWorkflow()
+      return 'restored'
+    }
     if (!workflowPersistenceEnabled.value) {
       return await resolveStartupOutcome()
     }
 
     try {
       if (getRestorableTabState()) {
-        // GraphCanvas calls restoreWorkflowTabsState next; skip the single-workflow
-        // fallback here so the saved tab order and active index drive startup.
         return 'restored'
       }
 
@@ -280,6 +285,7 @@ export function useWorkflowPersistenceV2() {
   }
 
   const loadTemplateFromUrlIfPresent = async () => {
+    if (editorLaunchState !== 'not-present') return undefined
     const query = await ensureTemplateQueryFromIntent()
     const hasTemplateUrl = query.template && typeof query.template === 'string'
 
@@ -289,6 +295,7 @@ export function useWorkflowPersistenceV2() {
   }
 
   const loadSharedWorkflowFromUrlIfPresent = async () => {
+    if (editorLaunchState !== 'not-present') return 'not-present' as const
     return await sharedWorkflowUrlLoader.loadSharedWorkflowFromUrl()
   }
 
@@ -356,6 +363,15 @@ export function useWorkflowPersistenceV2() {
    * GraphCanvas must call this during startup when workflow persistence is enabled.
    */
   const restoreWorkflowTabsState = async () => {
+    if (editorLaunchState !== 'not-present') {
+      tabStateRestored = editorLaunchState === 'loaded'
+      if (tabStateRestored)
+        tabState.setOpenPaths(
+          restoreState.value.paths,
+          restoreState.value.activeIndex
+        )
+      return
+    }
     if (!workflowPersistenceEnabled.value) {
       tabStateRestored = true
       return
@@ -402,7 +418,6 @@ export function useWorkflowPersistenceV2() {
 
     tabStateRestored = true
 
-    // Activate the correct workflow at storedActiveIndex
     const activePath = storedWorkflows[storedActiveIndex]
     const workflow = activePath
       ? workflowStore.getWorkflowByPath(activePath)

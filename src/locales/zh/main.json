@@ -2905,6 +2905,7 @@
     }
   },
   "loadWorkflowWarning": {
+    "editorLaunchFailed": "无法打开所选工作流。请返回工作台，刷新列表后重新打开。",
     "coreNodesFromVersion": "核心节点来源于 {version} 版本。",
     "newerVersionRequired": "部分节点需要更新版本的 ComfyUI（当前版本：{version}）。请更新以使用所有节点。",
     "newerVersionRequiredGeneric": "部分节点需要更新版本的 ComfyUI。请更新以使用所有节点。",

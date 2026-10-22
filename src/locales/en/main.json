@@ -2236,6 +2236,7 @@
     "dismiss": "Dismiss"
   },
   "loadWorkflowWarning": {
+    "editorLaunchFailed": "Could not open the selected workflow. Return to the studio, refresh the list and open it again.",
     "newerVersionRequired": "Some nodes require a newer version of ComfyUI (current: {version}). Please update to use all nodes.",
     "newerVersionRequiredGeneric": "Some nodes require a newer version of ComfyUI. Please update to use all nodes.",
     "coreNodesFromVersion": "Core nodes from version {version}:",
