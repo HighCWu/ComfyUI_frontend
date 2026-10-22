@@ -4,14 +4,12 @@ import { fromPartial } from '@total-typescript/shoehorn'
 import type { ComfyApi } from '@/scripts/api'
 import type { ComfyApp } from '@/scripts/app'
 import type { useWorkflowService } from '@/platform/workflow/core/services/workflowService'
-import {
-  ComfyWorkflow,
-  useWorkflowStore
-} from '@/platform/workflow/management/stores/workflowStore'
+import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
 import { reportError } from '@/platform/telemetry/reportError'
 
 const mocks = vi.hoisted(() => ({
   fetchApi: vi.fn(),
+  listUserDataFullInfo: vi.fn<ComfyApi['listUserDataFullInfo']>(),
   isApiJson: vi.fn(),
   loadApiJson: vi.fn(),
   loadGraphData: vi.fn(),
@@ -29,7 +27,10 @@ vi.mock(import('@/platform/telemetry/reportError'), () => ({
 }))
 
 vi.mock(import('@/scripts/api'), () => ({
-  api: fromPartial<ComfyApi>({ fetchApi: mocks.fetchApi })
+  api: fromPartial<ComfyApi>({
+    fetchApi: mocks.fetchApi,
+    listUserDataFullInfo: mocks.listUserDataFullInfo
+  })
 }))
 
 vi.mock(import('@/scripts/app'), () => ({
@@ -128,23 +129,24 @@ describe('useEditorLaunchWorkflow', () => {
   })
   it('opens the saved file through the native workflow service without importing a temporary copy', async () => {
     window.name = 'eds_saved'
-    const file = new ComfyWorkflow({
-      path: 'workflows/folder/saved.json',
-      modified: 1,
-      size: 10
-    })
     const store = useWorkflowStore()
-    vi.spyOn(store, 'syncWorkflows').mockResolvedValue(undefined)
-    vi.spyOn(store, 'getWorkflowByPath').mockReturnValue(file)
+    mocks.listUserDataFullInfo.mockResolvedValue([
+      { path: 'folder/saved.json', modified: 1, size: 10 }
+    ])
     mocks.openWorkflow.mockResolvedValue(true)
     mocks.fetchApi.mockResolvedValue(
       Response.json({
-        launch: { label: 'saved.json', saved_workflow: { path: file.path } }
+        launch: {
+          label: 'saved.json',
+          saved_workflow: { path: 'workflows/folder/saved.json' }
+        }
       })
     )
     expect(await useEditorLaunchWorkflow().loadEditorLaunchWorkflow()).toBe(
       'loaded'
     )
+    const file = store.getWorkflowByPath('workflows/folder/saved.json')
+    expect(file?.path).toBe('workflows/folder/saved.json')
     expect(mocks.openWorkflow).toHaveBeenCalledWith(file, { force: true })
     expect(mocks.loadGraphData).not.toHaveBeenCalled()
     expect(mocks.loadApiJson).not.toHaveBeenCalled()
