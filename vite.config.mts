@@ -117,10 +117,9 @@ const NON_CRITICAL_LITEGRAPH_COVERAGE_EXCLUDE = [
 
 // Open Graph / Twitter Meta Tags Constants
 const VITE_OG_URL = 'https://cloud.comfy.org'
-const VITE_OG_TITLE =
-  'Comfy Cloud: Run ComfyUI online | Zero Setup, Powerful GPUs, Create anywhere'
+const VITE_OG_TITLE = 'ComfyUI Editor · DomonAI'
 const VITE_OG_DESC =
-  'Bring your creative ideas to life with Comfy Cloud. Build and run your workflows to generate stunning images and videos instantly using powerful GPUs — all from your browser, no installation required.'
+  'Build, edit and run ComfyUI workflows in a browser-based node editor — no installation required.'
 const VITE_OG_IMAGE = `${VITE_OG_URL}/assets/images/og-image.png`
 const VITE_OG_KEYWORDS = 'ComfyUI, Comfy Cloud, ComfyUI online'
 
@@ -562,7 +561,7 @@ export default defineConfig({
             },
             {
               tag: 'meta',
-              attrs: { property: 'og:site_name', content: 'Comfy Cloud' },
+              attrs: { property: 'og:site_name', content: 'DomonAI' },
               injectTo: 'head'
             },
             {
