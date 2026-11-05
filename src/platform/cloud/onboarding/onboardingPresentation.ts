@@ -1,7 +1,7 @@
 export function getOnboardingPresentation() {
   const prepaid = import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid'
   return {
-    wordmark: prepaid ? 'Laimon' : null,
+    wordmark: prepaid ? 'DomonAI' : null,
     terms: prepaid ? '/terms' : 'https://comfy.org/terms-of-service/',
     privacy: prepaid ? '/privacy' : 'https://comfy.org/privacy-policy/',
     support: prepaid ? '/support' : 'https://support.comfy.org',

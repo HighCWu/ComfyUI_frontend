@@ -106,11 +106,11 @@ describe('CloudSurveyView', () => {
     )
   })
 
-  it('shows Laimon copy without promising personalized setup in prepaid mode', async () => {
+  it('shows first-party copy without promising personalized setup in prepaid mode', async () => {
     vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
     await renderView(true)
     expect(
-      screen.getByRole('heading', { name: 'How will you use Laimon?' })
+      screen.getByRole('heading', { name: 'How will you use DomonAI?' })
     ).toBeVisible()
     expect(
       screen.getByText('A few questions about your interests and experience.')
