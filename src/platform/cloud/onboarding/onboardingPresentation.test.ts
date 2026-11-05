@@ -35,7 +35,7 @@ async function renderOnboarding(showTermsNotice = false, locale = 'en') {
 it.for([
   {
     mode: 'prepaid',
-    wordmark: 'Laimon',
+    wordmark: 'DomonAI',
     links: ['/terms', '/privacy', '/support']
   },
   {
@@ -52,7 +52,7 @@ it.for([
   async ({ mode, wordmark, links }) => {
     vi.stubEnv('VITE_RUN_BILLING_MODE', mode)
     await renderOnboarding()
-    expect(screen.queryByText('Laimon')?.textContent ?? null).toBe(wordmark)
+    expect(screen.queryByText('DomonAI')?.textContent ?? null).toBe(wordmark)
     expect(screen.queryByRole('img', { name: 'ComfyOrg Logo' }) !== null).toBe(
       wordmark === null
     )
