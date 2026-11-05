@@ -13,7 +13,7 @@ interface AgentIdentityDeps {
   onFailure(error: unknown): void
 }
 
-export type AgentIdentityState =
+type AgentIdentityState =
   | { status: 'pending' }
   | { status: 'resolved'; userId: string }
   | { status: 'rejected' }

@@ -107,7 +107,14 @@ const config: KnipConfig = {
     config: ['playwright?(.*).config.ts'],
     entry: ['browser_tests/**/*.@(spec|test).?(c|m)[jt]s?(x)']
   },
-  tags: ['-knipIgnoreUnusedButUsedByCustomNodes', '-knipIgnoreUsedByStackedPR']
+  tags: [
+    '-knipIgnoreUnusedButUsedByCustomNodes',
+    '-knipIgnoreUsedByStackedPR',
+    // Consumed by the host repository's API tests/tooling through direct
+    // source aliases and source-reading contract checks, which knip cannot
+    // see from this workspace alone.
+    '-knipIgnoreUsedByParentApi'
+  ]
 }
 
 export default config

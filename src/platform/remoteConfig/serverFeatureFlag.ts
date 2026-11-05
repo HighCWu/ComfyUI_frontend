@@ -31,7 +31,19 @@ export enum ServerFeatureFlag {
   BILLING_SDK_TOPUP_ENABLED = 'billing_sdk_topup_enabled',
   BILLING_SDK_SUBSCRIPTION_ENABLED = 'billing_sdk_subscription_enabled',
   V1_PAYMENT_RECOVERY = 'v1_payment_recovery',
+  /**
+   * The host repository's feature-surface contract snapshot requires this
+   * member to exist even though no frontend code reads the flag yet
+   * (the Worker publishes it explicitly disabled).
+   * @knipIgnoreUsedByParentApi
+   */
   UNIFIED_BILLING_SETTINGS = 'unified_billing_settings',
+  /**
+   * The host repository's feature-surface contract snapshot requires this
+   * member to exist even though no frontend code reads the flag yet
+   * (the Worker publishes it explicitly disabled).
+   * @knipIgnoreUsedByParentApi
+   */
   AUTO_TOP_UP_ENABLED = 'auto_top_up_enabled',
   FREE_TIER_JOB_ALLOWANCE_ENABLED = 'free_tier_job_allowance_enabled',
   SIGNUP_TURNSTILE = 'signup_turnstile',

@@ -36,7 +36,7 @@ const zAssetResponse = zListAssetsResponse
     assets: z.array(zAsset)
   })
 
-export const modelFolderInfoSchema = zGetModelFoldersResponse.element.extend({
+const modelFolderInfoSchema = zGetModelFoldersResponse.element.extend({
   extensions: z.array(z.string()).optional()
 })
 export const modelFolderInfosSchema = z.array(modelFolderInfoSchema)

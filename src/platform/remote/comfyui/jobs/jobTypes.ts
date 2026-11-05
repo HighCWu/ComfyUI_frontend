@@ -12,6 +12,12 @@ import { z } from 'zod'
 import { resultItemType } from '@/schemas/resultItemTypeSchema'
 import { zTaskOutput } from '@/platform/remote/comfyui/execution/types'
 
+/**
+ * The host repository's API integration tests import this module through the
+ * `#frontend-job-types` alias and call `zJobCancelResponse.parse` at runtime;
+ * nothing in this workspace consumes the re-export.
+ * @knipIgnoreUsedByParentApi
+ */
 export { zJobCancelResponse }
 
 const zJobStatus = z.enum([
