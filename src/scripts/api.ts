@@ -43,6 +43,7 @@ import { scopeMediaRoute } from '@/platform/auth/session/sessionMediaUrl'
 import { webSessionRequests } from '@/platform/auth/session/webSessionFetch'
 import { FETCH_RESPONSE_HEADERS_TIMEOUT_MS } from '@/scripts/apiTimeouts'
 import { selectedPrepaidRunStrategy } from '@/scripts/prepaidRunStrategy'
+import { adoptSocketSessionScope } from '@/scripts/socketSessionScope'
 import { getDevOverride } from '@/utils/devFeatureFlagOverride'
 import { getSessionOverride } from '@/utils/sessionFeatureFlagOverride'
 import type {
@@ -988,26 +989,24 @@ export class ComfyApi extends EventTarget {
     }, 1000)
   }
 
-  /** False when the web session is on and no one is signed in to open it. */
-  private async addSocketAuth(params: URLSearchParams): Promise<boolean> {
+  private async addSocketAuth(
+    params: URLSearchParams
+  ): Promise<{ allowed: boolean; socketScope?: string }> {
     const requests = webSessionRequests()
     const sessionScope = requests && (await requests.scope())
     if (sessionScope?.workspaceId) {
       params.set('workspace_id', sessionScope.workspaceId)
     }
-    if (sessionScope) return true
+    if (sessionScope)
+      return { allowed: true, socketScope: sessionScope.session.socketScope }
 
     const authToken = await this.authProvider.getAuthToken()
     if (authToken) {
       params.set('token', authToken)
     }
-    return !requests || params.has('token')
+    return { allowed: !requests || params.has('token') }
   }
 
-  /**
-   * Creates and connects a WebSocket for realtime updates
-   * @param {boolean} isReconnect If the socket is connection is a reconnect attempt
-   */
   private async createSocket(isReconnect?: boolean) {
     if (this.socket) {
       return
@@ -1015,33 +1014,24 @@ export class ComfyApi extends EventTarget {
     const generation = ++this.socketGeneration
 
     let opened = false
-    const existingSession = window.name
-
-    // Build WebSocket URL with query parameters
     const params = new URLSearchParams()
-
-    if (existingSession) {
-      params.set('clientId', existingSession)
+    const auth = isCloud ? await this.addSocketAuth(params) : { allowed: true }
+    if (!auth.allowed || generation !== this.socketGeneration) return
+    if (adoptSocketSessionScope(auth.socketScope, sessionStorage)) {
+      this.clearSocketIdentity()
     }
-
-    if (isCloud && !(await this.addSocketAuth(params))) return
+    if (window.name) params.set('clientId', window.name)
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const baseUrl = `${protocol}://${this.api_host}${this.api_base}/ws`
     const query = params.toString()
     const wsUrl = query ? `${baseUrl}?${query}` : baseUrl
 
-    // A newer connect attempt (an identity reset, or a later reconnect) began
-    // while this one awaited its token. Abandon this attempt so only the latest
-    // generation owns this.socket and no superseded socket is opened.
-    if (generation !== this.socketGeneration) return
-
     const socket = new WebSocket(wsUrl)
     this.socket = socket
     this.serverFeatureFlagsSettled.value = false
     socket.binaryType = 'arraybuffer'
 
-    // Armed before `open` so a socket that never opens still settles.
     const settleTimer = setTimeout(() => {
       if (this.socket === socket && !this.serverFeatureFlagsSettled.value) {
         this.serverFeatureFlagsSettled.value = true
@@ -1051,7 +1041,6 @@ export class ComfyApi extends EventTarget {
     socket.addEventListener('open', () => {
       opened = true
 
-      // Send feature flags as the first message
       socket.send(
         JSON.stringify({
           type: 'feature_flags',
@@ -1065,9 +1054,6 @@ export class ComfyApi extends EventTarget {
     })
 
     socket.addEventListener('error', () => {
-      // A replaced socket (e.g. after resetSocket on an account switch) is
-      // already being torn down; ignore its late errors so it cannot start an
-      // unnecessary permanent polling loop for the previous identity.
       if (this.socket !== socket) return
       socket.close()
       if (!isReconnect && !opened) {
@@ -1076,8 +1062,6 @@ export class ComfyApi extends EventTarget {
     })
 
     socket.addEventListener('close', () => {
-      // A replaced socket (e.g. after resetSocket on an account switch) must
-      // not reconnect; only the active socket owns the reconnect lifecycle.
       if (this.socket !== socket) return
       this.serverFeatureFlagsSettled.value = true
       clearTimeout(settleTimer)
@@ -1093,8 +1077,6 @@ export class ComfyApi extends EventTarget {
     })
 
     socket.addEventListener('message', (event) => {
-      // Ignore late messages from a replaced socket so previous-account
-      // realtime data is not dispatched after an identity switch.
       if (this.socket !== socket) return
       try {
         if (event.data instanceof ArrayBuffer) {
@@ -1151,7 +1133,6 @@ export class ComfyApi extends EventTarget {
               break
             }
             case 4: {
-              // PREVIEW_IMAGE_WITH_METADATA
               const decoder4 = new TextDecoder()
               const metadataLength = view.getUint32(4)
               const metadataBytes = event.data.slice(8, 8 + metadataLength)
@@ -1164,7 +1145,6 @@ export class ComfyApi extends EventTarget {
                 type: imageMime4
               })
 
-              // Dispatch enhanced preview event with metadata
               this.dispatchCustomEvent('b_preview_with_metadata', {
                 blob: imageBlob4,
                 nodeId: metadata.node_id,
@@ -1174,7 +1154,6 @@ export class ComfyApi extends EventTarget {
                 jobId: metadata.prompt_id
               })
 
-              // Also dispatch legacy b_preview for backward compatibility
               this.dispatchCustomEvent('b_preview', imageBlob4)
               break
             }
@@ -1191,8 +1170,8 @@ export class ComfyApi extends EventTarget {
               if (msg.data.sid) {
                 const clientId = msg.data.sid
                 this.clientId = clientId
-                window.name = clientId // use window name so it isn't reused when duplicating tabs
-                sessionStorage.setItem('clientId', clientId) // store in session storage so duplicate tab can load correct workflow
+                window.name = clientId
+                sessionStorage.setItem('clientId', clientId)
               }
               this.dispatchCustomEvent('status', msg.data.status ?? null)
               break
@@ -1237,7 +1216,6 @@ export class ComfyApi extends EventTarget {
               break
             default:
               if (this._registered.has(msg.type)) {
-                // Fallback for custom types - calls super direct.
                 super.dispatchEvent(
                   new CustomEvent(msg.type, { detail: msg.data })
                 )
@@ -1267,13 +1245,18 @@ export class ComfyApi extends EventTarget {
    * events over a handshake that was authenticated as that account.
    */
   async resetSocket(): Promise<void> {
-    this.clientId = undefined
-    window.name = ''
-    updateEditorSessionNavigation('')
-    sessionStorage.removeItem('clientId')
+    this.clearSocketIdentity()
     const { agent: _previousAgent, ...features } = this.serverFeatureFlags.value
     this.serverFeatureFlags.value = features
     await this.replaceSocket()
+  }
+
+  private clearSocketIdentity(): void {
+    this.clientId = undefined
+    this.initialClientId = null
+    window.name = ''
+    updateEditorSessionNavigation('')
+    sessionStorage.removeItem('clientId')
   }
 
   /**

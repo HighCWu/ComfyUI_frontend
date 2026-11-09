@@ -449,6 +449,10 @@ const zSharedResult = z.discriminatedUnion('status', [
         hasPersonalWorkspace: z.boolean().optional()
       }),
       csrfToken: z.string(),
+      socketScope: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
       expiresAt: z.number(),
       absoluteExpiresAt: z.number()
     })

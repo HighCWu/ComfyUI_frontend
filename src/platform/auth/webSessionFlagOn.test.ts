@@ -12,7 +12,7 @@ import {
 } from 'vitest'
 import type { Mock } from 'vitest'
 import { setActivePinia } from 'pinia'
-import { defineComponent, effectScope } from 'vue'
+import { defineComponent, effectScope, nextTick } from 'vue'
 
 import type { FirebaseIdentity } from '@comfyorg/account-core/firebase'
 import type {
@@ -97,6 +97,37 @@ import {
 } from '@/utils/resultItemUrl'
 
 type IdentityObserver = (user: User | null) => void
+
+it('reconnects a live same-user native socket only when its grant scope changes', async () => {
+  const reconnect = vi.spyOn(api, 'reconnectSocket').mockResolvedValue()
+  const store = useCloudWebSessionStore()
+  const session = {
+    user: { id: 'same-user', email: 'same@example.test', emailVerified: true },
+    csrfToken: 'csrf-a',
+    expiresAt: Date.now() + 60_000,
+    absoluteExpiresAt: Date.now() + 120_000,
+    socketScope: 'a'.repeat(64)
+  }
+  store.state = { phase: 'signed_in', session }
+  await nextTick()
+  expect(reconnect).toHaveBeenCalledTimes(1)
+  store.state = {
+    phase: 'signed_in',
+    session: {
+      ...session,
+      csrfToken: 'csrf-b',
+      expiresAt: session.expiresAt + 1_000
+    }
+  }
+  await nextTick()
+  expect(reconnect).toHaveBeenCalledTimes(1)
+  store.state = {
+    phase: 'signed_in',
+    session: { ...session, socketScope: 'b'.repeat(64) }
+  }
+  await nextTick()
+  expect(reconnect).toHaveBeenCalledTimes(2)
+})
 
 const identity = vi.hoisted(() => {
   const userObservers = new Set<IdentityObserver>()

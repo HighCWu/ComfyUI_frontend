@@ -1,4 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi
+} from 'vitest'
+import { fromPartial } from '@total-typescript/shoehorn'
+import type {
+  WebSessionRequestScope,
+  WebSessionRequests
+} from '@/platform/auth/session/webSessionFetch'
+import { provideWebSessionRequests } from '@/platform/auth/session/webSessionFetch'
 
 import { installCloudApiAuth } from '@/platform/auth/cloudApiAuthProvider'
 import { api } from '@/scripts/api'
@@ -77,6 +91,104 @@ describe('ComfyApi realtime socket reset', () => {
 
   afterEach(() => {
     api.socket = null
+  })
+
+  function scopedSession(scope?: string): WebSessionRequestScope {
+    return {
+      epoch: 1,
+      session: {
+        user: {
+          id: 'same-user',
+          email: 'same@example.test',
+          emailVerified: true
+        },
+        csrfToken: 'csrf',
+        expiresAt: Date.now() + 60_000,
+        absoluteExpiresAt: Date.now() + 120_000,
+        socketScope: scope
+      }
+    }
+  }
+
+  function socketSession(
+    read: () => Promise<WebSessionRequestScope | undefined>
+  ) {
+    const previousName = window.name
+    const previousScope = sessionStorage.getItem('comfy:socket-scope')
+    const previousId = sessionStorage.getItem('clientId')
+    const release = provideWebSessionRequests(
+      fromPartial<WebSessionRequests>({ scope: read, send: fetch })
+    )
+    onTestFinished(() => {
+      release()
+      window.name = previousName
+      if (previousScope === null)
+        sessionStorage.removeItem('comfy:socket-scope')
+      else sessionStorage.setItem('comfy:socket-scope', previousScope)
+      if (previousId === null) sessionStorage.removeItem('clientId')
+      else sessionStorage.setItem('clientId', previousId)
+    })
+  }
+
+  it.for(['first', 'replacement'] as const)(
+    'retires the old sid for a %s native grant without deleting saved state',
+    async (kind) => {
+      const scope = 'b'.repeat(64)
+      socketSession(async () => scopedSession(scope))
+      if (kind === 'first') sessionStorage.removeItem('comfy:socket-scope')
+      else sessionStorage.setItem('comfy:socket-scope', 'a'.repeat(64))
+      window.name = 'old-sid'
+      sessionStorage.setItem('clientId', 'old-sid')
+      api.initialClientId = 'old-sid'
+      api.clientId = 'old-sid'
+      await api.init()
+      expect(
+        new URL(FakeWebSocket.instances[0].url).searchParams.has('clientId')
+      ).toBe(false)
+      expect(window.name).toBe('')
+      expect(api.clientId).toBeUndefined()
+      expect(api.initialClientId).toBeNull()
+      expect(sessionStorage.getItem('clientId')).toBeNull()
+      expect(sessionStorage.getItem('comfy:socket-scope')).toBe(scope)
+    }
+  )
+
+  it.for([undefined, 'b'.repeat(64)])(
+    'keeps the sid for an unchanged or upstream-absent socket scope %s',
+    async (scope) => {
+      socketSession(async () => scopedSession(scope))
+      sessionStorage.setItem('comfy:socket-scope', 'b'.repeat(64))
+      window.name = 'current-sid'
+      await api.init()
+      expect(
+        new URL(FakeWebSocket.instances[0].url).searchParams.get('clientId')
+      ).toBe('current-sid')
+      expect(window.name).toBe('current-sid')
+    }
+  )
+
+  it('does not adopt a superseded scope or open a socket after the current grant is refused', async () => {
+    let finish!: (scope: WebSessionRequestScope | undefined) => void
+    let first = true
+    socketSession(() => {
+      if (first) {
+        first = false
+        return new Promise((resolve) => {
+          finish = resolve
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+    sessionStorage.setItem('comfy:socket-scope', 'a'.repeat(64))
+    window.name = 'current-sid'
+    const oldAttempt = api.init()
+    currentToken = undefined
+    await api.reconnectSocket()
+    finish(scopedSession('b'.repeat(64)))
+    await oldAttempt
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(sessionStorage.getItem('comfy:socket-scope')).toBe('a'.repeat(64))
+    expect(window.name).toBe('current-sid')
   })
 
   it('closes the previous socket and opens a fresh one on reset', async () => {

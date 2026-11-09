@@ -234,6 +234,44 @@ describe('heartbeat', () => {
 })
 
 describe('tabs of one site', () => {
+  it('preserves a refreshed native grant scope through the shared heartbeat', async () => {
+    const endpoint = liveEndpoint()
+    const site = createFakeSiteBus()
+    let socketScope = 'a'.repeat(64)
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const response = await endpoint.fetch(input, init)
+      return Response.json({
+        ...(await response.json()),
+        socket_scope: socketScope
+      })
+    }
+    const leader = openTab({ endpoint, site, fetchImpl })
+    const follower = openTab({ endpoint, site, fetchImpl })
+    try {
+      await booted(leader.identity)
+      await booted(follower.identity)
+      socketScope = 'b'.repeat(64)
+      leader.scheduler.fire(HEARTBEAT_MS)
+      await reach(
+        follower.identity,
+        (state) =>
+          state.phase === 'signed_in' &&
+          state.session.socketScope === socketScope
+      )
+      expect(leader.identity.getState()).toMatchObject({
+        phase: 'signed_in',
+        session: { socketScope: 'b'.repeat(64) }
+      })
+      expect(follower.identity.getState()).toMatchObject({
+        phase: 'signed_in',
+        session: { socketScope: 'b'.repeat(64) }
+      })
+    } finally {
+      leader.identity.dispose()
+      follower.identity.dispose()
+    }
+  })
+
   it('lets only the leader read; followers adopt its answer', async () => {
     const endpoint = liveEndpoint()
     const site = createFakeSiteBus()

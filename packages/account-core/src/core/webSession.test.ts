@@ -14,6 +14,29 @@ import {
 const API = 'https://cloud.example/api'
 const NOW = Date.parse('2024-06-15T12:00:00Z')
 
+it.for([
+  { socketScope: undefined, ok: true },
+  { socketScope: 'a'.repeat(64), ok: true },
+  { socketScope: 'invalid', ok: false },
+  { socketScope: null, ok: false }
+])(
+  'validates the optional native socket scope $socketScope',
+  async ({ socketScope, ok }) => {
+    const endpoint = fakeEndpoint({ kind: 'live', user: fakeWebSessionUser() })
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const response = await endpoint.fetch(input, init)
+      return Response.json({
+        ...(await response.json()),
+        ...(socketScope === undefined ? {} : { socket_scope: socketScope })
+      })
+    }
+    const result = await readWebSession(optionsFor(fetchImpl))
+    expect(result.status).toBe(ok ? 'ok' : 'error')
+    if (result.status === 'ok')
+      expect(result.session.socketScope).toBe(socketScope)
+  }
+)
+
 function fakeEndpoint(state: FakeWebSessionState) {
   return createFakeWebSessionEndpoint({ state, now: () => NOW })
 }

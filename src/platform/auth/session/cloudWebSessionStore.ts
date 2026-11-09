@@ -219,7 +219,13 @@ export const useCloudWebSessionStore = defineStore('cloudWebSession', () => {
   watch(
     () =>
       signedInUser.value?.id &&
-      JSON.stringify([signedInUser.value.id, teamWorkspaceId()]),
+      JSON.stringify([
+        signedInUser.value.id,
+        teamWorkspaceId(),
+        state.value.phase === 'signed_in'
+          ? state.value.session.socketScope
+          : undefined
+      ]),
     (socketScope) => {
       if (socketScope) void api.reconnectSocket()
     }

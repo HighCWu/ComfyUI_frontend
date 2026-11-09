@@ -166,6 +166,7 @@ export interface WebSessionUser {
 export interface WebSession {
   readonly user: WebSessionUser
   readonly csrfToken: string
+  readonly socketScope?: string
   /** ms since epoch; the sliding idle expiry */
   readonly expiresAt: number
   /** ms since epoch; the hard cap regardless of activity */

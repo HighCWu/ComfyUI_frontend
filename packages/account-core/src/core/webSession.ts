@@ -73,6 +73,10 @@ function failure(
 
 /** Adds `has_personal_workspace` until ingest-types carries it. */
 const zSessionResponse = zGetSessionResponse.extend({
+  socket_scope: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   user: zWebSessionUser.extend({
     has_personal_workspace: z.boolean().optional()
   })
@@ -153,7 +157,8 @@ export async function readWebSession(
   const { status } = sent
   const parsed = zSessionResponse.safeParse(sent.body)
   if (!parsed.success) return failure('SESSION_UNAVAILABLE', status)
-  const { user, csrf_token, expires_at, absolute_expires_at } = parsed.data
+  const { user, csrf_token, expires_at, absolute_expires_at, socket_scope } =
+    parsed.data
   if (expectedUserId !== undefined && user.id !== expectedUserId) {
     return failure('IDENTITY_CHANGED', status)
   }
@@ -169,6 +174,7 @@ export async function readWebSession(
         hasPersonalWorkspace: user.has_personal_workspace
       },
       csrfToken: csrf_token,
+      ...(socket_scope === undefined ? {} : { socketScope: socket_scope }),
       expiresAt: Date.parse(expires_at),
       absoluteExpiresAt: Date.parse(absolute_expires_at)
     }
