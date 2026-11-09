@@ -41,6 +41,7 @@ import {
 } from '@/platform/auth/authCredential'
 import { scopeMediaRoute } from '@/platform/auth/session/sessionMediaUrl'
 import { webSessionRequests } from '@/platform/auth/session/webSessionFetch'
+import type { WebSessionRequestScope } from '@/platform/auth/session/webSessionFetch'
 import { FETCH_RESPONSE_HEADERS_TIMEOUT_MS } from '@/scripts/apiTimeouts'
 import { selectedPrepaidRunStrategy } from '@/scripts/prepaidRunStrategy'
 import { adoptSocketSessionScope } from '@/scripts/socketSessionScope'
@@ -991,14 +992,23 @@ export class ComfyApi extends EventTarget {
 
   private async addSocketAuth(
     params: URLSearchParams
-  ): Promise<{ allowed: boolean; socketScope?: string }> {
+  ): Promise<{
+    allowed: boolean
+    socketScope?: string
+    refreshScope?: () => Promise<WebSessionRequestScope | undefined>
+  }> {
     const requests = webSessionRequests()
     const sessionScope = requests && (await requests.scope())
+    const refreshScope = requests?.refreshScope
     if (sessionScope?.workspaceId) {
       params.set('workspace_id', sessionScope.workspaceId)
     }
     if (sessionScope)
-      return { allowed: true, socketScope: sessionScope.session.socketScope }
+      return {
+        allowed: true,
+        socketScope: sessionScope.session.socketScope,
+        ...(refreshScope && { refreshScope: () => refreshScope(sessionScope) })
+      }
 
     const authToken = await this.authProvider.getAuthToken()
     if (authToken) {
@@ -1014,6 +1024,7 @@ export class ComfyApi extends EventTarget {
     const generation = ++this.socketGeneration
 
     let opened = false
+    let policyRefreshStarted = false
     const params = new URLSearchParams()
     const auth = isCloud ? await this.addSocketAuth(params) : { allowed: true }
     if (!auth.allowed || generation !== this.socketGeneration) return
@@ -1061,19 +1072,38 @@ export class ComfyApi extends EventTarget {
       }
     })
 
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event) => {
       if (this.socket !== socket) return
       this.serverFeatureFlagsSettled.value = true
       clearTimeout(settleTimer)
+      if (opened) {
+        this.dispatchCustomEvent('status', null)
+        this.dispatchCustomEvent('reconnecting')
+      }
+      if (event.code === 1008 && auth.socketScope && auth.refreshScope) {
+        if (policyRefreshStarted) return
+        policyRefreshStarted = true
+        void auth
+          .refreshScope()
+          .then((next) => {
+            if (
+              this.socket !== socket ||
+              generation !== this.socketGeneration ||
+              !next?.session.socketScope ||
+              next.session.socketScope === auth.socketScope
+            )
+              return
+            this.socket = null
+            return this.createSocket(true)
+          })
+          .catch(() => {})
+        return
+      }
       setTimeout(async () => {
         if (this.socket !== socket) return
         this.socket = null
         await this.createSocket(true)
       }, 300)
-      if (opened) {
-        this.dispatchCustomEvent('status', null)
-        this.dispatchCustomEvent('reconnecting')
-      }
     })
 
     socket.addEventListener('message', (event) => {

@@ -326,6 +326,7 @@ export const useCloudWebSessionStore = defineStore('cloudWebSession', () => {
     })
     releaseRequests = provideWebSessionRequests({
       scope: requestScope,
+      refreshScope: refreshFor,
       workspaceId: () => (currentSession() ? teamWorkspaceId() : undefined),
       send: (url, init, scope) => send(url, init, scope, authorize),
       workspaceToken: async (scope) =>

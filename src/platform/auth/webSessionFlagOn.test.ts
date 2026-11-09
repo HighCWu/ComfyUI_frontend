@@ -928,6 +928,38 @@ describe('cloud API requests on the shared web session', () => {
     localStorage.clear()
   })
 
+  it('refreshes the captured native socket scope with one existing session read and no write', async () => {
+    const ingest = await bootOnSession()
+    const requests = webSessionRequests()
+    assert.exists(requests?.refreshScope)
+    const original = await requests.scope()
+    assert.exists(original)
+    const respond = vi.mocked(fetch).getMockImplementation()
+    assert.exists(respond)
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const response = await respond(input, init)
+      if (
+        new URL(String(input), location.href).pathname !== '/api/auth/session'
+      )
+        return response
+      return Response.json({
+        ...(await response.json()),
+        socket_scope: 'b'.repeat(64)
+      })
+    })
+    const refreshed = await requests.refreshScope(original)
+    expect(refreshed?.session.socketScope).toBe('b'.repeat(64))
+    expect(refreshed?.session.user.id).toBe(original.session.user.id)
+    expect(
+      ingest.requests
+        .filter((request) => request.path === '/api/auth/session')
+        .map((request) => request.method)
+    ).toEqual(['GET'])
+    expect(
+      ingest.requests.filter((request) => request.method === 'POST')
+    ).toEqual([])
+  })
+
   it('sends the session headers instead of a token, and a workspace switch changes only the header', async () => {
     const ingest = await bootOnSession()
     const workspaceAuth = useWorkspaceAuthStore()

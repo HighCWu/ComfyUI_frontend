@@ -111,13 +111,18 @@ describe('ComfyApi realtime socket reset', () => {
   }
 
   function socketSession(
-    read: () => Promise<WebSessionRequestScope | undefined>
+    read: () => Promise<WebSessionRequestScope | undefined>,
+    refreshScope?: WebSessionRequests['refreshScope']
   ) {
     const previousName = window.name
     const previousScope = sessionStorage.getItem('comfy:socket-scope')
     const previousId = sessionStorage.getItem('clientId')
     const release = provideWebSessionRequests(
-      fromPartial<WebSessionRequests>({ scope: read, send: fetch })
+      fromPartial<WebSessionRequests>({
+        scope: read,
+        send: fetch,
+        refreshScope
+      })
     )
     onTestFinished(() => {
       release()
@@ -129,6 +134,93 @@ describe('ComfyApi realtime socket reset', () => {
       else sessionStorage.setItem('clientId', previousId)
     })
   }
+
+  it('refreshes once on a native policy close before replacing its grant-bound sid', async () => {
+    let current = scopedSession('a'.repeat(64))
+    const refresh = vi.fn(async () => {
+      current = scopedSession('b'.repeat(64))
+      return current
+    })
+    socketSession(async () => current, refresh)
+    sessionStorage.setItem('comfy:socket-scope', 'a'.repeat(64))
+    window.name = 'old-sid'
+    await api.init()
+    const previous = FakeWebSocket.instances[0]
+    previous.readyState = FakeWebSocket.CLOSED
+    previous.handlers.close(new CloseEvent('close', { code: 1008 }))
+    previous.handlers.close(new CloseEvent('close', { code: 1008 }))
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2))
+    expect(refresh).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        session: expect.objectContaining({ socketScope: 'a'.repeat(64) })
+      })
+    )
+    expect(
+      new URL(FakeWebSocket.instances[1].url).searchParams.has('clientId')
+    ).toBe(false)
+    expect(sessionStorage.getItem('comfy:socket-scope')).toBe('b'.repeat(64))
+  })
+
+  it.for(['unchanged', 'refused', 'failed'] as const)(
+    'does not retry a policy close after a %s refresh',
+    async (kind) => {
+      const current = scopedSession('a'.repeat(64))
+      const outcomes = {
+        unchanged: () => Promise.resolve(current),
+        refused: () => Promise.resolve(undefined),
+        failed: () => Promise.reject(Error('offline'))
+      }
+      const refresh = vi.fn(outcomes[kind])
+      socketSession(async () => current, refresh)
+      await api.init()
+      vi.useFakeTimers()
+      FakeWebSocket.instances[0].handlers.close(
+        new CloseEvent('close', { code: 1008 })
+      )
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(refresh).toHaveBeenCalledTimes(1)
+      expect(FakeWebSocket.instances).toHaveLength(1)
+      expect(fetch).not.toHaveBeenCalled()
+      vi.useRealTimers()
+    }
+  )
+
+  it('leaves a newer watch-owned socket intact when the policy read settles late', async () => {
+    let current = scopedSession('a'.repeat(64))
+    let finish!: (scope: WebSessionRequestScope) => void
+    const refresh = vi.fn(
+      () =>
+        new Promise<WebSessionRequestScope>((resolve) => {
+          finish = resolve
+        })
+    )
+    socketSession(async () => current, refresh)
+    await api.init()
+    const old = FakeWebSocket.instances[0]
+    old.readyState = FakeWebSocket.CLOSED
+    old.handlers.close(new CloseEvent('close', { code: 1008 }))
+    current = scopedSession('b'.repeat(64))
+    await api.reconnectSocket()
+    const active = api.socket
+    finish(current)
+    await flush()
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(api.socket).toBe(active)
+  })
+
+  it('retains ordinary network reconnect behavior without policy refresh', async () => {
+    const refresh = vi.fn(async () => scopedSession('b'.repeat(64)))
+    socketSession(async () => scopedSession('a'.repeat(64)), refresh)
+    await api.init()
+    vi.useFakeTimers()
+    FakeWebSocket.instances[0].handlers.close(
+      new CloseEvent('close', { code: 1006 })
+    )
+    await vi.advanceTimersByTimeAsync(300)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(refresh).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
 
   it.for(['first', 'replacement'] as const)(
     'retires the old sid for a %s native grant without deleting saved state',
