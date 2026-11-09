@@ -22,7 +22,11 @@ export function editorSessionFromNavigation(search: string): string | null {
 
 export function updateEditorSessionNavigation(clientId: string): void {
   const url = new URL(window.location.href)
-  if (url.pathname !== '/comfy/' || !url.searchParams.has('client_id')) return
+  if (
+    !['/', '/comfy/'].includes(url.pathname) ||
+    !url.searchParams.has('client_id')
+  )
+    return
   if (/^eds_[a-zA-Z0-9_-]{1,124}$/.test(clientId)) {
     url.searchParams.set('client_id', clientId)
   } else {

@@ -66,12 +66,33 @@ describe('editorSessionFromNavigation', () => {
   })
 })
 
-it('removes a previous-account URL binding without losing the share', () => {
+it.for(['/', '/comfy/'])(
+  'removes a previous-account URL binding from %s without losing the share',
+  (path) => {
+    const previousUrl = window.location.href
+    window.history.replaceState(
+      {},
+      '',
+      `${path}?client_id=eds_old&share=shr_one#node`
+    )
+    onTestFinished(() => window.history.replaceState({}, '', previousUrl))
+    updateEditorSessionNavigation('')
+    expect(
+      window.location.pathname + window.location.search + window.location.hash
+    ).toBe(`${path}?share=shr_one#node`)
+  }
+)
+
+it('leaves another page locator unchanged', () => {
   const previousUrl = window.location.href
-  window.history.replaceState({}, '', '/comfy/?client_id=eds_old&share=shr_one')
+  window.history.replaceState(
+    {},
+    '',
+    '/other?client_id=eds_other&share=shr_one'
+  )
   onTestFinished(() => window.history.replaceState({}, '', previousUrl))
   updateEditorSessionNavigation('')
   expect(window.location.pathname + window.location.search).toBe(
-    '/comfy/?share=shr_one'
+    '/other?client_id=eds_other&share=shr_one'
   )
 })
