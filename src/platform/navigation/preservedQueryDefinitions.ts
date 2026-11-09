@@ -55,5 +55,11 @@ export const PRESERVED_QUERY_DEFINITIONS: PreservedQueryDefinition[] = [
     namespace: PRESERVED_QUERY_NAMESPACES.WORKSPACE,
     keys: ['workspace'],
     rejectRepeated: true
+  },
+  {
+    namespace: PRESERVED_QUERY_NAMESPACES.EMBEDDED_EDITOR,
+    keys: ['domon-embedded', 'domon-host', 'domon-channel'],
+    requiredKey: 'domon-embedded',
+    rejectRepeated: true
   }
 ]

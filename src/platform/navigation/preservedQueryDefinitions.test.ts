@@ -20,7 +20,10 @@ describe('PRESERVED_QUERY_DEFINITIONS', () => {
     [PRESERVED_QUERY_NAMESPACES.TOPUP, 'topup'],
     [PRESERVED_QUERY_NAMESPACES.INVITE, 'invite'],
     [PRESERVED_QUERY_NAMESPACES.CREATE_WORKSPACE, 'create_workspace'],
-    [PRESERVED_QUERY_NAMESPACES.PRICING, 'pricing']
+    [PRESERVED_QUERY_NAMESPACES.PRICING, 'pricing'],
+    [PRESERVED_QUERY_NAMESPACES.EMBEDDED_EDITOR, 'domon-embedded'],
+    [PRESERVED_QUERY_NAMESPACES.EMBEDDED_EDITOR, 'domon-host'],
+    [PRESERVED_QUERY_NAMESPACES.EMBEDDED_EDITOR, 'domon-channel']
   ])('captures %s so a redirect cannot lose it', ([namespace, key]) => {
     expect(registered.get(namespace)).toContain(key)
   })

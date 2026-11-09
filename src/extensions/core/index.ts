@@ -1,5 +1,6 @@
 import { isCloud, isNightly } from '@/platform/distribution/types'
-
+import { getPreservedQueryParam } from '@/platform/navigation/preservedQueryManager'
+import { PRESERVED_QUERY_NAMESPACES } from '@/platform/navigation/preservedQueryNamespaces'
 import './clipspace'
 import './contextMenuFilter'
 import './createBoundingBoxes'
@@ -34,6 +35,17 @@ import './uploadAudio'
 import './uploadImage'
 import './webcamCapture'
 import './widgetInputs'
+
+if (
+  window.parent !== window &&
+  (new URLSearchParams(window.location.search).get('domon-embedded') === '1' ||
+    getPreservedQueryParam(
+      PRESERVED_QUERY_NAMESPACES.EMBEDDED_EDITOR,
+      'domon-embedded'
+    ) === '1')
+) {
+  await import('./domonEmbeddedReceiver')
+}
 
 // Cloud-only extensions - tree-shaken in OSS builds
 // The literal __DISTRIBUTION__ comparison (not the isCloud const) is what
