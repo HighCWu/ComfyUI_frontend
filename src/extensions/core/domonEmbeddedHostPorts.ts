@@ -1,4 +1,5 @@
 import type { ComfyApp, ComfyExtension } from '@/types/comfy'
+import type { CatalogueReaderPorts } from '@/extensions/core/domonCatalogueReaderPorts'
 import type {
   ComfyWorkflow,
   WorkflowChangeTracker
@@ -24,7 +25,7 @@ export type {
 }
 
 export interface EmbeddedHostPorts {
-  version: 'domon-comfy-embedded-ports/v1'
+  version: 'domon-comfy-embedded-ports/v2'
   app: Pick<
     ComfyApp,
     'isGraphReady' | 'rootGraph' | 'canvas' | 'ui' | 'loadGraphData'
@@ -52,6 +53,7 @@ export interface EmbeddedHostPorts {
   preservedQuery(): Partial<
     Record<'domon-embedded' | 'domon-host' | 'domon-channel', string>
   >
+  installCatalogueReaders(ports: CatalogueReaderPorts): () => void
 }
 
 export interface EmbeddedAppRegistration {

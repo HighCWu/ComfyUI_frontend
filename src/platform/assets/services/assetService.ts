@@ -2,6 +2,10 @@ import { fromZodError } from 'zod-validation-error'
 import { z } from 'zod'
 
 import { useFeatureFlags } from '@/composables/useFeatureFlags'
+import {
+  currentCatalogueReaderPorts,
+  subscribeCatalogueReaderPorts
+} from '@/extensions/core/domonCatalogueReaderPorts'
 import { st } from '@/i18n'
 import { ASSETS_SEED_FAST_COMPLETE_EVENT } from '@/platform/assets/constants/assetEvents'
 
@@ -49,7 +53,7 @@ export interface AssetPaginationOptions extends PaginationOptions {
   signal?: AbortSignal
 }
 
-interface AssetRequestOptions extends PaginationOptions {
+export interface AssetRequestOptions extends PaginationOptions {
   includeTags: string[]
   excludeTags?: string[]
   includePublic?: boolean
@@ -206,6 +210,16 @@ export const OUTPUT_TAG = 'output'
 /** Asset tag used by the backend for placeholder records that are not installed. */
 export const MISSING_TAG = 'missing'
 const DEFAULT_EXCLUDED_ASSET_TAGS = [MISSING_TAG]
+const MEDIA_ASSET_TAGS: readonly string[] = [INPUT_TAG, OUTPUT_TAG, 'temp']
+
+export function isModelAssetPageRequest(
+  includeTags: readonly string[]
+): boolean {
+  return (
+    includeTags.includes(MODELS_TAG) &&
+    !includeTags.some((tag) => MEDIA_ASSET_TAGS.includes(tag))
+  )
+}
 const EMPTY_PAGE: AssetResponse = { assets: [], total: 0, has_more: false }
 
 const uploadedAssetResponseSchema = assetItemSchema.extend({
@@ -296,9 +310,6 @@ function createAssetService() {
     pendingModelBuckets = null
   }
 
-  /**
-   * Handles API response with consistent error handling and Zod validation
-   */
   async function handleAssetRequest(
     options: AssetRequestOptions,
     context: string
@@ -315,6 +326,24 @@ function createAssetService() {
     const normalizedIncludeTags = normalizeAssetTags(includeTags)
     const normalizedExcludeTags = normalizeAssetTags(excludeTags)
 
+    const reader = currentCatalogueReaderPorts()
+    if (reader !== null && isModelAssetPageRequest(normalizedIncludeTags)) {
+      return validateAssetResponse(
+        await reader.readModelAssetPage?.(
+          {
+            includeTags: normalizedIncludeTags,
+            excludeTags: normalizedExcludeTags,
+            limit,
+            offset,
+            after,
+            includePublic,
+            signal
+          },
+          context
+        )
+      )
+    }
+
     const queryParams = new URLSearchParams({
       include_tags: normalizedIncludeTags.join(','),
       limit: limit.toString()
@@ -322,8 +351,6 @@ function createAssetService() {
     if (normalizedExcludeTags.length > 0) {
       queryParams.set('exclude_tags', normalizedExcludeTags.join(','))
     }
-    // `after` (keyset cursor) takes precedence over `offset`; the server ignores
-    // `offset` when a cursor is supplied, so we avoid sending a redundant param.
     if (after !== undefined) {
       queryParams.set('after', after)
     } else if (offset !== undefined && offset > 0) {
@@ -624,27 +651,29 @@ function createAssetService() {
     )
   }
 
-  /**
-   * Gets complete details for a specific asset by ID
-   * Calls the detail endpoint which includes user_metadata and all fields
-   *
-   * @param id - The asset ID
-   * @returns Promise<AssetItem> - Complete asset object with user_metadata
-   */
-  async function getAssetDetails(id: AssetId): Promise<AssetItem> {
+  function parseAssetItemPayload(data: unknown): AssetItem {
+    const result = assetItemSchema.safeParse(data)
+    if (result.success) return result.data
+
+    const error = fromZodError(result.error)
+    throw new Error(`Invalid asset response against zod schema:\n${error}`)
+  }
+
+  async function getAssetDetails(
+    id: AssetId,
+    scope: 'model' | 'media'
+  ): Promise<AssetItem> {
+    const reader = currentCatalogueReaderPorts()
+    if (reader !== null && scope === 'model') {
+      return parseAssetItemPayload(await reader.readModelAssetDetails?.(id))
+    }
     const res = await api.fetchApi(`${ASSETS_ENDPOINT}/${id}`)
     if (!res.ok) {
       throw new Error(
         `Unable to load asset details for ${id}: Server returned ${res.status}. Please try again.`
       )
     }
-    const data = await res.json()
-
-    const result = assetItemSchema.safeParse(data)
-    if (result.success) return result.data
-
-    const error = fromZodError(result.error)
-    throw new Error(`Invalid asset response against zod schema:\n${error}`)
+    return parseAssetItemPayload(await res.json())
   }
 
   /**
@@ -1119,3 +1148,5 @@ function createAssetService() {
 }
 
 export const assetService = createAssetService()
+
+subscribeCatalogueReaderPorts(() => assetService.invalidateModelBuckets())

@@ -2,6 +2,7 @@ import { computed, onScopeDispose, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { useToast } from '@/components/ui/toast/toastStore'
+import { currentCatalogueReaderPorts } from '@/extensions/core/domonCatalogueReaderPorts'
 import { createToastId } from '@/types/toastId'
 import { isCloud, isDesktop } from '@/platform/distribution/types'
 import { useSettingStore } from '@/platform/settings/settingStore'
@@ -411,9 +412,6 @@ export function useTemplateWorkflows() {
   }
 
   /**
-   * Fetches template JSON from the appropriate endpoint
-   */
-  /**
    * The payload plus whether strict validation accepted it. Sample-input
    * preparation needs a strictly valid workflow, and carrying the answer out
    * of here keeps it from parsing the same payload a second time - which also
@@ -423,27 +421,10 @@ export function useTemplateWorkflows() {
     | { strict: true; json: ComfyWorkflowJSON }
     | { strict: false; json: LegacyLoadableWorkflow }
 
-  async function fetchTemplateJson(
+  async function validateTemplatePayload(
     id: string,
-    sourceModule: string,
-    signal: AbortSignal
+    json: unknown
   ): Promise<FetchedTemplate | null> {
-    // Default templates provided by frontend are served on this separate endpoint
-    const url =
-      sourceModule === 'default'
-        ? api.fileURL(`/templates/${id}.json`)
-        : api.apiURL(`/workflow_templates/${sourceModule}/${id}.json`)
-
-    const response = await fetch(url, { signal })
-    if (!response.ok) {
-      reportError(`Failed to fetch workflow template ${id}`, {
-        surface: 'graph',
-        errorType: 'error_fetching_workflow_template'
-      })
-      return null
-    }
-
-    const json: unknown = await response.json()
     let schemaMismatch: string | undefined
     const validated = await validateComfyWorkflow(json, (detail) => {
       schemaMismatch = detail
@@ -466,6 +447,35 @@ export function useTemplateWorkflows() {
       })
     }
     return { strict: false, json: legacy.data }
+  }
+
+  async function fetchTemplateJson(
+    id: string,
+    sourceModule: string,
+    signal: AbortSignal
+  ): Promise<FetchedTemplate | null> {
+    const reader = currentCatalogueReaderPorts()
+    if (reader !== null && sourceModule === 'default') {
+      return validateTemplatePayload(
+        id,
+        await reader.readTemplateJson?.(id, sourceModule, signal)
+      )
+    }
+    const url =
+      sourceModule === 'default'
+        ? api.fileURL(`/templates/${id}.json`)
+        : api.apiURL(`/workflow_templates/${sourceModule}/${id}.json`)
+
+    const response = await fetch(url, { signal })
+    if (!response.ok) {
+      reportError(`Failed to fetch workflow template ${id}`, {
+        surface: 'graph',
+        errorType: 'error_fetching_workflow_template'
+      })
+      return null
+    }
+
+    return validateTemplatePayload(id, await response.json())
   }
 
   return {

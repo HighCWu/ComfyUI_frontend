@@ -1,7 +1,12 @@
 import { render } from '@testing-library/vue'
+import {
+  clearCatalogueReaderPorts,
+  installCatalogueReaderPorts
+} from '@/extensions/core/domonCatalogueReaderPorts'
+import type { CatalogueReaderPorts } from '@/extensions/core/domonCatalogueReaderPorts'
 import { useDialogStore } from '@/stores/dialogStore'
 import { usePartnerNodesEducationStore } from '@/platform/workflow/templates/stores/partnerNodesEducationStore'
-import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 
 import { i18n } from '@/i18n'
@@ -1427,5 +1432,128 @@ describe('useTemplateWorkflows', () => {
 
       expect(useFeatureUsageTracker(SURVEY_ID).useCount.value).toBe(0)
     })
+  })
+})
+
+describe('useTemplateWorkflows with catalogue reader ports', () => {
+  afterEach(() => {
+    clearCatalogueReaderPorts()
+  })
+
+  let mockStore: ReturnType<typeof useWorkflowTemplatesStore>
+
+  beforeEach(() => {
+    vi.mocked(fetch).mockImplementation(async () =>
+      Response.json(loadableWorkflow)
+    )
+    mockStore = useWorkflowTemplatesStore()
+    mockStore.isLoaded = true
+  })
+
+  function buildReader(
+    overrides: Partial<CatalogueReaderPorts> = {}
+  ): CatalogueReaderPorts {
+    return {
+      version: 'domon-comfy-catalogue-readers/v1',
+      readerId: 'host-reader',
+      readTemplateJson: vi.fn(async () => loadableWorkflow),
+      ...overrides
+    }
+  }
+
+  it('loads template payloads through the installed reader without fetching the platform endpoints', async () => {
+    const reader = buildReader()
+    installCatalogueReaderPorts(reader)
+    const { loader } = mountTemplateWorkflows()
+
+    expect(await loader.loadWorkflowTemplate('template1', 'default')).toBe(
+      'loaded'
+    )
+
+    expect(reader.readTemplateJson).toHaveBeenCalledTimes(1)
+    expect(reader.readTemplateJson).toHaveBeenCalledWith(
+      'template1',
+      'default',
+      expect.any(AbortSignal)
+    )
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps legacy template payloads loadable through the reader validation path', async () => {
+    installCatalogueReaderPorts(buildReader())
+    const { loader } = mountTemplateWorkflows()
+
+    expect(await loader.loadWorkflowTemplate('template1', 'default')).toBe(
+      'loaded'
+    )
+    expect(app.loadGraphData).toHaveBeenCalled()
+  })
+
+  it('reports reader failures as template load failures without fetching the platform endpoints', async () => {
+    installCatalogueReaderPorts(
+      buildReader({
+        readTemplateJson: vi.fn(async () => {
+          throw new Error('reader offline')
+        })
+      })
+    )
+    const { loader } = mountTemplateWorkflows()
+
+    expect(await loader.loadWorkflowTemplate('template1', 'default')).toBe(
+      'not-started'
+    )
+
+    expect(fetch).not.toHaveBeenCalled()
+    expect(reportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'reader offline' }),
+      expect.objectContaining({ surface: 'graph' })
+    )
+    expect(loader.loadingTemplateId.value).toBeNull()
+  })
+
+  it('fails honestly when the installed reader lacks the template hook', async () => {
+    installCatalogueReaderPorts(buildReader({ readTemplateJson: undefined }))
+    const { loader } = mountTemplateWorkflows()
+
+    expect(await loader.loadWorkflowTemplate('template1', 'default')).toBe(
+      'not-started'
+    )
+
+    expect(fetch).not.toHaveBeenCalled()
+    expect(reportError).toHaveBeenCalledWith(
+      'Workflow template template1 is not a loadable workflow',
+      expect.objectContaining({
+        surface: 'graph',
+        errorType: 'error_validating_workflow_template'
+      })
+    )
+  })
+
+  it('returns to the platform template endpoints after the reader is cleared', async () => {
+    installCatalogueReaderPorts(buildReader())
+    clearCatalogueReaderPorts()
+    const { loader } = mountTemplateWorkflows()
+
+    expect(await loader.loadWorkflowTemplate('template1', 'default')).toBe(
+      'loaded'
+    )
+
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps custom-node template payloads on the original endpoint even with a reader installed', async () => {
+    const reader = buildReader()
+    installCatalogueReaderPorts(reader)
+    const { loader } = mountTemplateWorkflows()
+
+    expect(
+      await loader.loadWorkflowTemplate('template2', 'custom-module')
+    ).toBe('loaded')
+
+    expect(reader.readTemplateJson).not.toHaveBeenCalled()
+    expect(fetch).toHaveBeenCalledWith(
+      'mock-api-url/workflow_templates/custom-module/template2.json',
+      { signal: expect.any(AbortSignal) }
+    )
   })
 })

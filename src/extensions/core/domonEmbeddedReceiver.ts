@@ -16,12 +16,13 @@ import { useQueueSettingsStore } from '@/stores/queueSettingsStore'
 import { parseNodeId } from '@/types/nodeId'
 import { createAgentFollowerHeadless } from '@/workbench/extensions/agent/crdt/agentFollowerHeadless'
 import { useAgentPanelStore } from '@/workbench/extensions/agent/stores/agent/agentPanelStore'
+import { createCatalogueReaderInstaller } from './domonCatalogueReaderPorts'
 
 import type { EmbeddedHostPorts } from './domonEmbeddedHostPorts'
 
 import { useEmbeddedFollowerSession } from './domonEmbeddedSession'
 
-export const DOMON_EMBEDDED_HOST_PORTS_VERSION = 'domon-comfy-embedded-ports/v1'
+export const DOMON_EMBEDDED_HOST_PORTS_VERSION = 'domon-comfy-embedded-ports/v2'
 
 export function createEmbeddedHostPorts(): EmbeddedHostPorts {
   const workflowStore = useWorkflowStore()
@@ -88,6 +89,7 @@ export function createEmbeddedHostPorts(): EmbeddedHostPorts {
         PRESERVED_QUERY_NAMESPACES.EMBEDDED_EDITOR,
         'domon-channel'
       )
-    })
+    }),
+    installCatalogueReaders: createCatalogueReaderInstaller()
   }
 }

@@ -28,6 +28,7 @@ import { ref } from 'vue'
 import { z } from 'zod'
 
 import defaultClientFeatureFlags from '@/config/clientFeatureFlags.json' with { type: 'json' }
+import { currentCatalogueReaderPorts } from '@/extensions/core/domonCatalogueReaderPorts'
 import {
   appendEditorSession,
   editorSessionFromNavigation,
@@ -1336,6 +1337,12 @@ export class ComfyApi extends EventTarget {
   async getCoreWorkflowTemplates(
     locale?: string
   ): Promise<WorkflowTemplates[]> {
+    const reader = currentCatalogueReaderPorts()
+    if (reader !== null) {
+      return coreWorkflowTemplatesResponseSchema.parse(
+        await reader.readCoreWorkflowTemplates?.(locale)
+      )
+    }
     const fileName =
       locale && locale !== 'en' ? `index.${locale}.json` : 'index.json'
     try {

@@ -2,16 +2,22 @@ import { fromPartial } from '@total-typescript/shoehorn'
 
 import { useNodeDefStore } from '@/stores/nodeDefStore'
 import { useAssetsStore } from '@/stores/assetsStore'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useFeatureFlags } from '@/composables/useFeatureFlags'
+import {
+  clearCatalogueReaderPorts,
+  installCatalogueReaderPorts
+} from '@/extensions/core/domonCatalogueReaderPorts'
+import type { CatalogueReaderPorts } from '@/extensions/core/domonCatalogueReaderPorts'
 import type {
   AssetItem,
   AssetResponse
 } from '@/platform/assets/schemas/assetSchema'
 import {
   MISSING_TAG,
-  assetService
+  assetService,
+  isModelAssetPageRequest
 } from '@/platform/assets/services/assetService'
 import { api } from '@/scripts/api'
 
@@ -1332,3 +1338,204 @@ describe(assetService.getAssetsForNodeType, () => {
 })
 
 vi.mock(import('@/scripts/app'))
+
+describe('catalogue reader ports', () => {
+  const modelsPage = {
+    assets: [validAsset({ id: 'reader-model' })],
+    total: 1,
+    has_more: false
+  }
+
+  afterEach(() => {
+    clearCatalogueReaderPorts()
+  })
+
+  function buildReader(
+    overrides: Partial<CatalogueReaderPorts> = {}
+  ): CatalogueReaderPorts {
+    return {
+      version: 'domon-comfy-catalogue-readers/v1',
+      readerId: 'host-reader',
+      readModelAssetPage: vi.fn(async () => modelsPage),
+      readModelAssetDetails: vi.fn(async () =>
+        validAsset({ id: 'reader-detail' })
+      ),
+      ...overrides
+    }
+  }
+
+  it('serves models tag pages through the installed reader without touching the platform endpoint', async () => {
+    const reader = buildReader()
+    installCatalogueReaderPorts(reader)
+
+    const page = await assetService.getAssetsPageByTag('models')
+
+    expect(reader.readModelAssetPage).toHaveBeenCalledTimes(1)
+    expect(page.assets.map((a) => a.id)).toEqual(['reader-model'])
+    expect(fetchApiMock).not.toHaveBeenCalled()
+  })
+
+  it('serves model node type pages through the installed reader', async () => {
+    const reader = buildReader()
+    installCatalogueReaderPorts(reader)
+
+    const assets = await assetService.getAssetsForNodeType(
+      'CheckpointLoaderSimple'
+    )
+
+    expect(reader.readModelAssetPage).toHaveBeenCalledTimes(1)
+    expect(assets.map((a) => a.id)).toEqual(['reader-model'])
+    expect(fetchApiMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps media tag pages on the original asset endpoint even with a reader installed', async () => {
+    const reader = buildReader()
+    installCatalogueReaderPorts(reader)
+    fetchApiMock.mockResolvedValueOnce(
+      buildAssetListResponse([validAsset({ id: 'input-asset' })])
+    )
+
+    const assets = await assetService.getAssetsByTag('input', false)
+
+    expect(reader.readModelAssetPage).not.toHaveBeenCalled()
+    expect(assets.map((a) => a.id)).toEqual(['input-asset'])
+    expect(fetchApiMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails honestly when a models query arrives without a model page hook', async () => {
+    installCatalogueReaderPorts(buildReader({ readModelAssetPage: undefined }))
+
+    await expect(assetService.getAssetsPageByTag('models')).rejects.toThrow(
+      /Invalid asset response against zod schema/
+    )
+    expect(fetchApiMock).not.toHaveBeenCalled()
+  })
+
+  it('revalidates reader payloads against the original asset response schema', async () => {
+    installCatalogueReaderPorts(
+      buildReader({
+        readModelAssetPage: vi.fn(async () => ({ assets: 'not-a-list' }))
+      })
+    )
+
+    await expect(assetService.getAssetsPageByTag('models')).rejects.toThrow(
+      /Invalid asset response against zod schema/
+    )
+  })
+
+  it('propagates reader failures without falling back to the platform endpoint', async () => {
+    installCatalogueReaderPorts(
+      buildReader({
+        readModelAssetPage: vi.fn(async () => {
+          throw new Error('reader offline')
+        })
+      })
+    )
+
+    await expect(assetService.getAssetsPageByTag('models')).rejects.toThrow(
+      'reader offline'
+    )
+    expect(fetchApiMock).not.toHaveBeenCalled()
+  })
+
+  it('serves model asset details through the reader and media details through the endpoint', async () => {
+    const reader = buildReader()
+    installCatalogueReaderPorts(reader)
+    fetchApiMock.mockResolvedValueOnce(
+      buildResponse(validAsset({ id: 'media-detail' }))
+    )
+
+    const modelDetail = await assetService.getAssetDetails(
+      'reader-detail',
+      'model'
+    )
+    expect(modelDetail.id).toBe('reader-detail')
+    expect(reader.readModelAssetDetails).toHaveBeenCalledWith('reader-detail')
+    expect(fetchApiMock).not.toHaveBeenCalled()
+
+    const mediaDetail = await assetService.getAssetDetails(
+      'media-detail',
+      'media'
+    )
+    expect(mediaDetail.id).toBe('media-detail')
+    expect(reader.readModelAssetDetails).toHaveBeenCalledTimes(1)
+    expect(fetchApiMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('revalidates reader model details against the original item schema', async () => {
+    installCatalogueReaderPorts(
+      buildReader({
+        readModelAssetDetails: vi.fn(async () => ({ nope: true }))
+      })
+    )
+
+    await expect(
+      assetService.getAssetDetails('reader-detail', 'model')
+    ).rejects.toThrow(/Invalid asset response against zod schema/)
+  })
+
+  it('refuses a missing model detail hook through the original item schema without fetching', async () => {
+    installCatalogueReaderPorts(
+      buildReader({ readModelAssetDetails: undefined })
+    )
+
+    await expect(
+      assetService.getAssetDetails('reader-detail', 'model')
+    ).rejects.toThrow(/Invalid asset response against zod schema/)
+    expect(fetchApiMock).not.toHaveBeenCalled()
+  })
+
+  it('invalidates the model buckets on install and clear', async () => {
+    const invalidate = vi.spyOn(assetService, 'invalidateModelBuckets')
+
+    installCatalogueReaderPorts(buildReader())
+    expect(invalidate).toHaveBeenCalledTimes(1)
+
+    clearCatalogueReaderPorts()
+    expect(invalidate).toHaveBeenCalledTimes(2)
+
+    clearCatalogueReaderPorts()
+    expect(invalidate).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe(isModelAssetPageRequest, () => {
+  it.for([
+    { includeTags: ['models'], dispatches: true },
+    { includeTags: ['models', 'checkpoints'], dispatches: true },
+    { includeTags: ['checkpoints', 'models'], dispatches: true },
+    { includeTags: ['models', 'input'], dispatches: false },
+    { includeTags: ['models', 'output'], dispatches: false },
+    { includeTags: ['models', 'temp'], dispatches: false },
+    { includeTags: ['input'], dispatches: false },
+    { includeTags: ['output', 'temp'], dispatches: false }
+  ])(
+    'dispatches only pure model catalogue queries: %j',
+    ({ includeTags, dispatches }) => {
+      expect(isModelAssetPageRequest(includeTags)).toBe(dispatches)
+    }
+  )
+
+  it('keeps a mixed media+models page query on the original endpoint', async () => {
+    const reader: CatalogueReaderPorts = {
+      version: 'domon-comfy-catalogue-readers/v1',
+      readerId: 'mixed-query-reader',
+      readModelAssetPage: vi.fn(async () => ({
+        assets: [],
+        total: 0,
+        has_more: false
+      }))
+    }
+    installCatalogueReaderPorts(reader)
+    fetchApiMock.mockResolvedValueOnce(
+      buildAssetListResponse([validAsset({ id: 'mixed-asset' })])
+    )
+
+    const assets = await assetService.getAssetsByTag('input', false)
+
+    expect(reader.readModelAssetPage).not.toHaveBeenCalled()
+    expect(assets.map((a) => a.id)).toEqual(['mixed-asset'])
+    expect(fetchApiMock).toHaveBeenCalledTimes(1)
+    clearCatalogueReaderPorts()
+  })
+})
