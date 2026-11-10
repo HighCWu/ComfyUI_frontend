@@ -4,7 +4,7 @@ import { isCrdtDebugEnabled } from './crdtDebugGate'
 import { wireLog } from './crdtLog'
 import type { DocFrameTransport } from './docFrameClient'
 
-const comfyApiTransport: DocFrameTransport = {
+export const comfyApiTransport: DocFrameTransport = {
   send(frame) {
     if (api.socket?.readyState !== WebSocket.OPEN) return false
     api.socket.send(frame)
@@ -85,13 +85,15 @@ function traceableFrame(frame: string): Record<string, unknown> | null {
   }
 }
 
-export function createLoggedTransport(): DocFrameTransport {
+export function createLoggedTransport(
+  transport: DocFrameTransport = apiTransport
+): DocFrameTransport {
   return {
     get ownsConnectionLifecycle() {
-      return apiTransport.ownsConnectionLifecycle
+      return transport.ownsConnectionLifecycle
     },
     send(frame) {
-      const delivered = apiTransport.send(frame)
+      const delivered = transport.send(frame)
       const parsed = traceableFrame(frame)
       wireLog.trace('ws_out', 'outbound frame', {
         delivered,
@@ -101,10 +103,10 @@ export function createLoggedTransport(): DocFrameTransport {
       return delivered
     },
     addEventListener(type, listener) {
-      apiTransport.addEventListener(type, listener)
+      transport.addEventListener(type, listener)
     },
     removeEventListener(type, listener) {
-      apiTransport.removeEventListener(type, listener)
+      transport.removeEventListener(type, listener)
     }
   }
 }

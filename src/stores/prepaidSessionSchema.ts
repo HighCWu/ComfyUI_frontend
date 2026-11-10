@@ -6,5 +6,9 @@ export const prepaidSessionSchema = z.object({
     name: z.string(),
     email: z.string(),
     emailVerified: z.boolean()
-  })
+  }),
+  socket_scope: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional()
 })

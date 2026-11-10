@@ -77,3 +77,24 @@ it.for([
   expect(store.user).toBeNull()
   expect(store.initialized).toBe(true)
 })
+
+it('preserves the server socket scope and clears it with an expired session', async () => {
+  vi.mocked(fetch)
+    .mockResolvedValueOnce(
+      Response.json({
+        user: {
+          id: 'owner',
+          name: 'QA',
+          email: 'qa@example.test',
+          emailVerified: true
+        },
+        socket_scope: 'a'.repeat(64)
+      })
+    )
+    .mockResolvedValueOnce(Response.json(null))
+  const store = usePrepaidSessionStore()
+  await store.initialize()
+  expect(store.socketScope).toBe('a'.repeat(64))
+  await store.refresh()
+  expect(store.socketScope).toBeNull()
+})

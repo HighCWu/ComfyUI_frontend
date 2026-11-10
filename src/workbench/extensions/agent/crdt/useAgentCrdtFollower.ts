@@ -36,6 +36,7 @@ import { recordDevEvent } from './devPanelLog'
 import type { CrdtDebugSnapshot } from './crdtSnapshot'
 import { readCrdtSnapshot } from './crdtSnapshot'
 import { DocFrameClient } from './docFrameClient'
+import type { DocFrameTransport } from './docFrameClient'
 import { RESEED_CONFLICT, isRetryableReseedCode } from './docFrameCodes'
 import type { GraphOperation } from './graphOperations'
 import { createHumanNodeIncarnationBinder } from './humanNodeIncarnation'
@@ -402,14 +403,15 @@ export function useAgentCrdtFollower(
   }
 }
 
-function startAgentCrdtFollower(
+export function startAgentCrdtFollower(
   workflowId: Ref<string | null>,
   userId: () => string | null,
   isTargetActive: Ref<boolean>,
   getGraph: () => LGraph | null,
   events: AgentCrdtFollowerEvents,
   applierDeps: AgentCrdtApplierDeps,
-  canvasFor: (workflowId: string) => Record<string, unknown> | null
+  canvasFor: (workflowId: string) => Record<string, unknown> | null,
+  transport?: DocFrameTransport
 ) {
   const connected = ref(false)
   const terminal = ref<SubscribeGiveUpReason | 'schema_error' | null>(null)
@@ -427,7 +429,7 @@ function startAgentCrdtFollower(
     dropped: 0
   })
 
-  const client = new DocFrameClient(createLoggedTransport())
+  const client = new DocFrameClient(createLoggedTransport(transport))
   const bridge = new LayoutFollowerBridge(client)
   const lifecycle = new AgentCrdtDocLifecycle(
     () => subscribedWorkflowId.value,

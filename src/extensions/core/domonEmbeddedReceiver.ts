@@ -7,6 +7,10 @@ import { useWorkflowStore } from '@/platform/workflow/management/stores/workflow
 import { validateComfyWorkflow } from '@/platform/workflow/validation/schemas/workflowSchema'
 import { useFocusNode } from '@/composables/canvas/useFocusNode'
 import { useQueueSettingsStore } from '@/stores/queueSettingsStore'
+import { useCanvasStore } from '@/renderer/core/canvas/canvasStore'
+import { layoutStore } from '@/renderer/core/layout/store/layoutStore'
+import { useAgentPanelStore } from '@/workbench/extensions/agent/stores/agent/agentPanelStore'
+import { createAgentFollowerHeadless } from '@/workbench/extensions/agent/crdt/agentFollowerHeadless'
 import { parseNodeId } from '@/types/nodeId'
 import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 import type { ComfyExtension } from '@/types/comfy'
@@ -22,6 +26,7 @@ import {
 } from './domonEmbeddedBridge'
 import type { EmbeddedBridgeConfig } from './domonEmbeddedBridge'
 import { app } from '../../scripts/app'
+import { useEmbeddedFollowerSession } from './domonEmbeddedSession'
 
 const MAX_WORKFLOW_BYTES = 8 * 1024 * 1024
 const MAX_APPEARANCE_BYTES = 32 * 1024
@@ -153,6 +158,25 @@ function widgetAcceptsValue(
 
 function registerEmbeddedReceiver(config: EmbeddedBridgeConfig) {
   const workflowStore = useWorkflowStore()
+  const canvasStore = useCanvasStore()
+  const panelStore = useAgentPanelStore()
+  const follower = createAgentFollowerHeadless({
+    ...useEmbeddedFollowerSession(),
+    workflow: () => workflowStore.activeWorkflow,
+    panelEnabled: () => panelStore.enabled,
+    graph: () =>
+      canvasStore.canvas && app.isGraphReady ? app.rootGraph : null,
+    applier: {
+      getCanvas: () => app.canvas,
+      withRemoteActor: (actor, fn) => layoutStore.withActor(actor, fn),
+      viewportBounds() {
+        const canvas = canvasStore.canvas
+        if (!canvas || canvas.graph?.isRootGraph === false) return null
+        const [x, y, width, height] = canvas.ds.visible_area
+        return { x, y, width, height }
+      }
+    }
+  })
   let readySent = false
   let disposed = false
   let snapshotGeneration = 0
@@ -470,7 +494,10 @@ function registerEmbeddedReceiver(config: EmbeddedBridgeConfig) {
     'workflow.undo': undo,
     'workflow.restore': restore,
     'editor.focus': focus,
-    'editor.appearance': applyAppearance
+    'editor.appearance': applyAppearance,
+    'agent.follower.bind': (params) => follower.bind(params.docId),
+    'agent.follower.unbind': () => follower.unbind(),
+    'agent.follower.status': () => follower.status()
   })
 
   const stopWatching = watch(
@@ -485,7 +512,11 @@ function registerEmbeddedReceiver(config: EmbeddedBridgeConfig) {
 
   return {
     afterLoadGraph: sendReady,
+    beforeLoadGraph: follower.beforeLoadGraph,
+    afterConfigureGraph: follower.afterConfigureGraph,
+    onGraphLoadError: follower.onGraphLoadError,
     dispose() {
+      follower.dispose()
       disposed = true
       snapshotGeneration++
       stopWatching()
@@ -529,6 +560,15 @@ if (embeddedConfig && window.parent !== window) {
     },
     afterLoadGraph() {
       embeddedSession?.afterLoadGraph()
+    },
+    beforeLoadGraph() {
+      embeddedSession?.beforeLoadGraph()
+    },
+    afterConfigureGraph() {
+      embeddedSession?.afterConfigureGraph()
+    },
+    onGraphLoadError() {
+      embeddedSession?.onGraphLoadError()
     }
   }
   app.registerExtension(extension)

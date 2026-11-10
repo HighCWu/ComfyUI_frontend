@@ -6,6 +6,7 @@ import { prepaidSessionSchema } from './prepaidSessionSchema'
 
 export const usePrepaidSessionStore = defineStore('prepaidSession', () => {
   const user = ref<z.infer<typeof prepaidSessionSchema>['user'] | null>(null)
+  const socketScope = ref<string | null>(null)
   const initialized = ref(false)
   let pending: Promise<void> | undefined
   let generation = 0
@@ -15,6 +16,7 @@ export const usePrepaidSessionStore = defineStore('prepaidSession', () => {
     if (import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid')
       invalidateRemoteConfig()
     user.value = null
+    socketScope.value = null
     try {
       const response = await fetch('/api/auth/get-session', {
         credentials: 'include',
@@ -22,8 +24,10 @@ export const usePrepaidSessionStore = defineStore('prepaidSession', () => {
       })
       if (!response.ok) return
       const result = prepaidSessionSchema.safeParse(await response.json())
-      if (current === generation && result.success)
+      if (current === generation && result.success) {
         user.value = result.data.user
+        socketScope.value = result.data.socket_scope ?? null
+      }
     } catch {
       if (current === generation) user.value = null
     } finally {
@@ -52,5 +56,5 @@ export const usePrepaidSessionStore = defineStore('prepaidSession', () => {
     }
   }
 
-  return { user, initialized, initialize, refresh, signOut }
+  return { user, socketScope, initialized, initialize, refresh, signOut }
 })
