@@ -510,6 +510,22 @@ describe('useAssetBrowser', () => {
       )
     })
 
+    it.for([
+      { category: 'single', tags: ['models', 'checkpoints'] },
+      { category: 'none', tags: ['models'] }
+    ])('filters imported models with $category category', async ({ tags }) => {
+      const assets = [
+        createApiAsset({ id: 'private', is_immutable: false, tags }),
+        createApiAsset({ id: 'public', is_immutable: true, tags })
+      ]
+      const { selectedNavItem, filteredAssets } = useAssetBrowser(ref(assets))
+
+      selectedNavItem.value = 'imported'
+      await nextTick()
+
+      expect(filteredAssets.value.map((asset) => asset.id)).toEqual(['private'])
+    })
+
     it('shows all models when nav is "all"', async () => {
       const assets = [
         createApiAsset({ name: 'my-model.safetensors', is_immutable: false }),
