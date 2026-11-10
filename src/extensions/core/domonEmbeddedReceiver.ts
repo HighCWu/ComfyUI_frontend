@@ -22,7 +22,7 @@ import type { EmbeddedHostPorts } from './domonEmbeddedHostPorts'
 
 import { useEmbeddedFollowerSession } from './domonEmbeddedSession'
 
-export const DOMON_EMBEDDED_HOST_PORTS_VERSION = 'domon-comfy-embedded-ports/v2'
+export const DOMON_EMBEDDED_HOST_PORTS_VERSION = 'domon-comfy-embedded-ports/v3'
 
 export function createEmbeddedHostPorts(): EmbeddedHostPorts {
   const workflowStore = useWorkflowStore()

@@ -2465,20 +2465,38 @@ export class ComfyApp implements IComfyApp {
   async loadApiJson(
     apiData: ComfyApiWorkflow,
     fileName: string,
-    options: { deferWarnings?: boolean } = {}
+    options: { deferWarnings?: boolean; assertCanImport?: () => void } = {}
   ): Promise<void> {
-    // false: no workflow load follows to republish the hash.
-    useWorkflowService().beforeLoadNewGraph(false)
-    await useExtensionService().invokeExtensionsAsync('beforeLoadGraph')
+    const importGraph = this.rootGraph
+    let expectedState = importGraph.state
+    let expectedWorkflow = useWorkflowStore().activeWorkflow
+    const assertCurrentImport = (checkWorkflow = true) => {
+      if (!options.assertCanImport) return
+      if (
+        this.rootGraph !== importGraph ||
+        importGraph.state !== expectedState ||
+        (checkWorkflow &&
+          useWorkflowStore().activeWorkflow !== expectedWorkflow)
+      ) {
+        throw new DOMException('Workflow import was replaced', 'AbortError')
+      }
+    }
+    const nodeReplacementStore = useNodeReplacementStore()
+    if (options.assertCanImport) {
+      await useExtensionService().invokeExtensionsAsync('beforeLoadGraph')
+      assertCurrentImport()
+      await nodeReplacementStore.load()
+      assertCurrentImport()
+      options.assertCanImport()
+      useWorkflowService().beforeLoadNewGraph(false)
+    } else {
+      useWorkflowService().beforeLoadNewGraph(false)
+      await useExtensionService().invokeExtensionsAsync('beforeLoadGraph')
+    }
     this.canvas.setGraph(this.rootGraph)
     withGraphIntentSource('load', () => this.clean())
 
     const ids = Object.keys(apiData)
-    // Export (API) flattens subgraph nodes to ids like "194:45". At the root
-    // graph a colon reads as an execution-id path: Locate walks into node
-    // 194's subgraph and finds nothing, and deleting an unrelated node 194
-    // retires every "194:"-prefixed missing report. Remap such ids to
-    // colon-free local ids before creating nodes.
     const importedNodeIds = new Map<string, NodeId>()
     {
       const taken = new Set(ids.filter((id) => !id.includes(':')))
@@ -2494,8 +2512,7 @@ export class ComfyApp implements IComfyApp {
       }
     }
     const missingNodeTypes: MissingNodeType[] = []
-    const nodeReplacementStore = useNodeReplacementStore()
-    await nodeReplacementStore.load()
+    if (!options.assertCanImport) await nodeReplacementStore.load()
     withGraphIntentSource('load', () => {
       for (const id of ids) {
         const data = apiData[id]
@@ -2606,13 +2623,12 @@ export class ComfyApp implements IComfyApp {
                     }
                   ).convertWidgetToInput
                   if (widget && convertFn?.(widget)) {
-                    // Re-find the target slot by name after conversion
                     toSlot = targetNode.inputs.findIndex(
                       (inp) => inp.name === input
                     )
                   }
-                } catch (_error) {
-                  // Ignore conversion errors
+                } catch {
+                  return false
                 }
               }
               if (toSlot === -1) return false
@@ -2667,17 +2683,23 @@ export class ComfyApp implements IComfyApp {
       app.rootGraph.arrange()
     })
 
-    // Intentionally no beforeConfigureGraph: API JSON builds nodes directly
-    // and never passes a ComfyWorkflowJSON through the configure stage.
+    expectedState = importGraph.state
     await useExtensionService().invokeExtensionsAsync(
       'afterConfigureGraph',
       missingNodeTypes
     )
+    assertCurrentImport()
+    options.assertCanImport?.()
     await useWorkflowService().afterLoadNewGraph(
       fileName,
       this.rootGraph.serialize() as unknown as ComfyWorkflowJSON
     )
+    assertCurrentImport(false)
+    expectedWorkflow = useWorkflowStore().activeWorkflow
+    options.assertCanImport?.()
     await useExtensionService().invokeExtensionsAsync('afterLoadGraph')
+    assertCurrentImport()
+    options.assertCanImport?.()
     if (missingNodeTypes.length) {
       this.showMissingNodesError(missingNodeTypes, options)
     }

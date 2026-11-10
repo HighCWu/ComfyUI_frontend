@@ -25,10 +25,16 @@ export type {
 }
 
 export interface EmbeddedHostPorts {
-  version: 'domon-comfy-embedded-ports/v2'
+  version: 'domon-comfy-embedded-ports/v3'
   app: Pick<
     ComfyApp,
-    'isGraphReady' | 'rootGraph' | 'canvas' | 'ui' | 'loadGraphData'
+    | 'isGraphReady'
+    | 'rootGraph'
+    | 'canvas'
+    | 'ui'
+    | 'loadGraphData'
+    | 'isApiJson'
+    | 'loadApiJson'
   >
   userId(): string | null
   sessionScope(): string | null

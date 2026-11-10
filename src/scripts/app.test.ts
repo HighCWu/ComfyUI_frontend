@@ -54,6 +54,7 @@ import {
 } from '@/platform/workflow/management/stores/workflowStore'
 import type { LoadedComfyWorkflow } from '@/platform/workflow/management/stores/comfyWorkflow'
 import { useWorkflowService } from '@/platform/workflow/core/services/workflowService'
+import { useWorkflowDraftStoreV2 } from '@/platform/workflow/persistence/stores/workflowDraftStoreV2'
 import type { useWorkflowValidation } from '@/platform/workflow/validation/composables/useWorkflowValidation'
 import { createMockChangeTracker } from '@/utils/__tests__/litegraphTestUtils'
 import { ChangeTracker } from '@/scripts/changeTracker'
@@ -1256,6 +1257,130 @@ describe('ComfyApp', () => {
           ([hook]) => hook
         )
       ).toEqual(['beforeLoadGraph', 'afterConfigureGraph', 'afterLoadGraph'])
+    })
+
+    it.for(['beforeLoadGraph', 'replacements'] as const)(
+      'keeps the previous graph until guarded %s preparation completes',
+      async (boundary) => {
+        const graph = new LGraph()
+        graph.add(new LGraphNode('Previous draft'))
+        Reflect.set(app, 'rootGraphInternal', graph)
+        Reflect.set(singletonApp, 'rootGraphInternal', graph)
+        const originalState = graph.state
+        const originalNodes = [...graph.nodes]
+        const preparation = Promise.withResolvers<void>()
+        const entered = Promise.withResolvers<void>()
+        if (boundary === 'beforeLoadGraph') {
+          mockExtensionService.invokeExtensionsAsync.mockImplementationOnce(
+            () => {
+              entered.resolve()
+              return preparation.promise
+            }
+          )
+        } else {
+          vi.spyOn(useNodeReplacementStore(), 'load').mockImplementationOnce(
+            () => {
+              entered.resolve()
+              return preparation.promise
+            }
+          )
+        }
+        const refusal = new DOMException('Chat changed', 'AbortError')
+        const assertCanImport = vi.fn(() => {
+          throw refusal
+        })
+        const loading = app.loadApiJson({}, '', { assertCanImport })
+        const outcome = loading.then(
+          () => null,
+          (error: unknown) => error
+        )
+        await entered.promise
+
+        expect(graph.state).toBe(originalState)
+        expect(graph.nodes).toEqual(originalNodes)
+        expect(assertCanImport).not.toHaveBeenCalled()
+        expect(mockWorkflowService.beforeLoadNewGraph).not.toHaveBeenCalled()
+        preparation.resolve()
+        expect(await outcome).toBe(refusal)
+
+        expect(graph.nodes).toEqual(originalNodes)
+        expect(mockWorkflowService.beforeLoadNewGraph).not.toHaveBeenCalled()
+        expect(mockWorkflowService.afterLoadNewGraph).not.toHaveBeenCalled()
+      }
+    )
+
+    it('refuses a replaced graph after preparation without clearing it', async () => {
+      const graph = new LGraph()
+      Reflect.set(app, 'rootGraphInternal', graph)
+      Reflect.set(singletonApp, 'rootGraphInternal', graph)
+      const replacementNode = new LGraphNode('Manually opened workflow')
+      vi.spyOn(useNodeReplacementStore(), 'load').mockImplementationOnce(
+        async () => {
+          graph.clear()
+          graph.add(replacementNode)
+        }
+      )
+      const assertCanImport = vi.fn()
+
+      await expect(
+        app.loadApiJson({}, '', { assertCanImport })
+      ).rejects.toMatchObject({ name: 'AbortError' })
+
+      expect(graph.nodes).toEqual([replacementNode])
+      expect(assertCanImport).not.toHaveBeenCalled()
+      expect(mockWorkflowService.beforeLoadNewGraph).not.toHaveBeenCalled()
+    })
+
+    it.for(['afterConfigureGraph', 'afterLoadGraph'] as const)(
+      'does not continue a guarded import replaced during %s',
+      async (boundary) => {
+        const graph = new LGraph()
+        Reflect.set(app, 'rootGraphInternal', graph)
+        Reflect.set(singletonApp, 'rootGraphInternal', graph)
+        const replacementNode = new LGraphNode('Manually opened workflow')
+        mockExtensionService.invokeExtensionsAsync.mockImplementation(
+          async (hook) => {
+            if (hook === boundary) {
+              graph.clear()
+              graph.add(replacementNode)
+            }
+          }
+        )
+        await expect(
+          app.loadApiJson({}, '', { assertCanImport: vi.fn() })
+        ).rejects.toMatchObject({ name: 'AbortError' })
+
+        expect(graph.nodes).toEqual([replacementNode])
+        if (boundary === 'afterConfigureGraph') {
+          expect(mockWorkflowService.afterLoadNewGraph).not.toHaveBeenCalled()
+        } else {
+          expect(mockWorkflowService.afterLoadNewGraph).toHaveBeenCalledOnce()
+        }
+      }
+    )
+
+    it('rechecks the import guard before activating the temporary workflow', async () => {
+      const graph = new LGraph()
+      Reflect.set(app, 'rootGraphInternal', graph)
+      Reflect.set(singletonApp, 'rootGraphInternal', graph)
+      let canImport = true
+      mockExtensionService.invokeExtensionsAsync.mockImplementation(
+        async (hook) => {
+          if (hook === 'afterConfigureGraph') canImport = false
+        }
+      )
+      const refusal = new DOMException('Automatic queue enabled', 'AbortError')
+
+      await expect(
+        app.loadApiJson({}, '', {
+          assertCanImport() {
+            if (!canImport) throw refusal
+          }
+        })
+      ).rejects.toBe(refusal)
+
+      expect(mockWorkflowService.beforeLoadNewGraph).toHaveBeenCalledOnce()
+      expect(mockWorkflowService.afterLoadNewGraph).not.toHaveBeenCalled()
     })
   })
 
@@ -3757,6 +3882,47 @@ describe('ComfyApp', () => {
       await app.loadApiJson({}, 'repeat')
 
       expect(useWorkflowStore().activeWorkflow).toBe(activeWorkflow)
+    })
+
+    it('imports a guarded API graph into a temporary tab and preserves the previous draft', async () => {
+      await useRealWorkflowService()
+      const workflowStore = useWorkflowStore()
+      const graph = new LGraph()
+      Reflect.set(app, 'rootGraphInternal', graph)
+      Reflect.set(singletonApp, 'rootGraphInternal', graph)
+      singletonApp.canvas = mockCanvas
+      Reflect.set(mockCanvas, 'ds', { scale: 1, offset: [0, 0] })
+      vi.mocked(workflowStore.createNewTemporary).mockRestore()
+      vi.mocked(workflowStore.getWorkflowByPath).mockRestore()
+      vi.mocked(workflowStore.isActive).mockRestore()
+      vi.mocked(workflowStore.openWorkflow).mockRestore()
+      useSettingStore().settingValues['Comfy.Workflow.Persist'] = true
+      const saveDraft = vi
+        .spyOn(useWorkflowDraftStoreV2(), 'saveDraft')
+        .mockReturnValue(true)
+      await app.loadApiJson({}, 'previous-draft')
+      const previous = workflowStore.activeWorkflow
+      assert(previous)
+      const previousDraft = JSON.stringify(previous.activeState)
+      const nodeType = 'test/GuardedApiImport'
+      class ApiImportNode extends LGraphNode {}
+      LiteGraph.registerNodeType(nodeType, ApiImportNode)
+      const assertCanImport = vi.fn()
+
+      await app.loadApiJson({ '1': { class_type: nodeType, inputs: {} } }, '', {
+        assertCanImport
+      })
+
+      expect(graph.nodes).toHaveLength(1)
+      expect(graph.nodes[0].type).toBe(nodeType)
+      expect(workflowStore.activeWorkflow).not.toBe(previous)
+      expect(workflowStore.activeWorkflow?.isTemporary).toBe(true)
+      expect(saveDraft).toHaveBeenCalledWith(
+        previous.path,
+        previousDraft,
+        expect.objectContaining({ isTemporary: true })
+      )
+      expect(workflowStore.getWorkflowByPath(previous.path)).toBe(previous)
     })
   })
 
