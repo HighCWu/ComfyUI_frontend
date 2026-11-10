@@ -93,7 +93,14 @@ export function createEmbeddedNativeOpener(env: NativeOpenEnvironment) {
         if (response.status !== 200)
           return { ok: false, code: 'native_document_unavailable' }
         env.assertCanOpen()
-        if (!(await env.openWorkflow(target, { isCurrent })))
+        if (
+          !(await env.openWorkflow(target, {
+            isCurrent: () => {
+              env.assertCanOpen()
+              return isCurrent()
+            }
+          }))
+        )
           return {
             ok: false,
             code: isCurrent() ? 'native_open_failed' : 'identity_changed'

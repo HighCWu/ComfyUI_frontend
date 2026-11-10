@@ -207,3 +207,21 @@ it('rechecks automatic queue after asynchronous file resolution before normal op
   expect(f.env.bind).not.toHaveBeenCalled()
   expect(f.queueMode.value).toBe('change')
 })
+
+it('refuses graph activation when automatic queue changes during the normal remote load', async () => {
+  const f = fixture()
+  vi.mocked(f.env.openWorkflow).mockImplementation(async (target, options) => {
+    await Promise.resolve()
+    f.queueMode.value = 'change'
+    if (!options.isCurrent()) return false
+    f.active.value = target
+    return true
+  })
+  await expect(f.opener.open({ docId, editorPath })).rejects.toMatchObject({
+    code: 'auto_queue_active'
+  })
+  expect(f.active.value).toBe(f.previous)
+  expect(f.previous.isModified).toBe(true)
+  expect(f.env.bind).not.toHaveBeenCalled()
+  expect(f.queueMode.value).toBe('change')
+})
