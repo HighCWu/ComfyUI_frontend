@@ -4,6 +4,7 @@ import { setNodeWidgetValue } from '@/core/graph/widgets/nodeWidgetValues'
 import { getPreservedQueryParam } from '@/platform/navigation/preservedQueryManager'
 import { PRESERVED_QUERY_NAMESPACES } from '@/platform/navigation/preservedQueryNamespaces'
 import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
+import { useWorkflowService } from '@/platform/workflow/core/services/workflowService'
 import { validateComfyWorkflow } from '@/platform/workflow/validation/schemas/workflowSchema'
 import { useFocusNode } from '@/composables/canvas/useFocusNode'
 import { useQueueSettingsStore } from '@/stores/queueSettingsStore'
@@ -27,6 +28,8 @@ import {
 import type { EmbeddedBridgeConfig } from './domonEmbeddedBridge'
 import { app } from '../../scripts/app'
 import { useEmbeddedFollowerSession } from './domonEmbeddedSession'
+import { createEmbeddedNativeOpener } from './domonEmbeddedNativeOpen'
+import { api } from '@/scripts/api'
 
 const MAX_WORKFLOW_BYTES = 8 * 1024 * 1024
 const MAX_APPEARANCE_BYTES = 32 * 1024
@@ -160,8 +163,9 @@ function registerEmbeddedReceiver(config: EmbeddedBridgeConfig) {
   const workflowStore = useWorkflowStore()
   const canvasStore = useCanvasStore()
   const panelStore = useAgentPanelStore()
+  const session = useEmbeddedFollowerSession()
   const follower = createAgentFollowerHeadless({
-    ...useEmbeddedFollowerSession(),
+    ...session,
     workflow: () => workflowStore.activeWorkflow,
     panelEnabled: () => panelStore.enabled,
     graph: () =>
@@ -176,6 +180,18 @@ function registerEmbeddedReceiver(config: EmbeddedBridgeConfig) {
         return { x, y, width, height }
       }
     }
+  })
+  const nativeOpener = createEmbeddedNativeOpener({
+    ...session,
+    panelEnabled: () => panelStore.enabled,
+    workflow: () => workflowStore.activeWorkflow,
+    assertCanOpen: () => rejectAutomaticQueue(),
+    syncWorkflows: (directory) => workflowStore.syncWorkflows(directory),
+    getWorkflowByPath: (path) => workflowStore.getWorkflowByPath(path),
+    readUserData: (path) => api.getUserData(path),
+    openWorkflow: (workflow, options) =>
+      useWorkflowService().openWorkflow(workflow, options),
+    bind: (docId) => follower.bind(docId)
   })
   let readySent = false
   let disposed = false
@@ -490,6 +506,7 @@ function registerEmbeddedReceiver(config: EmbeddedBridgeConfig) {
 
   const removeReceiver = installEmbeddedBridgeReceiver(window, config, {
     'workflow.read': readWorkflow,
+    'workflow.openNative': (params) => nativeOpener.open(params),
     'workflow.setWidget': setWidget,
     'workflow.undo': undo,
     'workflow.restore': restore,
@@ -516,6 +533,7 @@ function registerEmbeddedReceiver(config: EmbeddedBridgeConfig) {
     afterConfigureGraph: follower.afterConfigureGraph,
     onGraphLoadError: follower.onGraphLoadError,
     dispose() {
+      nativeOpener.dispose()
       follower.dispose()
       disposed = true
       snapshotGeneration++
