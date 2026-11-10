@@ -14,11 +14,12 @@ import { useSubgraphNavigationStore } from '@/stores/subgraphNavigationStore'
 
 type MockSubgraph = Pick<Subgraph, 'id' | 'rootGraph' | '_nodes' | 'nodes'>
 
-const { routeHash, routerPush, routerReplace, routerHistory } =
+const { routeHash, routeQuery, routerPush, routerReplace, routerHistory } =
   await vi.hoisted(async () => {
     const { ref } = await import('vue')
     return {
       routeHash: ref(''),
+      routeQuery: ref<VueRouter.LocationQuery>({}),
       routerPush: vi.fn(),
       routerReplace: vi.fn(),
       routerHistory: { state: {} }
@@ -90,6 +91,13 @@ vi.mock<unknown>(import('vue-router'), () => ({
   NavigationFailureType: { cancelled: 8, duplicated: 16 },
   isNavigationFailure: vi.fn(() => false),
   useRouter: () => ({
+    currentRoute: {
+      value: {
+        get query() {
+          return routeQuery.value
+        }
+      }
+    },
     push: routerPush,
     replace: routerReplace,
     options: { history: routerHistory }
@@ -111,6 +119,7 @@ describe('useSubgraphNavigationStore', () => {
     app.canvas.ds.state.offset = [0, 0]
     app.graph.getNodeById = vi.fn()
     routeHash.value = ''
+    routeQuery.value = {}
     routerHistory.state = {}
     routerPush.mockReset().mockImplementation(async (target) => {
       applyRouteTarget(target)
@@ -354,6 +363,32 @@ describe('useSubgraphNavigationStore', () => {
     )
     expect(useWorkflowService().openWorkflow).not.toHaveBeenCalled()
   })
+
+  it.for<{ name: string; query: VueRouter.LocationQuery }>([
+    {
+      name: 'embedded context',
+      query: {
+        'domon-embedded': '1',
+        'domon-host': 'https://domon.ai',
+        'domon-channel': '0123456789abcdef0123456789abcdef'
+      }
+    },
+    { name: 'ordinary empty query', query: {} }
+  ])(
+    'preserves $name during native graph hash navigation',
+    async ({ query }) => {
+      routeQuery.value = query
+      const navigationStore = useSubgraphNavigationStore()
+
+      await navigationStore.updateHash('workflow-load')
+      await navigationStore.updateHash('graph')
+
+      expect(routerReplace).toHaveBeenCalledWith(
+        expect.objectContaining({ hash: '#current-root', query })
+      )
+      expect(routeQuery.value).toEqual(query)
+    }
+  )
 
   it('writes the latest graph after an earlier route write settles', async () => {
     const navigationStore = useSubgraphNavigationStore()

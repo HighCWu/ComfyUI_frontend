@@ -31,6 +31,7 @@ vi.mock<unknown>(import('vue-router'), () => ({
   isNavigationFailure: vi.fn(() => false),
   useRouter: () => ({
     ...routerMocks,
+    currentRoute: { value: { query: {} } },
     options: { history: routerMocks.history }
   })
 }))
