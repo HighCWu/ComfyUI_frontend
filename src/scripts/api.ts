@@ -990,9 +990,7 @@ export class ComfyApi extends EventTarget {
     }, 1000)
   }
 
-  private async addSocketAuth(
-    params: URLSearchParams
-  ): Promise<{
+  private async addSocketAuth(params: URLSearchParams): Promise<{
     allowed: boolean
     socketScope?: string
     refreshScope?: () => Promise<WebSessionRequestScope | undefined>
@@ -1295,28 +1293,21 @@ export class ComfyApi extends EventTarget {
    */
   async reconnectSocket(): Promise<void> {
     if (this.socketGeneration === 0) return
-    await this.replaceSocket()
+    await this.replaceSocket(true)
   }
 
-  private async replaceSocket(): Promise<void> {
+  private async replaceSocket(isReconnect = false): Promise<void> {
     const previous = this.socket
-    // serverFeatureFlags deliberately keeps the previous map: clearing it would
-    // downgrade every serverSupportsFeature() caller until the next delivery.
     this.serverFeatureFlagsSettled.value = false
-    // Detach before closing so the previous socket's close handler sees it is
-    // no longer the active socket and does not start a competing reconnect.
     this.socket = null
     if (previous && previous.readyState !== WebSocket.CLOSED) {
       try {
         previous.close()
       } catch {
-        // Already-terminating socket; nothing to clean up.
+        return this.createSocket(isReconnect)
       }
     }
-    // createSocket() bumps the generation; any overlapping reset or reconnect
-    // that is still awaiting its token will see it lost the race and bail,
-    // leaving this the sole owner of the reconnected socket.
-    await this.createSocket()
+    await this.createSocket(isReconnect)
   }
 
   /**

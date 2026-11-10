@@ -185,7 +185,10 @@ describe('ComfyApi realtime socket reset', () => {
     }
   )
 
-  it('leaves a newer watch-owned socket intact when the policy read settles late', async () => {
+  it('reports one recovery when a watch-owned socket replaces the policy-closed socket', async () => {
+    const reconnected = vi.fn()
+    api.addEventListener('reconnected', reconnected)
+    onTestFinished(() => api.removeEventListener('reconnected', reconnected))
     let current = scopedSession('a'.repeat(64))
     let finish!: (scope: WebSessionRequestScope) => void
     const refresh = vi.fn(
@@ -197,6 +200,7 @@ describe('ComfyApi realtime socket reset', () => {
     socketSession(async () => current, refresh)
     await api.init()
     const old = FakeWebSocket.instances[0]
+    old.simulateOpen()
     old.readyState = FakeWebSocket.CLOSED
     old.handlers.close(new CloseEvent('close', { code: 1008 }))
     current = scopedSession('b'.repeat(64))
@@ -206,6 +210,20 @@ describe('ComfyApi realtime socket reset', () => {
     await flush()
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect(api.socket).toBe(active)
+    expect(reconnected).not.toHaveBeenCalled()
+    FakeWebSocket.instances[1].simulateOpen()
+    expect(reconnected).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not report a recovery on initial open or an identity reset', async () => {
+    const reconnected = vi.fn()
+    api.addEventListener('reconnected', reconnected)
+    onTestFinished(() => api.removeEventListener('reconnected', reconnected))
+    await api.init()
+    FakeWebSocket.instances[0].simulateOpen()
+    await api.resetSocket()
+    FakeWebSocket.instances[1].simulateOpen()
+    expect(reconnected).not.toHaveBeenCalled()
   })
 
   it('retains ordinary network reconnect behavior without policy refresh', async () => {
