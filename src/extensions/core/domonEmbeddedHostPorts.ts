@@ -1,0 +1,59 @@
+import type { ComfyApp, ComfyExtension } from '@/types/comfy'
+import type {
+  ComfyWorkflow,
+  WorkflowChangeTracker
+} from '@/platform/workflow/management/stores/comfyWorkflow'
+import type {
+  ComfyWorkflowJSON,
+  validateComfyWorkflow
+} from '@/platform/workflow/validation/schemas/workflowSchema'
+import type { LGraphNode } from '@/lib/litegraph/src/LGraphNode'
+import type { parseNodeId } from '@/types/nodeId'
+import type { setNodeWidgetValue } from '@/core/graph/widgets/nodeWidgetValues'
+import type {
+  createAgentFollowerHeadless,
+  HeadlessBindResult
+} from '@/workbench/extensions/agent/crdt/agentFollowerHeadless'
+
+export type {
+  ComfyWorkflow,
+  ComfyWorkflowJSON,
+  WorkflowChangeTracker,
+  ComfyExtension,
+  HeadlessBindResult
+}
+
+export interface EmbeddedHostPorts {
+  version: 'domon-comfy-embedded-ports/v1'
+  app: Pick<
+    ComfyApp,
+    'isGraphReady' | 'rootGraph' | 'canvas' | 'ui' | 'loadGraphData'
+  >
+  userId(): string | null
+  sessionScope(): string | null
+  panelEnabled(): boolean
+  getWorkflow(): ComfyWorkflow | null
+  getQueueMode(): string
+  subscribeWorkflowTracker(listener: () => void): () => void
+  subscribeIdentity(listener: () => void): () => void
+  createFollower(): ReturnType<typeof createAgentFollowerHeadless>
+  parseNodeId: typeof parseNodeId
+  setNodeWidgetValue: typeof setNodeWidgetValue
+  validateComfyWorkflow: typeof validateComfyWorkflow
+  focusNode(node: LGraphNode): Promise<void>
+  setActiveLocale(locale: string): Promise<string>
+  syncWorkflows(directory: string): Promise<unknown>
+  getWorkflowByPath(path: string): ComfyWorkflow | null
+  readUserData(path: string): Promise<Response>
+  openWorkflow(
+    workflow: ComfyWorkflow,
+    options: { isCurrent(): boolean }
+  ): Promise<boolean>
+  preservedQuery(): Partial<
+    Record<'domon-embedded' | 'domon-host' | 'domon-channel', string>
+  >
+}
+
+export interface EmbeddedAppRegistration {
+  registerExtension(extension: ComfyExtension): void
+}
