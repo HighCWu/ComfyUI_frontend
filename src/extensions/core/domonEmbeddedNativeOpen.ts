@@ -82,7 +82,7 @@ export function createEmbeddedNativeOpener(env: NativeOpenEnvironment) {
         (env.workflow() === previousWorkflow || env.workflow() === target)
       try {
         env.assertCanOpen()
-        await env.syncWorkflows('.native-agent')
+        await env.syncWorkflows('')
         if (!isCurrent()) return { ok: false, code: 'identity_changed' }
         target = env.getWorkflowByPath(editorPath)
         if (!target || target.isTemporary || target.path !== editorPath)

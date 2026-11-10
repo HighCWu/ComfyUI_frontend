@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fromAny, fromPartial } from '@total-typescript/shoehorn'
 import { nextTick } from 'vue'
 
@@ -120,6 +120,30 @@ describe('useWorkflowStore', () => {
     it('should sync workflows', async () => {
       await syncRemoteWorkflows(['a.json', 'b.json'])
       expect(store.workflows.length).toBe(2)
+    })
+
+    it('retains an inactive ordinary tab and lookup when root sync includes native files', async () => {
+      const nativeFile =
+        '.native-agent/梦中的花园 (01234567-89ab-4cde-8fab-0123456789ab).json'
+      await syncRemoteWorkflows(['ordinary.json', nativeFile])
+      const ordinary = store.getWorkflowByPath('workflows/ordinary.json')
+      const native = store.getWorkflowByPath('workflows/' + nativeFile)
+      assert.exists(ordinary)
+      assert.exists(native)
+      vi.mocked(api.getUserData).mockImplementation(
+        async () => new Response(defaultGraphJSON)
+      )
+      await store.openWorkflow(ordinary)
+      await store.openWorkflow(native)
+
+      await syncRemoteWorkflows(['ordinary.json', nativeFile])
+
+      expect(store.activeWorkflow).toBe(native)
+      expect(store.getWorkflowByPath('workflows/ordinary.json')).toBe(ordinary)
+      expect(store.getWorkflowByPath('workflows/' + nativeFile)).toBe(native)
+      expect(store.openWorkflows).toContain(ordinary)
+      expect(store.openWorkflows).toContain(native)
+      expect(store.workflows).toHaveLength(2)
     })
 
     it('should exclude temporary workflows', async () => {

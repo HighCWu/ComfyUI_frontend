@@ -64,7 +64,7 @@ function fixture() {
 it('opens the owner-readable canonical file normally before binding its exact native document', async () => {
   const f = fixture()
   expect(await f.opener.open({ docId, editorPath })).toEqual({ ok: true })
-  expect(f.env.syncWorkflows).toHaveBeenCalledWith('.native-agent')
+  expect(f.env.syncWorkflows).toHaveBeenCalledWith('')
   expect(f.env.readUserData).toHaveBeenCalledWith(editorPath)
   expect(f.env.openWorkflow).toHaveBeenCalledWith(f.target, {
     isCurrent: expect.any(Function)
