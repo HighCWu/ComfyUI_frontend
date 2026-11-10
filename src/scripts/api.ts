@@ -1480,18 +1480,19 @@ export class ComfyApi extends EventTarget {
     return zPostAssetsFromWorkflowResponse.parse(data)
   }
 
-  /**
-   * Gets a list of model folder keys (eg ['checkpoints', 'loras', ...])
-   * @returns The list of model folder keys
-   */
   async getModelFolders(): Promise<ModelFolderInfo[]> {
-    const res = await this.fetchApi(`/experiment/models`)
-    if (res.status === 404) {
-      return []
+    const reader = currentCatalogueReaderPorts()
+    let data: unknown
+    if (reader !== null) {
+      data = await reader.readModelFolders?.()
+    } else {
+      const res = await this.fetchApi(`/experiment/models`)
+      if (res.status === 404) return []
+      data = await res.json()
     }
     const folderBlacklist = ['configs', 'custom_nodes']
     return modelFolderInfosSchema
-      .parse(await res.json())
+      .parse(data)
       .filter((folder) => !folderBlacklist.includes(folder.name))
   }
 

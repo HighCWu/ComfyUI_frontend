@@ -7,6 +7,7 @@ export const DOMON_CATALOGUE_READER_PORTS_VERSION =
 export interface CatalogueReaderPorts {
   readonly version: typeof DOMON_CATALOGUE_READER_PORTS_VERSION
   readonly readerId: string
+  readModelFolders?(): Promise<unknown>
   readModelAssetPage?(
     options: AssetRequestOptions,
     context: string

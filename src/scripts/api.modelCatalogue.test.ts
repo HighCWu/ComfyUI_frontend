@@ -1,7 +1,14 @@
-import { expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  DOMON_CATALOGUE_READER_PORTS_VERSION,
+  clearCatalogueReaderPorts,
+  installCatalogueReaderPorts
+} from '@/extensions/core/domonCatalogueReaderPorts'
 import { ComfyApi } from '@/scripts/api'
 import { reportError } from '@/platform/telemetry/reportError'
+
+import type { CatalogueReaderPorts } from '@/extensions/core/domonCatalogueReaderPorts'
 
 vi.mock(import('@/platform/telemetry/reportError'))
 
@@ -55,6 +62,80 @@ it('preserves validated model-folder extension allowlists', async () => {
       extensions: ['.gguf', '.onnx']
     }
   ])
+})
+
+it('keeps the non-embedded missing model-folder index empty', async () => {
+  const client = new ComfyApi()
+  vi.spyOn(client, 'fetchApi').mockResolvedValue(
+    new Response(null, { status: 404 })
+  )
+
+  await expect(client.getModelFolders()).resolves.toEqual([])
+})
+
+describe('installed model-folder reader', () => {
+  afterEach(() => {
+    clearCatalogueReaderPorts()
+  })
+
+  it.for([
+    {
+      name: 'validated folders with native blacklist',
+      raw: [
+        { name: 'LLM/Qwen', folders: ['LLM/Qwen'], extensions: ['.gguf'] },
+        { name: 'configs', folders: ['configs'], extensions: [] },
+        { name: 'custom_nodes', folders: ['custom_nodes'], extensions: [] }
+      ],
+      expected: [
+        { name: 'LLM/Qwen', folders: ['LLM/Qwen'], extensions: ['.gguf'] }
+      ]
+    },
+    { name: 'an authorized empty index', raw: [], expected: [] }
+  ])('reads $name without direct fetch', async ({ raw, expected }) => {
+    const client = new ComfyApi()
+    const direct = vi.spyOn(client, 'fetchApi')
+    installCatalogueReaderPorts({
+      version: DOMON_CATALOGUE_READER_PORTS_VERSION,
+      readerId: 'model-folders',
+      readModelFolders: async () => raw
+    })
+
+    await expect(client.getModelFolders()).resolves.toEqual(expected)
+    expect(direct).not.toHaveBeenCalled()
+  })
+
+  it.for<{
+    name: string
+    readModelFolders?: CatalogueReaderPorts['readModelFolders']
+  }>([
+    { name: 'a missing optional reader' },
+    {
+      name: 'a refused or disposed reader',
+      readModelFolders: async () =>
+        Promise.reject(new TypeError('Reader disposed'))
+    },
+    {
+      name: 'malformed folder paths',
+      readModelFolders: async () => [{ name: 'checkpoints', folders: 'models' }]
+    },
+    {
+      name: 'malformed extension allowlists',
+      readModelFolders: async () => [
+        { name: 'checkpoints', folders: ['models'], extensions: [42] }
+      ]
+    }
+  ])('refuses $name without direct fallback', async ({ readModelFolders }) => {
+    const client = new ComfyApi()
+    const direct = vi.spyOn(client, 'fetchApi')
+    installCatalogueReaderPorts({
+      version: DOMON_CATALOGUE_READER_PORTS_VERSION,
+      readerId: 'model-folders',
+      readModelFolders
+    })
+
+    await expect(client.getModelFolders()).rejects.toThrow()
+    expect(direct).not.toHaveBeenCalled()
+  })
 })
 
 it.for([
