@@ -31,6 +31,7 @@ export function createEmbeddedHostPorts(): EmbeddedHostPorts {
   const session = useEmbeddedFollowerSession()
   return {
     version: DOMON_EMBEDDED_HOST_PORTS_VERSION,
+    canvasImportGuardVersion: 1,
     app,
     ...session,
     panelEnabled: () => panelStore.enabled,

@@ -26,6 +26,7 @@ export type {
 
 export interface EmbeddedHostPorts {
   version: 'domon-comfy-embedded-ports/v3'
+  canvasImportGuardVersion?: 1
   app: Pick<
     ComfyApp,
     | 'isGraphReady'
