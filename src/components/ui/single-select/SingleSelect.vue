@@ -48,7 +48,9 @@
           class="icon-[lucide--loader-circle] shrink-0 animate-spin text-muted-foreground"
         />
         <slot v-else name="icon" />
-        <SelectValue :placeholder="label" class="truncate" />
+        <SelectValue :placeholder="label" class="truncate">
+          {{ selectedLabel }}
+        </SelectValue>
       </div>
       <div :class="selectDropdownClass">
         <i class="icon-[lucide--chevron-down] text-muted-foreground" />
@@ -104,7 +106,7 @@ import {
   SelectValue,
   SelectViewport
 } from 'reka-ui'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { StyleValue } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -166,6 +168,11 @@ const {
 const selectedItem = defineModel<string | number | undefined>({
   required: true
 })
+
+const selectedLabel = computed(
+  () =>
+    options.find((option) => option.value === selectedItem.value)?.name ?? label
+)
 
 const { t } = useI18n()
 const isOpen = ref(false)

@@ -1,5 +1,5 @@
 import { ZIndex } from '@primeuix/utils/zindex'
-import { render, screen } from '@testing-library/vue'
+import { render, screen, waitFor } from '@testing-library/vue'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'vue-component-type-helpers'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -101,6 +101,57 @@ afterEach(() => {
 })
 
 describe('SingleSelect', () => {
+  it('updates the selected label while the dropdown stays closed', async () => {
+    const { rerender, unmount } = render(SingleSelect, {
+      props: {
+        modelValue: 'popular',
+        options: [{ name: '热门', value: 'popular' }],
+        label: 'Sort'
+      },
+      global: { plugins: [i18n] }
+    })
+    const trigger = screen.getByRole('combobox', { name: 'Sort' })
+
+    expect(trigger).toHaveAttribute('data-state', 'closed')
+    await waitFor(() => expect(trigger).toHaveTextContent('热门'))
+
+    await rerender({ options: [{ name: 'Popular', value: 'popular' }] })
+
+    expect(trigger).toHaveAttribute('data-state', 'closed')
+    await waitFor(() => expect(trigger).toHaveTextContent('Popular'))
+
+    await rerender({ options: [{ name: '热门', value: 'popular' }] })
+
+    expect(trigger).toHaveAttribute('data-state', 'closed')
+    await waitFor(() => expect(trigger).toHaveTextContent('热门'))
+
+    unmount()
+  })
+
+  it.for([
+    {
+      name: 'placeholder without a value',
+      modelValue: undefined,
+      text: 'Pick'
+    },
+    { name: 'numeric zero option', modelValue: 0, text: 'Zero' }
+  ])('shows the $name while closed', async ({ modelValue, text }) => {
+    const { unmount } = render(SingleSelect, {
+      props: {
+        modelValue,
+        options: [{ name: 'Zero', value: 0 }],
+        label: 'Pick'
+      },
+      global: { plugins: [i18n] }
+    })
+    const trigger = screen.getByRole('combobox', { name: 'Pick' })
+
+    await waitFor(() => expect(trigger).toHaveTextContent(text))
+    expect(trigger).toHaveAttribute('data-state', 'closed')
+
+    unmount()
+  })
+
   it('filters searchable options', async () => {
     const user = userEvent.setup()
     const { unmount } = renderInParent(undefined, { searchable: true })
