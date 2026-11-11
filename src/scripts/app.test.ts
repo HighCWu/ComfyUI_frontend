@@ -25,6 +25,7 @@ import {
 } from 'vitest'
 import { markRaw, ref } from 'vue'
 import { useLitegraphService } from '@/services/litegraphService'
+import { useSubgraphService } from '@/services/subgraphService'
 import { useNodeDefStore } from '@/stores/nodeDefStore'
 import { transformInputSpecV1ToV2 } from '@/schemas/nodeDef/migration'
 
@@ -200,6 +201,8 @@ vi.mock(import('@/services/extensionService'), () => ({
     fromPartial<ReturnType<typeof useExtensionService>>(mockExtensionService)
   )
 }))
+
+vi.mock(import('@/services/subgraphService'), { spy: true })
 
 vi.mock(import('@/platform/missingModel/missingModelPipeline'), () => ({
   refreshMissingModelPipeline: mockRefreshMissingModelPipeline,
@@ -572,6 +575,142 @@ describe('ComfyApp', () => {
         'workflow-load',
         undefined
       )
+    })
+
+    it('keeps the canvas and subgraphs until guarded preparation completes and refuses a changed Chat', async () => {
+      app.canvasElRef.value = document.createElement('canvas')
+      const graph = new LGraph()
+      graph.add(new LGraphNode('Previous draft'))
+      Reflect.set(app, 'rootGraphInternal', graph)
+      Reflect.set(singletonApp, 'rootGraphInternal', graph)
+      const originalState = graph.state
+      const originalNodes = [...graph.nodes]
+      const subgraphs = useSubgraphService()
+      vi.mocked(useSubgraphService).mockReturnValue(subgraphs)
+      const loadSubgraphs = vi.spyOn(subgraphs, 'loadSubgraphs')
+      const configure = vi.spyOn(graph, 'configure')
+      const preparation = Promise.withResolvers<void>()
+      const entered = Promise.withResolvers<void>()
+      vi.spyOn(useNodeReplacementStore(), 'load').mockImplementationOnce(() => {
+        entered.resolve()
+        return preparation.promise
+      })
+      const refusal = new DOMException('Chat changed', 'AbortError')
+      const assertCanImport = vi.fn(() => {
+        throw refusal
+      })
+      const outcome = app
+        .loadGraphData(createWorkflowGraphData(), true, false, '', {
+          assertCanImport
+        })
+        .then(
+          () => null,
+          (error: unknown) => error
+        )
+      await entered.promise
+
+      expect(graph.state).toBe(originalState)
+      expect(graph.nodes).toEqual(originalNodes)
+      expect(mockWorkflowService.beforeLoadNewGraph).not.toHaveBeenCalled()
+      expect(loadSubgraphs).not.toHaveBeenCalled()
+      expect(configure).not.toHaveBeenCalled()
+      expect(assertCanImport).not.toHaveBeenCalled()
+      preparation.resolve()
+      expect(await outcome).toBe(refusal)
+      expect(graph.nodes).toEqual(originalNodes)
+      expect(mockWorkflowService.beforeLoadNewGraph).not.toHaveBeenCalled()
+      expect(loadSubgraphs).not.toHaveBeenCalled()
+      expect(configure).not.toHaveBeenCalled()
+      expect(mockWorkflowService.afterLoadNewGraph).not.toHaveBeenCalled()
+      expect(
+        mockExtensionService.invokeExtensionsAsync.mock.calls.filter(
+          ([hook]) => hook === 'onGraphLoadError'
+        )
+      ).toEqual([['onGraphLoadError', refusal]])
+      expect(ChangeTracker.isLoadingGraph).toBe(false)
+    })
+
+    it('rejects a replaced canvas after preparation before clearing or loading subgraphs', async () => {
+      app.canvasElRef.value = document.createElement('canvas')
+      const graph = new LGraph()
+      Reflect.set(app, 'rootGraphInternal', graph)
+      Reflect.set(singletonApp, 'rootGraphInternal', graph)
+      const replacement = new LGraphNode('User-selected graph')
+      const subgraphs = useSubgraphService()
+      vi.mocked(useSubgraphService).mockReturnValue(subgraphs)
+      const loadSubgraphs = vi.spyOn(subgraphs, 'loadSubgraphs')
+      const configure = vi.spyOn(graph, 'configure')
+      vi.spyOn(useNodeReplacementStore(), 'load').mockImplementationOnce(
+        async () => {
+          graph.clear()
+          graph.add(replacement)
+        }
+      )
+      const assertCanImport = vi.fn()
+      await expect(
+        app.loadGraphData(createWorkflowGraphData(), true, false, '', {
+          assertCanImport
+        })
+      ).rejects.toMatchObject({ name: 'AbortError' })
+      expect(graph.nodes).toEqual([replacement])
+      expect(assertCanImport).not.toHaveBeenCalled()
+      expect(mockWorkflowService.beforeLoadNewGraph).not.toHaveBeenCalled()
+      expect(loadSubgraphs).not.toHaveBeenCalled()
+      expect(configure).not.toHaveBeenCalled()
+    })
+
+    it('rejects a canvas import invalidated after configuration before activating a temporary workflow', async () => {
+      app.canvasElRef.value = document.createElement('canvas')
+      const graph = new LGraph()
+      Reflect.set(app, 'rootGraphInternal', graph)
+      Reflect.set(singletonApp, 'rootGraphInternal', graph)
+      let allowed = true
+      mockExtensionService.invokeExtensionsAsync.mockImplementation(
+        async (hook) => {
+          if (hook === 'afterConfigureGraph') allowed = false
+        }
+      )
+      const refusal = new DOMException('Import identity changed', 'AbortError')
+      await expect(
+        app.loadGraphData(createWorkflowGraphData(), true, false, '', {
+          assertCanImport() {
+            if (!allowed) throw refusal
+          }
+        })
+      ).rejects.toBe(refusal)
+      expect(mockWorkflowService.beforeLoadNewGraph).toHaveBeenCalledOnce()
+      expect(mockWorkflowService.afterLoadNewGraph).not.toHaveBeenCalled()
+      expect(
+        mockExtensionService.invokeExtensionsAsync.mock.calls.filter(
+          ([hook]) => hook === 'onGraphLoadError'
+        )
+      ).toEqual([['onGraphLoadError', refusal]])
+      expect(ChangeTracker.isLoadingGraph).toBe(false)
+    })
+
+    it('allows a guarded canvas import to activate its normal temporary workflow', async () => {
+      app.canvasElRef.value = document.createElement('canvas')
+      const graph = new LGraph()
+      Reflect.set(app, 'rootGraphInternal', graph)
+      Reflect.set(singletonApp, 'rootGraphInternal', graph)
+      await useRealWorkflowService()
+      const temporary = useWorkflowStore().createNewTemporary()
+      const assertCanImport = vi.fn()
+      const result = await app.loadGraphData(
+        createWorkflowGraphData(),
+        true,
+        false,
+        '',
+        {
+          assertCanImport,
+          skipAssetScans: true
+        }
+      )
+      expect(result).toBe(useWorkflowStore().activeWorkflow)
+      expect(useWorkflowStore().activeWorkflow?.path).toBe(temporary.path)
+      expect(mockWorkflowService.beforeLoadNewGraph).toHaveBeenCalledOnce()
+      expect(mockWorkflowService.afterLoadNewGraph).toHaveBeenCalledOnce()
+      expect(assertCanImport).toHaveBeenCalled()
     })
 
     it('reports the load outcome explicitly: true on success', async () => {
