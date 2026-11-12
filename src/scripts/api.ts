@@ -1725,8 +1725,22 @@ export class ComfyApi extends EventTarget {
    * Gets user configuration data and where data should be stored
    */
   async getUserConfig(): Promise<UserConfigResponse> {
-    const response = await this.fetchApi('/users')
-    return userConfigResponseSchema.parse(await response.json())
+    const controller = new AbortController()
+    const timeout = setTimeout(
+      () =>
+        controller.abort(
+          new DOMException('User configuration read timeout', 'TimeoutError')
+        ),
+      FETCH_RESPONSE_HEADERS_TIMEOUT_MS
+    )
+    try {
+      const response = await this.fetchApi('/users', {
+        signal: controller.signal
+      })
+      return userConfigResponseSchema.parse(await response.json())
+    } finally {
+      clearTimeout(timeout)
+    }
   }
 
   /**

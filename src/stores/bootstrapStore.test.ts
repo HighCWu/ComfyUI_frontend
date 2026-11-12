@@ -7,13 +7,13 @@ import { useWorkflowStore } from '@/platform/workflow/management/stores/workflow
 import { fromPartial } from '@total-typescript/shoehorn'
 import type { AxiosResponse } from 'axios'
 import { AxiosError } from 'axios'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { mergeCustomNodesI18n } from '@/i18n'
 import * as i18nModule from '@/i18n'
 import { useSettingStore } from '@/platform/settings/settingStore'
 import { bootstrapTracer } from '@/platform/telemetry/perf/bootstrapTracer'
-import { api } from '@/scripts/api'
+import { api, ComfyApi } from '@/scripts/api'
 
 import { useBootstrapStore } from './bootstrapStore'
 
@@ -111,6 +111,57 @@ describe('bootstrapStore', () => {
     await Promise.all([first, second])
     expect(store.startupFailure).toBeUndefined()
     expect(useSettingStore().isReady).toBe(true)
+  })
+
+  it('shows startup failure when user-storage headers arrive but the body never completes', async () => {
+    const client = new ComfyApi()
+    let disposeBody: (() => void) | undefined
+    vi.mocked(fetch).mockImplementationOnce((_input, init) => {
+      const signal = init?.signal
+      assert.exists(signal)
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const abortBody = () => {
+            controller.error(signal.reason)
+          }
+          signal.addEventListener('abort', abortBody, { once: true })
+          controller.enqueue(new TextEncoder().encode('{"storage":'))
+          disposeBody = () => {
+            signal.removeEventListener('abort', abortBody)
+            controller.error(new DOMException('Test cleanup', 'AbortError'))
+          }
+        }
+      })
+      return Promise.resolve(
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+      )
+    })
+    vi.mocked(useUserStore().initialize).mockImplementation(async () => {
+      await client.getUserConfig()
+    })
+    const store = useBootstrapStore()
+    const pending = store.startStoreBootstrap()
+    try {
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(store.startupFailure).toMatchObject({
+        cause: { name: 'TimeoutError' }
+      })
+      expect(useSettingStore().load).not.toHaveBeenCalled()
+      expect(useWorkflowStore().loadWorkflows).not.toHaveBeenCalled()
+      expect(mockReportError).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ name: 'TimeoutError' }),
+        {
+          surface: 'platform',
+          errorType: 'failure_initializing_editor_stores'
+        }
+      )
+    } finally {
+      disposeBody?.()
+      await pending
+    }
   })
 
   it('records both store phases when their loads reject', async () => {

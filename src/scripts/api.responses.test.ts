@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it, vi } from 'vitest'
+import { assert, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { fromAny } from '@total-typescript/shoehorn'
 
 import type { WorkflowApiAssetsResponse } from '@comfyorg/ingest-types'
@@ -154,9 +154,77 @@ describe('ComfyApi response boundaries', () => {
       migrated: true,
       deployment: 'laimon'
     }
-    vi.spyOn(client, 'fetchApi').mockResolvedValue(Response.json(response))
+    vi.mocked(fetch).mockResolvedValue(Response.json(response))
 
     await expect(client.getUserConfig()).resolves.toEqual(response)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.for([{ headerDelay: 0 }, { headerDelay: 59_000 }])(
+    'bounds an unfinished user-storage body after $headerDelay ms waiting for headers',
+    async ({ headerDelay }) => {
+      const client = new ComfyApi()
+      let outcome: PromiseSettledResult<unknown> | undefined
+      let disposeBody: (() => void) | undefined
+      let requestSignal: AbortSignal | undefined
+      vi.mocked(fetch).mockImplementationOnce((_input, init) => {
+        const signal = init?.signal
+        assert.exists(signal)
+        requestSignal = signal
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const abortBody = () => {
+              controller.error(signal.reason)
+            }
+            signal.addEventListener('abort', abortBody, { once: true })
+            controller.enqueue(new TextEncoder().encode('{"storage":'))
+            disposeBody = () => {
+              signal.removeEventListener('abort', abortBody)
+              controller.error(new DOMException('Test cleanup', 'AbortError'))
+            }
+          }
+        })
+        const response = new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+        return new Promise<Response>((resolve) => {
+          setTimeout(() => resolve(response), headerDelay)
+        })
+      })
+      const settled = client.getUserConfig().then(
+        (value) => {
+          outcome = { status: 'fulfilled', value }
+        },
+        (reason: unknown) => {
+          outcome = { status: 'rejected', reason }
+        }
+      )
+      try {
+        await vi.advanceTimersByTimeAsync(59_999)
+        expect(outcome).toBeUndefined()
+        await vi.advanceTimersByTimeAsync(1)
+        expect(outcome).toMatchObject({
+          status: 'rejected',
+          reason: { name: 'TimeoutError' }
+        })
+        expect(requestSignal?.aborted).toBe(true)
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        disposeBody?.()
+        await settled
+      }
+    }
+  )
+
+  it('clears the user-storage deadline when transport rejects', async () => {
+    const client = new ComfyApi()
+    const failure = new TypeError('Synthetic connection failure')
+    vi.mocked(fetch).mockRejectedValueOnce(failure)
+
+    await expect(client.getUserConfig()).rejects.toBe(failure)
+
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it.for([
@@ -171,6 +239,7 @@ describe('ComfyApi response boundaries', () => {
     vi.spyOn(client, 'fetchApi').mockResolvedValue(Response.json(response))
 
     await expect(client.getUserConfig()).rejects.toThrow()
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('validates custom-node translations before returning them', async () => {
