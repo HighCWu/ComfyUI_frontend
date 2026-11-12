@@ -113,6 +113,24 @@ describe('bootstrapStore', () => {
     expect(useSettingStore().isReady).toBe(true)
   })
 
+  it('reports a shared navigation and bootstrap failure once', async () => {
+    const prerequisite = Promise.withResolvers<void>()
+    vi.mocked(useUserStore().initialize).mockReturnValueOnce(
+      prerequisite.promise
+    )
+    const store = useBootstrapStore()
+    const pending = store.startStoreBootstrap()
+    const cause = new SyntaxError('Invalid shared user configuration')
+    store.recordStartupFailure(cause)
+    prerequisite.reject(cause)
+    await pending
+    expect(store.startupFailure).toEqual({ cause })
+    expect(mockReportError).toHaveBeenCalledExactlyOnceWith(cause, {
+      surface: 'platform',
+      errorType: 'failure_initializing_editor_stores'
+    })
+  })
+
   it('shows startup failure when user-storage headers arrive but the body never completes', async () => {
     const client = new ComfyApi()
     let disposeBody: (() => void) | undefined

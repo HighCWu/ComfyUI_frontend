@@ -137,17 +137,20 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     })
   }
 
+  function recordStartupFailure(cause: unknown): void {
+    if (startupFailure.value && startupFailure.value.cause === cause) return
+    startupFailure.value = { cause }
+    reportError(cause, {
+      surface: 'platform',
+      errorType: 'failure_initializing_editor_stores'
+    })
+  }
+
   function startStoreBootstrap(): Promise<void> {
     if (pending) return pending
     startupFailure.value = undefined
     pending = loadStoreBootstrap()
-      .catch((cause: unknown) => {
-        startupFailure.value = { cause }
-        reportError(cause, {
-          surface: 'platform',
-          errorType: 'failure_initializing_editor_stores'
-        })
-      })
+      .catch(recordStartupFailure)
       .finally(() => {
         pending = undefined
       })
@@ -158,6 +161,7 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     isI18nReady,
     i18nError,
     startupFailure,
+    recordStartupFailure,
     startStoreBootstrap
   }
 })

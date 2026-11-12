@@ -4,7 +4,8 @@ import { storeToRefs } from 'pinia'
 import {
   createRouter,
   createWebHashHistory,
-  createWebHistory
+  createWebHistory,
+  START_LOCATION
 } from 'vue-router'
 import type {
   LocationQueryRaw,
@@ -28,6 +29,7 @@ import { isCloud, isDesktop } from '@/platform/distribution/types'
 import { useTelemetry } from '@/platform/telemetry'
 import { useAuthDialogs } from '@/composables/auth/useAuthDialogs'
 import { useAuthStore } from '@/stores/authStore'
+import { useBootstrapStore } from '@/stores/bootstrapStore'
 import { useDialogStore } from '@/stores/dialogStore'
 import { useUserStore } from '@/stores/userStore'
 import LayoutDefault from '@/views/layouts/LayoutDefault.vue'
@@ -120,6 +122,17 @@ const router = createRouter({
 })
 
 installPreservedQueryTracker(router, PRESERVED_QUERY_DEFINITIONS)
+
+const stopStartupErrors = router.onError((cause) => {
+  if (router.currentRoute.value === START_LOCATION)
+    useBootstrapStore().recordStartupFailure(cause)
+})
+const stopStartupObservation = router.afterEach(() => {
+  if (router.currentRoute.value !== START_LOCATION) {
+    stopStartupErrors()
+    stopStartupObservation()
+  }
+})
 
 router.beforeEach((to, _from, next) => {
   captureOAuthRequestId(to.query)
