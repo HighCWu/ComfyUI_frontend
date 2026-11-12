@@ -1,8 +1,19 @@
 <template>
   <TooltipProvider>
-    <router-view />
+    <section
+      v-if="bootstrapStore.startupFailure"
+      role="alert"
+      class="flex size-full items-center justify-center bg-base-background p-6 text-base-foreground"
+    >
+      <div class="max-w-md space-y-4">
+        <h1 class="text-xl font-semibold">{{ $t('editorStartup.failed') }}</h1>
+        <p class="text-muted-foreground">{{ $t('editorStartup.retryHelp') }}</p>
+        <Button @click="reloadEditor">{{ $t('editorStartup.reload') }}</Button>
+      </div>
+    </section>
+    <router-view v-else />
     <GlobalDialog />
-    <SessionReconnecting v-if="isCloud" />
+    <SessionReconnecting v-if="isCloud && !bootstrapStore.startupFailure" />
   </TooltipProvider>
   <div
     v-show="isLoading"
@@ -24,6 +35,7 @@ import {
 } from 'vue'
 
 import GlobalDialog from '@/components/dialog/GlobalDialog.vue'
+import Button from '@/components/ui/button/Button.vue'
 import { MODAL_Z_BASE, MODAL_Z_KEY } from '@/components/dialog/vRekaZIndex'
 import config from '@/config'
 import TooltipProvider from '@/components/ui/tooltip/TooltipProvider.vue'
@@ -37,16 +49,29 @@ import { app } from '@/scripts/app'
 import { registerExtensionDialogService } from '@/services/dialogService'
 import { createExtensionDialogService } from '@/services/extensionDialogService'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { useBootstrapStore } from '@/stores/bootstrapStore'
 import { electronAPI } from '@/utils/envUtil'
 import { useConflictDetection } from '@/workbench/extensions/manager/composables/useConflictDetection'
 
 registerExtensionDialogService(createExtensionDialogService())
 const workspaceStore = useWorkspaceStore()
+const bootstrapStore = useBootstrapStore()
 app.extensionManager = useWorkspaceStore()
 
 const conflictDetection = useConflictDetection()
-const isLoading = computed<boolean>(() => workspaceStore.spinner)
+const isLoading = computed<boolean>(
+  () => workspaceStore.spinner && !bootstrapStore.startupFailure
+)
 const loadingOverlay = useTemplateRef<HTMLDivElement>('loadingOverlay')
+
+function reloadEditor() {
+  window.location.reload()
+}
+
+watchPostEffect(() => {
+  if (bootstrapStore.startupFailure)
+    document.getElementById('splash-loader')?.remove()
+})
 
 watchPostEffect((onCleanup) => {
   const overlay = loadingOverlay.value

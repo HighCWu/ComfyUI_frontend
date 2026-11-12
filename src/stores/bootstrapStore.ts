@@ -1,6 +1,7 @@
 import { until, useAsyncState } from '@vueuse/core'
 import axios from 'axios'
 import { defineStore, storeToRefs } from 'pinia'
+import { shallowRef } from 'vue'
 
 import { bootCloudIdentity } from '@/platform/auth/session/cloudIdentityBoot'
 import { isCloud } from '@/platform/distribution/types'
@@ -92,6 +93,8 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
   )
 
   let storesLoaded = false
+  const startupFailure = shallowRef<{ cause: unknown }>()
+  let pending: Promise<void> | undefined
 
   function loadAuthenticatedStores(): Promise<void>[] {
     if (storesLoaded) return []
@@ -105,7 +108,7 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     ]
   }
 
-  async function startStoreBootstrap() {
+  async function loadStoreBootstrap() {
     void loadI18n()
 
     if (isCloud) {
@@ -134,9 +137,27 @@ export const useBootstrapStore = defineStore('bootstrap', () => {
     })
   }
 
+  function startStoreBootstrap(): Promise<void> {
+    if (pending) return pending
+    startupFailure.value = undefined
+    pending = loadStoreBootstrap()
+      .catch((cause: unknown) => {
+        startupFailure.value = { cause }
+        reportError(cause, {
+          surface: 'platform',
+          errorType: 'failure_initializing_editor_stores'
+        })
+      })
+      .finally(() => {
+        pending = undefined
+      })
+    return pending
+  }
+
   return {
     isI18nReady,
     i18nError,
+    startupFailure,
     startStoreBootstrap
   }
 })

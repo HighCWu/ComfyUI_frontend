@@ -1,4 +1,9 @@
 {
+  "editorStartup": {
+    "failed": "编辑器启动失败",
+    "retryHelp": "账号或编辑器数据未能加载。请检查网络后重新加载。",
+    "reload": "重新加载编辑器"
+  },
   "laimonOnboarding": {
     "surveyTitle": "你想用 DomonAI 做什么？",
     "surveyIntro": "简单了解你的使用方向和经验。"

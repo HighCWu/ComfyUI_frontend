@@ -76,6 +76,43 @@ describe('bootstrapStore', () => {
     })
   })
 
+  it('exposes a failed prerequisite without rejecting and recovers on an explicit retry', async () => {
+    const cause = new Error('User configuration unavailable')
+    vi.mocked(useUserStore().initialize).mockRejectedValueOnce(cause)
+    const store = useBootstrapStore()
+
+    await expect(store.startStoreBootstrap()).resolves.toBeUndefined()
+
+    expect(store.startupFailure).toEqual({ cause })
+    expect(useSettingStore().isReady).toBe(false)
+    expect(useSettingStore().load).not.toHaveBeenCalled()
+    expect(mockReportError).toHaveBeenCalledExactlyOnceWith(cause, {
+      surface: 'platform',
+      errorType: 'failure_initializing_editor_stores'
+    })
+
+    await store.startStoreBootstrap()
+
+    expect(store.startupFailure).toBeUndefined()
+    expect(useSettingStore().isReady).toBe(true)
+  })
+
+  it('coalesces concurrent bootstrap requests while the prerequisite is pending', async () => {
+    const prerequisite = Promise.withResolvers<void>()
+    vi.mocked(useUserStore().initialize).mockReturnValueOnce(
+      prerequisite.promise
+    )
+    const store = useBootstrapStore()
+    const first = store.startStoreBootstrap()
+    const second = store.startStoreBootstrap()
+    expect(useUserStore().initialize).toHaveBeenCalledOnce()
+    expect(useSettingStore().isReady).toBe(false)
+    prerequisite.resolve()
+    await Promise.all([first, second])
+    expect(store.startupFailure).toBeUndefined()
+    expect(useSettingStore().isReady).toBe(true)
+  })
+
   it('records both store phases when their loads reject', async () => {
     vi.mocked(useSettingStore().load).mockRejectedValueOnce(
       new Error('settings failed')

@@ -17,20 +17,28 @@ export const usePrepaidSessionStore = defineStore('prepaidSession', () => {
       invalidateRemoteConfig()
     user.value = null
     socketScope.value = null
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 15_000)
     try {
       const response = await fetch('/api/auth/get-session', {
         credentials: 'include',
-        cache: 'no-store'
+        cache: 'no-store',
+        signal: controller.signal
       })
       if (!response.ok) return
       const result = prepaidSessionSchema.safeParse(await response.json())
-      if (current === generation && result.success) {
+      if (
+        current === generation &&
+        !controller.signal.aborted &&
+        result.success
+      ) {
         user.value = result.data.user
         socketScope.value = result.data.socket_scope ?? null
       }
     } catch {
       if (current === generation) user.value = null
     } finally {
+      clearTimeout(timeout)
       if (current === generation) initialized.value = true
     }
   }

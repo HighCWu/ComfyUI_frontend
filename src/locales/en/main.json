@@ -1,4 +1,9 @@
 {
+  "editorStartup": {
+    "failed": "The editor could not start",
+    "retryHelp": "Account or editor data could not be loaded. Check your connection and reload to try again.",
+    "reload": "Reload editor"
+  },
   "laimonOnboarding": {
     "surveyTitle": "How will you use DomonAI?",
     "surveyIntro": "A few questions about your interests and experience."

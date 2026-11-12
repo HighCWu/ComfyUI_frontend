@@ -2,9 +2,12 @@ import { ZIndex } from '@primeuix/utils/zindex'
 import { render, screen } from '@testing-library/vue'
 import { describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
+import userEvent from '@testing-library/user-event'
 
 import { vRekaZIndex } from '@/components/dialog/vRekaZIndex'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { useBootstrapStore } from '@/stores/bootstrapStore'
+import { i18n } from '@/i18n'
 
 import App from './App.vue'
 
@@ -24,6 +27,30 @@ vi.mock<unknown>(
 )
 
 describe('App', () => {
+  it('shows a recoverable startup failure even before the route or spinner has started', async () => {
+    const reload = vi
+      .spyOn(window.location, 'reload')
+      .mockImplementation(() => {})
+    const splash = document.createElement('div')
+    splash.id = 'splash-loader'
+    splash.dataset.testid = 'synthetic-splash'
+    document.body.append(splash)
+    useBootstrapStore().startupFailure = {
+      cause: new Error('Synthetic startup failure')
+    }
+    useWorkspaceStore().spinner = true
+    render(App, { global: { plugins: [i18n], stubs: { RouterView: true } } })
+    await nextTick()
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'The editor could not start'
+    )
+    expect(screen.queryByTestId('synthetic-splash')).not.toBeInTheDocument()
+    expect(screen.getByTestId('app-loading-overlay')).not.toBeVisible()
+    expect(reload).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Reload editor' }))
+    expect(reload).toHaveBeenCalledOnce()
+  })
+
   it('blocks existing dialogs while loading and keeps a stable readiness hook', async () => {
     const workspaceStore = useWorkspaceStore()
     workspaceStore.spinner = true

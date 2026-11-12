@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 
 import { usePrepaidSessionStore } from './prepaidSessionStore'
 import {
@@ -6,6 +6,59 @@ import {
   remoteConfigState,
   sessionAgentGrant
 } from '@/platform/remoteConfig/remoteConfig'
+
+it('bounds a shared hanging session read and cancels its transport without retrying', async () => {
+  vi.useFakeTimers()
+  onTestFinished(() => {
+    vi.useRealTimers()
+  })
+  let signal: AbortSignal | undefined
+  vi.mocked(fetch).mockImplementation(
+    (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        signal = init?.signal ?? undefined
+        signal?.addEventListener('abort', () => reject(signal?.reason), {
+          once: true
+        })
+      })
+  )
+  const store = usePrepaidSessionStore()
+  const first = store.initialize()
+  const second = store.initialize()
+  await vi.advanceTimersByTimeAsync(14_999)
+  expect(store.initialized).toBe(false)
+  expect(signal?.aborted).toBe(false)
+  await vi.advanceTimersByTimeAsync(1)
+  await Promise.all([first, second])
+  expect(signal?.aborted).toBe(true)
+  expect(store.initialized).toBe(true)
+  expect(store.user).toBeNull()
+  expect(fetch).toHaveBeenCalledOnce()
+})
+
+it('releases the timeout after a successful session read', async () => {
+  vi.useFakeTimers()
+  onTestFinished(() => {
+    vi.useRealTimers()
+  })
+  vi.mocked(fetch).mockResolvedValue(
+    Response.json({
+      user: {
+        id: 'owner',
+        name: 'QA',
+        email: 'qa@example.test',
+        emailVerified: true
+      }
+    })
+  )
+  const store = usePrepaidSessionStore()
+  await store.initialize()
+  const signal = vi.mocked(fetch).mock.calls[0]?.[1]?.signal
+  await vi.advanceTimersByTimeAsync(15_000)
+  expect(signal?.aborted).toBe(false)
+  expect(store.user?.id).toBe('owner')
+  expect(fetch).toHaveBeenCalledOnce()
+})
 
 it('invalidates prior account configuration before refreshing a prepaid session', async () => {
   vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
