@@ -2543,175 +2543,15 @@ export class ComfyApp implements IComfyApp {
     }
     const missingNodeTypes: MissingNodeType[] = []
     if (!options.assertCanImport) await nodeReplacementStore.load()
-    withGraphIntentSource('load', () => {
-      for (const id of ids) {
-        const data = apiData[id]
-        const nodeId = importedNodeIds.get(id) ?? toNodeId(id)
-        let node = LiteGraph.createNode(data.class_type)
-        let placeholderEntry:
-          | Extract<MissingNodeType, { type: string }>
-          | undefined
-        if (!node) {
-          const cnrId = zNodePackMetadata.shape.cnr_id.safeParse(
-            data._meta?.cnr_id
-          ).data
-          const auxId = zNodePackMetadata.shape.aux_id.safeParse(
-            data._meta?.aux_id
-          ).data
-          const packVersion = zNodePackMetadata.shape.ver.safeParse(
-            data._meta?.ver
-          ).data
-          const missingNode = new LGraphNode(
-            data._meta?.title ?? data.class_type,
-            sanitizeNodeName(data.class_type)
-          )
-          node = missingNode
-          node.has_errors = true
-          const widgetValues: TWidgetValue[] = []
-          const widgetValuesNamed: Record<string, TWidgetValue> =
-            Object.create(null)
-          for (const [input, value] of Object.entries(data.inputs)) {
-            if (value instanceof Array) {
-              node.addInput(input, '*')
-            } else {
-              const widgetValue = unwrapExportedWidgetValue(
-                value
-              ) as TWidgetValue
-              widgetValues.push(widgetValue)
-              widgetValuesNamed[input] = widgetValue
-            }
-          }
-          if (cnrId) node.properties.cnr_id = cnrId
-          if (auxId) node.properties.aux_id = auxId
-          if (packVersion) node.properties.ver = packVersion
-          node.last_serialization = {
-            id: nodeId,
-            type: data.class_type,
-            pos: [node.pos[0], node.pos[1]],
-            size: [node.size[0], node.size[1]],
-            flags: {},
-            order: 0,
-            mode: node.mode,
-            title: data._meta?.title ?? data.class_type,
-            inputs: node.inputs.map((input, i) =>
-              inputAsSerialisable(input, missingNode, i)
-            ),
-            properties: { ...node.properties },
-            widgets_values: widgetValues,
-            widgets_values_named: widgetValuesNamed
-          }
-          const replacement = nodeReplacementStore.getReplacementFor(
-            data.class_type
-          )
-          placeholderEntry = {
-            type: data.class_type,
-            cnrId: getCnrIdFromProperties(node.properties),
-            isReplaceable: replacement !== null,
-            replacement: replacement ?? undefined
-          }
-          missingNodeTypes.push(placeholderEntry)
-        }
-        node.id = nodeId
-        node.title = data._meta?.title ?? node.title
-        app.rootGraph.add(node)
-        if (placeholderEntry && node.last_serialization) {
-          node.last_serialization.id = node.id
-          placeholderEntry.nodeId = String(node.id)
-        }
-      }
-
-      const unresolvedInputs: (() => boolean)[] = []
-      const processNodeInputs = (id: string) => {
-        const data = apiData[id]
-        const currentNodeId = importedNodeIds.get(id) ?? toNodeId(id)
-        const node = app.rootGraph.getNodeById(currentNodeId)
-        if (!node) return
-        const targetNode = node
-        const inputs = restoreDynamicGroupInputs(node, data.inputs)
-
-        for (const input in inputs) {
-          const value = inputs[input]
-          if (value instanceof Array) {
-            function connectInput() {
-              const [fromId, fromSlot] = value
-              const fromNode = app.rootGraph.getNodeById(
-                importedNodeIds.get(String(fromId)) ?? toNodeId(fromId)
-              )
-              if (!fromNode?.outputs[fromSlot]) return false
-
-              let toSlot = targetNode.inputs.findIndex(
-                (inp) => inp.name === input
-              )
-              if (toSlot === -1) {
-                try {
-                  const widget = targetNode.widgets?.find(
-                    (w) => w.name === input
-                  )
-                  const convertFn = (
-                    targetNode as LGraphNode & {
-                      convertWidgetToInput?: (w: IBaseWidget) => boolean
-                    }
-                  ).convertWidgetToInput
-                  if (widget && convertFn?.(widget)) {
-                    toSlot = targetNode.inputs.findIndex(
-                      (inp) => inp.name === input
-                    )
-                  }
-                } catch {
-                  return false
-                }
-              }
-              if (toSlot === -1) return false
-
-              fromNode.connect(fromSlot, targetNode, toSlot)
-              return true
-            }
-            if (!connectInput()) unresolvedInputs.push(connectInput)
-          } else {
-            function applyWidgetValue() {
-              const widget = targetNode.widgets?.find((w) => w.name === input)
-              if (!widget) return false
-              const widgetValue = unwrapExportedWidgetValue(
-                value
-              ) as TWidgetValue
-              widget.value = widgetValue
-              try {
-                widget.callback?.(widgetValue)
-              } catch (error) {
-                reportError(error, {
-                  surface: 'graph',
-                  errorType: 'failure_invoking_api_workflow_widget_callback',
-                  tags: {
-                    node_type: targetNode.type,
-                    widget_name: input
-                  },
-                  context: { fileName }
-                })
-              }
-              return true
-            }
-            if (!applyWidgetValue()) unresolvedInputs.push(applyWidgetValue)
-          }
-        }
-      }
-
-      for (const id of ids) processNodeInputs(id)
-      let pendingInputs = unresolvedInputs
-      while (pendingInputs.length > 0) {
-        const remainingInputs = pendingInputs.filter(
-          (applyInput) => !applyInput()
-        )
-        if (remainingInputs.length === pendingInputs.length) break
-        pendingInputs = remainingInputs
-      }
-      for (const node of app.rootGraph.nodes) {
-        if (!node.last_serialization) continue
-        node.last_serialization.inputs = node.inputs.map((input, i) =>
-          inputAsSerialisable(input, node, i)
-        )
-      }
-      app.rootGraph.arrange()
-    })
+    withGraphIntentSource('load', () =>
+      this.configureApiGraphNodes(
+        apiData,
+        ids,
+        importedNodeIds,
+        missingNodeTypes,
+        fileName
+      )
+    )
 
     expectedState = importGraph.state
     await useExtensionService().invokeExtensionsAsync(
@@ -2732,6 +2572,235 @@ export class ComfyApp implements IComfyApp {
     options.assertCanImport?.()
     if (missingNodeTypes.length) {
       this.showMissingNodesError(missingNodeTypes, options)
+    }
+  }
+
+  /**
+   * Builds the graph from API-format (prompt) JSON inside the caller's graph
+   * intent source: instantiates nodes, wires inputs and widgets, re-tries
+   * inputs whose endpoints only became resolvable after later nodes landed,
+   * then re-serializes placeholder snapshots and arranges the graph.
+   */
+  private configureApiGraphNodes(
+    apiData: ComfyApiWorkflow,
+    ids: string[],
+    importedNodeIds: Map<string, NodeId>,
+    missingNodeTypes: MissingNodeType[],
+    fileName: string
+  ): void {
+    this.instantiateApiNodes(apiData, ids, importedNodeIds, missingNodeTypes)
+    const unresolvedInputs = this.wireApiNodeInputs(
+      apiData,
+      ids,
+      importedNodeIds,
+      fileName
+    )
+    this.retryUnresolvedInputs(unresolvedInputs)
+    this.serializeApiNodeInputs()
+    app.rootGraph.arrange()
+  }
+
+  /**
+   * Creates the LGraphNode for one API-format prompt entry, falling back to a
+   * placeholder node that preserves the raw serialization and replacement
+   * metadata when the node type is not registered.
+   */
+  private createMissingApiNodePlaceholder(
+    data: ComfyApiWorkflow[string],
+    nodeId: NodeId
+  ): {
+    node: LGraphNode
+    placeholderEntry: Extract<MissingNodeType, { type: string }>
+  } {
+    const cnrId = zNodePackMetadata.shape.cnr_id.safeParse(
+      data._meta?.cnr_id
+    ).data
+    const auxId = zNodePackMetadata.shape.aux_id.safeParse(
+      data._meta?.aux_id
+    ).data
+    const packVersion = zNodePackMetadata.shape.ver.safeParse(
+      data._meta?.ver
+    ).data
+    const missingNode = new LGraphNode(
+      data._meta?.title ?? data.class_type,
+      sanitizeNodeName(data.class_type)
+    )
+    missingNode.has_errors = true
+    const widgetValues: TWidgetValue[] = []
+    const widgetValuesNamed: Record<string, TWidgetValue> = Object.create(null)
+    for (const [input, value] of Object.entries(data.inputs)) {
+      if (value instanceof Array) {
+        missingNode.addInput(input, '*')
+      } else {
+        const widgetValue = unwrapExportedWidgetValue(value) as TWidgetValue
+        widgetValues.push(widgetValue)
+        widgetValuesNamed[input] = widgetValue
+      }
+    }
+    if (cnrId) missingNode.properties.cnr_id = cnrId
+    if (auxId) missingNode.properties.aux_id = auxId
+    if (packVersion) missingNode.properties.ver = packVersion
+    missingNode.last_serialization = {
+      id: nodeId,
+      type: data.class_type,
+      pos: [missingNode.pos[0], missingNode.pos[1]],
+      size: [missingNode.size[0], missingNode.size[1]],
+      flags: {},
+      order: 0,
+      mode: missingNode.mode,
+      title: data._meta?.title ?? data.class_type,
+      inputs: missingNode.inputs.map((input, i) =>
+        inputAsSerialisable(input, missingNode, i)
+      ),
+      properties: { ...missingNode.properties },
+      widgets_values: widgetValues,
+      widgets_values_named: widgetValuesNamed
+    }
+    const replacement = useNodeReplacementStore().getReplacementFor(
+      data.class_type
+    )
+    const placeholderEntry = {
+      type: data.class_type,
+      cnrId: getCnrIdFromProperties(missingNode.properties),
+      isReplaceable: replacement !== null,
+      replacement: replacement ?? undefined
+    }
+    return { node: missingNode, placeholderEntry }
+  }
+
+  private instantiateApiNodes(
+    apiData: ComfyApiWorkflow,
+    ids: string[],
+    importedNodeIds: Map<string, NodeId>,
+    missingNodeTypes: MissingNodeType[]
+  ): void {
+    for (const id of ids) {
+      const data = apiData[id]
+      const nodeId = importedNodeIds.get(id) ?? toNodeId(id)
+      let node = LiteGraph.createNode(data.class_type)
+      let placeholderEntry:
+        | Extract<MissingNodeType, { type: string }>
+        | undefined
+      if (!node) {
+        const placeholder = this.createMissingApiNodePlaceholder(data, nodeId)
+        node = placeholder.node
+        placeholderEntry = placeholder.placeholderEntry
+        missingNodeTypes.push(placeholderEntry)
+      }
+      node.id = nodeId
+      node.title = data._meta?.title ?? node.title
+      app.rootGraph.add(node)
+      if (placeholderEntry && node.last_serialization) {
+        node.last_serialization.id = node.id
+        placeholderEntry.nodeId = String(node.id)
+      }
+    }
+  }
+
+  /**
+   * Wires node inputs for API-format graphs: array values connect slot-to-slot
+   * (widget slots converted as needed), remaining values are applied to
+   * widgets. Returns appliers for inputs that could not resolve yet.
+   */
+  private wireApiNodeInputs(
+    apiData: ComfyApiWorkflow,
+    ids: string[],
+    importedNodeIds: Map<string, NodeId>,
+    fileName: string
+  ): (() => boolean)[] {
+    const unresolvedInputs: (() => boolean)[] = []
+    const processNodeInputs = (id: string) => {
+      const data = apiData[id]
+      const currentNodeId = importedNodeIds.get(id) ?? toNodeId(id)
+      const node = app.rootGraph.getNodeById(currentNodeId)
+      if (!node) return
+      const targetNode = node
+      const inputs = restoreDynamicGroupInputs(node, data.inputs)
+
+      for (const input in inputs) {
+        const value = inputs[input]
+        if (value instanceof Array) {
+          function connectInput() {
+            const [fromId, fromSlot] = value
+            const fromNode = app.rootGraph.getNodeById(
+              importedNodeIds.get(String(fromId)) ?? toNodeId(fromId)
+            )
+            if (!fromNode?.outputs[fromSlot]) return false
+
+            let toSlot = targetNode.inputs.findIndex(
+              (inp) => inp.name === input
+            )
+            if (toSlot === -1) {
+              try {
+                const widget = targetNode.widgets?.find((w) => w.name === input)
+                const convertFn = (
+                  targetNode as LGraphNode & {
+                    convertWidgetToInput?: (w: IBaseWidget) => boolean
+                  }
+                ).convertWidgetToInput
+                if (widget && convertFn?.(widget)) {
+                  toSlot = targetNode.inputs.findIndex(
+                    (inp) => inp.name === input
+                  )
+                }
+              } catch {
+                return false
+              }
+            }
+            if (toSlot === -1) return false
+
+            fromNode.connect(fromSlot, targetNode, toSlot)
+            return true
+          }
+          if (!connectInput()) unresolvedInputs.push(connectInput)
+        } else {
+          function applyWidgetValue() {
+            const widget = targetNode.widgets?.find((w) => w.name === input)
+            if (!widget) return false
+            const widgetValue = unwrapExportedWidgetValue(value) as TWidgetValue
+            widget.value = widgetValue
+            try {
+              widget.callback?.(widgetValue)
+            } catch (error) {
+              reportError(error, {
+                surface: 'graph',
+                errorType: 'failure_invoking_api_workflow_widget_callback',
+                tags: {
+                  node_type: targetNode.type,
+                  widget_name: input
+                },
+                context: { fileName }
+              })
+            }
+            return true
+          }
+          if (!applyWidgetValue()) unresolvedInputs.push(applyWidgetValue)
+        }
+      }
+    }
+
+    for (const id of ids) processNodeInputs(id)
+    return unresolvedInputs
+  }
+
+  private retryUnresolvedInputs(unresolvedInputs: (() => boolean)[]): void {
+    let pendingInputs = unresolvedInputs
+    while (pendingInputs.length > 0) {
+      const remainingInputs = pendingInputs.filter(
+        (applyInput) => !applyInput()
+      )
+      if (remainingInputs.length === pendingInputs.length) break
+      pendingInputs = remainingInputs
+    }
+  }
+
+  /** Refreshes each placeholder's serialized inputs from its live node inputs. */
+  private serializeApiNodeInputs(): void {
+    for (const node of app.rootGraph.nodes) {
+      if (!node.last_serialization) continue
+      node.last_serialization.inputs = node.inputs.map((input, i) =>
+        inputAsSerialisable(input, node, i)
+      )
     }
   }
 

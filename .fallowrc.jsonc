@@ -153,6 +153,18 @@
     {
       "file": "tools/oxlint-plugins/serverFacts.ts",
       "exports": ["default"]
+    },
+    // Versioned host-ports factory consumed by the App-owned embedded extension
+    // through the raw editor's window.comfyAPI module shim (ADR
+    // CRDT-EMBEDDED-0046); enforced by the parent toolchain's artifact checks
+    // (packages/comfy-app/toolchain/frontend-extensions.ts,
+    // packages/official-apps/comfy-standalone-assets.ts), invisible statically.
+    {
+      "file": "src/extensions/core/domonEmbeddedReceiver.ts",
+      "exports": [
+        "createEmbeddedHostPorts",
+        "DOMON_EMBEDDED_HOST_PORTS_VERSION"
+      ]
     }
   ],
 

@@ -30,7 +30,7 @@ interface HeadlessEnvironment {
   applier: AgentCrdtApplierDeps
 }
 
-export type HeadlessBindResult =
+type HeadlessBindResult =
   | { ok: true }
   | {
       ok: false
@@ -90,26 +90,61 @@ export function createAgentFollowerHeadless(env: HeadlessEnvironment) {
   }
 
   function bind(nextDocId: unknown): HeadlessBindResult {
-    if (disposed) return { ok: false, code: 'disposed' }
-    if (
-      typeof nextDocId !== 'string' ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-        nextDocId
+    const target = resolveBindTarget(nextDocId)
+    if (!target.ok) return target
+    return attachFollower(target.workflow, target.userId, target.docId)
+  }
+
+  function isBindableDocId(value: unknown): value is string {
+    return (
+      typeof value === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        value
       )
     )
-      return { ok: false, code: 'invalid_doc_id' }
-    const userId = env.userId()
-    if (!userId) return { ok: false, code: 'identity_unresolved' }
-    if (env.panelEnabled()) return { ok: false, code: 'panel_owner_active' }
-    const workflow = env.workflow()
-    if (!workflow || workflow.isTemporary || !env.graph())
+  }
+
+  /** Returns the bind refusal for the workflow target, or `null` when verified. */
+  function verifyNativeTarget(
+    workflow: ComfyWorkflow,
+    docId: string
+  ): Extract<HeadlessBindResult, { ok: false }> | null {
+    if (workflow.isTemporary || !env.graph()) {
       return { ok: false, code: 'target_not_active' }
+    }
     const nativeId =
       /^workflows\/\.native-agent\/[^/]+ \(([0-9a-f-]{36})\)\.json$/i.exec(
         workflow.path
       )?.[1]
     if (!nativeId) return { ok: false, code: 'target_unverified' }
-    if (nativeId !== nextDocId) return { ok: false, code: 'target_not_active' }
+    if (nativeId !== docId) return { ok: false, code: 'target_not_active' }
+    return null
+  }
+
+  function resolveBindTarget(
+    nextDocId: unknown
+  ):
+    | Extract<HeadlessBindResult, { ok: false }>
+    | { ok: true; workflow: ComfyWorkflow; userId: string; docId: string } {
+    if (disposed) return { ok: false, code: 'disposed' }
+    if (!isBindableDocId(nextDocId)) {
+      return { ok: false, code: 'invalid_doc_id' }
+    }
+    const userId = env.userId()
+    if (!userId) return { ok: false, code: 'identity_unresolved' }
+    if (env.panelEnabled()) return { ok: false, code: 'panel_owner_active' }
+    const workflow = env.workflow()
+    if (!workflow) return { ok: false, code: 'target_not_active' }
+    const refusal = verifyNativeTarget(workflow, nextDocId)
+    if (refusal) return refusal
+    return { ok: true, workflow, userId, docId: nextDocId }
+  }
+
+  function attachFollower(
+    workflow: ComfyWorkflow,
+    userId: string,
+    nextDocId: string
+  ): HeadlessBindResult {
     if (
       binding?.workflow === workflow &&
       docId.value === nextDocId &&
@@ -136,6 +171,27 @@ export function createAgentFollowerHeadless(env: HeadlessEnvironment) {
       )
     )
     if (!follower) return { ok: false, code: 'disposed' }
+    const minters = attachMinters(workflow, follower)
+    binding = {
+      workflow,
+      path: workflow.path,
+      userId,
+      sessionScope: env.sessionScope(),
+      follower,
+      stop() {
+        minters.detach()
+        scope.stop()
+      }
+    }
+    active.value = true
+    observeSocket()
+    return { ok: true }
+  }
+
+  function attachMinters(
+    workflow: ComfyWorkflow,
+    follower: ReturnType<typeof startAgentCrdtFollower>
+  ): { detach(): void } {
     const enqueue = (operations: GraphOperation[]) => {
       if (binding?.follower === follower && ownsTarget.value)
         follower.enqueueHumanOperations(operations)
@@ -158,29 +214,20 @@ export function createAgentFollowerHeadless(env: HeadlessEnvironment) {
     const restoreMinter = attachRestoreOpMinter({
       isEnabled: () => ownsTarget.value,
       isDocBound: enabled,
-      enqueue,
       getGraph: env.graph,
+      enqueue,
       isRestoringState: () => workflow.changeTracker?._restoringState === true,
       docInputNames: (nodeId) => {
         const parsed = parseNodeId(nodeId)
         return parsed === null ? null : follower.docInputNames(parsed)
       }
     })
-    binding = {
-      workflow,
-      path: workflow.path,
-      userId,
-      sessionScope: env.sessionScope(),
-      follower,
-      stop() {
+    return {
+      detach() {
         docMinter.detach()
         restoreMinter.detach()
-        scope.stop()
       }
     }
-    active.value = true
-    observeSocket()
-    return { ok: true }
   }
 
   const stopWatching = watch(

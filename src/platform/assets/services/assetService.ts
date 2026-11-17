@@ -310,6 +310,47 @@ function createAssetService() {
     pendingModelBuckets = null
   }
 
+  function buildAssetListQuery(
+    normalizedIncludeTags: string[],
+    normalizedExcludeTags: string[],
+    options: AssetRequestOptions & { limit: number }
+  ): URLSearchParams {
+    const { limit, offset, after, includePublic } = options
+    const queryParams = new URLSearchParams({
+      include_tags: normalizedIncludeTags.join(','),
+      limit: limit.toString()
+    })
+    if (normalizedExcludeTags.length > 0) {
+      queryParams.set('exclude_tags', normalizedExcludeTags.join(','))
+    }
+    if (after !== undefined) {
+      queryParams.set('after', after)
+    } else if (offset !== undefined && offset > 0) {
+      queryParams.set('offset', offset.toString())
+    }
+    if (includePublic !== undefined) {
+      queryParams.set('include_public', includePublic ? 'true' : 'false')
+    }
+    return queryParams
+  }
+
+  async function fetchValidatedAssetResponse(
+    url: string,
+    signal: AbortSignal | undefined,
+    context: string
+  ): Promise<AssetResponse> {
+    const res = signal
+      ? await api.fetchApi(url, { signal })
+      : await api.fetchApi(url)
+    if (!res.ok) {
+      throw new Error(
+        `Unable to load ${context}: Server returned ${res.status}. Please try again.`
+      )
+    }
+    const data = await res.json()
+    return validateAssetResponse(data)
+  }
+
   async function handleAssetRequest(
     options: AssetRequestOptions,
     context: string
@@ -344,33 +385,16 @@ function createAssetService() {
       )
     }
 
-    const queryParams = new URLSearchParams({
-      include_tags: normalizedIncludeTags.join(','),
-      limit: limit.toString()
-    })
-    if (normalizedExcludeTags.length > 0) {
-      queryParams.set('exclude_tags', normalizedExcludeTags.join(','))
-    }
-    if (after !== undefined) {
-      queryParams.set('after', after)
-    } else if (offset !== undefined && offset > 0) {
-      queryParams.set('offset', offset.toString())
-    }
-    if (includePublic !== undefined) {
-      queryParams.set('include_public', includePublic ? 'true' : 'false')
-    }
-
+    const queryParams = buildAssetListQuery(
+      normalizedIncludeTags,
+      normalizedExcludeTags,
+      {
+        ...options,
+        limit
+      }
+    )
     const url = `${ASSETS_ENDPOINT}?${queryParams.toString()}`
-    const res = signal
-      ? await api.fetchApi(url, { signal })
-      : await api.fetchApi(url)
-    if (!res.ok) {
-      throw new Error(
-        `Unable to load ${context}: Server returned ${res.status}. Please try again.`
-      )
-    }
-    const data = await res.json()
-    return validateAssetResponse(data)
+    return fetchValidatedAssetResponse(url, signal, context)
   }
   /**
    * Walks every `models`-tagged asset once and buckets each into the folder
@@ -382,6 +406,35 @@ function createAssetService() {
    * folders are actually shown is decided by `/experiment/models`; models with
    * no category tag are dropped with a warning rather than hidden silently.
    */
+  function assetLoaderValue(asset: AssetItem): string {
+    return asset.loader_path ?? getAssetFilename(asset)
+  }
+
+  /**
+   * Returns the reason an asset cannot be bucketed as a model, or `null` when
+   * it is bucketable.
+   */
+  function modelAssetSkipReason(
+    asset: AssetItem,
+    modelTypeMode: boolean
+  ): string | null {
+    if (getAssetCategories(asset, modelTypeMode).length === 0) {
+      return `is tagged '${MODELS_TAG}' but has no model category`
+    }
+    // On loader_path-contract backends a null loader_path marks an
+    // unloadable asset (e.g. an orphan): it must not mint a widget value,
+    // and `name` is deprecated for path semantics.
+    if (modelTypeMode && !asset.loader_path) return 'has no loader_path'
+    // The loader value flows into viewMetadata URLs and widget values, so a
+    // traversal-shaped path must not pass through even if the backend's own
+    // validation ever regresses.
+    const loaderValue = assetLoaderValue(asset)
+    if (!assetFilenameSchema.safeParse(loaderValue).success) {
+      return `has an unsafe loader path ('${loaderValue}')`
+    }
+    return null
+  }
+
   async function buildModelBuckets(
     modelTypeMode: boolean
   ): Promise<Map<string, AssetItem[]>> {
@@ -391,36 +444,15 @@ function createAssetService() {
     const buckets = new Map<string, AssetItem[]>()
 
     for (const asset of assets) {
+      const skipReason = modelAssetSkipReason(asset, modelTypeMode)
+      if (skipReason !== null) {
+        console.warn(
+          `Asset ${asset.id} (${asset.name}) ${skipReason}; skipping.`
+        )
+        continue
+      }
+
       const folders = [...new Set(getAssetCategories(asset, modelTypeMode))]
-
-      if (folders.length === 0) {
-        console.warn(
-          `Asset ${asset.id} (${asset.name}) is tagged '${MODELS_TAG}' but has no model category; skipping.`
-        )
-        continue
-      }
-
-      // On loader_path-contract backends a null loader_path marks an
-      // unloadable asset (e.g. an orphan): it must not mint a widget value,
-      // and `name` is deprecated for path semantics.
-      if (modelTypeMode && !asset.loader_path) {
-        console.warn(
-          `Asset ${asset.id} (${asset.name}) has no loader_path; skipping.`
-        )
-        continue
-      }
-
-      // The loader value flows into viewMetadata URLs and widget values, so a
-      // traversal-shaped path must not pass through even if the backend's own
-      // validation ever regresses.
-      const loaderValue = asset.loader_path ?? getAssetFilename(asset)
-      if (!assetFilenameSchema.safeParse(loaderValue).success) {
-        console.warn(
-          `Asset ${asset.id} (${asset.name}) has an unsafe loader path ('${loaderValue}'); skipping.`
-        )
-        continue
-      }
-
       for (const folder of folders) {
         const bucket = buckets.get(folder)
         if (bucket) bucket.push(asset)
@@ -430,10 +462,7 @@ function createAssetService() {
 
     for (const bucket of buckets.values()) {
       bucket.sort((a, b) =>
-        compareLoaderPaths(
-          a.loader_path ?? getAssetFilename(a),
-          b.loader_path ?? getAssetFilename(b)
-        )
+        compareLoaderPaths(assetLoaderValue(a), assetLoaderValue(b))
       )
     }
 
@@ -742,6 +771,17 @@ function createAssetService() {
    * @param options.signal - Optional abort signal for cancelling requests
    * @returns Promise<AssetItem[]> - Full asset objects filtered by tag
    */
+  /**
+   * True when a page ends the walk: the server reported no more pages, or a
+   * non-advancing cursor would loop forever.
+   */
+  function isAssetWalkComplete(
+    data: AssetResponse,
+    after: string | undefined
+  ): boolean {
+    return !data.has_more || !data.next_cursor || data.next_cursor === after
+  }
+
   async function getAllAssetsByTag(
     tag: string,
     includePublic: boolean = true,
@@ -776,10 +816,7 @@ function createAssetService() {
 
       assets.push(...batch)
 
-      // A server that returns a non-advancing cursor would loop forever.
-      if (!data.has_more || !data.next_cursor || data.next_cursor === after) {
-        return assets
-      }
+      if (isAssetWalkComplete(data, after)) return assets
 
       after = data.next_cursor
     }
