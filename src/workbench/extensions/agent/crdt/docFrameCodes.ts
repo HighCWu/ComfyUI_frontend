@@ -7,8 +7,6 @@ export const SERVER_DOC_FRAME_TYPES = [
   'awareness'
 ] as const
 
-export type ServerDocFrameType = (typeof SERVER_DOC_FRAME_TYPES)[number]
-
 export const DOC_TRANSPORT_READY_EVENT = 'doc_transport_ready'
 
 export const STALE_SCHEMA_RESEED_REQUIRED = 'stale_schema_reseed_required'

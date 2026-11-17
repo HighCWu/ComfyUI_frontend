@@ -1,28 +1,11 @@
-import type { ComfyApp, ComfyExtension } from '@/types/comfy'
+import type { ComfyApp } from '@/types/comfy'
 import type { CatalogueReaderPorts } from '@/extensions/core/domonCatalogueReaderPorts'
-import type {
-  ComfyWorkflow,
-  WorkflowChangeTracker
-} from '@/platform/workflow/management/stores/comfyWorkflow'
-import type {
-  ComfyWorkflowJSON,
-  validateComfyWorkflow
-} from '@/platform/workflow/validation/schemas/workflowSchema'
+import type { ComfyWorkflow } from '@/platform/workflow/management/stores/comfyWorkflow'
+import type { validateComfyWorkflow } from '@/platform/workflow/validation/schemas/workflowSchema'
 import type { LGraphNode } from '@/lib/litegraph/src/LGraphNode'
 import type { parseNodeId } from '@/types/nodeId'
 import type { setNodeWidgetValue } from '@/core/graph/widgets/nodeWidgetValues'
-import type {
-  createAgentFollowerHeadless,
-  HeadlessBindResult
-} from '@/workbench/extensions/agent/crdt/agentFollowerHeadless'
-
-export type {
-  ComfyWorkflow,
-  ComfyWorkflowJSON,
-  WorkflowChangeTracker,
-  ComfyExtension,
-  HeadlessBindResult
-}
+import type { createAgentFollowerHeadless } from '@/workbench/extensions/agent/crdt/agentFollowerHeadless'
 
 export interface EmbeddedHostPorts {
   version: 'domon-comfy-embedded-ports/v3'
@@ -61,8 +44,4 @@ export interface EmbeddedHostPorts {
     Record<'domon-embedded' | 'domon-host' | 'domon-channel', string>
   >
   installCatalogueReaders(ports: CatalogueReaderPorts): () => void
-}
-
-export interface EmbeddedAppRegistration {
-  registerExtension(extension: ComfyExtension): void
 }
