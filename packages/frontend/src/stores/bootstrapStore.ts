@@ -1,0 +1,167 @@
+import { until, useAsyncState } from '@vueuse/core'
+import axios from 'axios'
+import { defineStore, storeToRefs } from 'pinia'
+import { shallowRef } from 'vue'
+
+import { bootCloudIdentity } from '@/platform/auth/session/cloudIdentityBoot'
+import { isCloud } from '@/platform/distribution/types'
+import { bootstrapTracer } from '@/platform/telemetry/perf/bootstrapTracer'
+import { useSettingStore } from '@/platform/settings/settingStore'
+import { reportError } from '@/platform/telemetry/reportError'
+import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
+import { api } from '@/scripts/api'
+import { useAuthStore } from '@/stores/authStore'
+import { useUserStore } from '@/stores/userStore'
+
+/**
+ * Backends that vendor no custom-node locale files do not implement
+ * `/api/i18n`, so a 404 means "no custom-node translations", not a failure.
+ */
+async function fetchCustomNodesI18n() {
+  try {
+    return await api.getCustomNodesI18n()
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) return
+    throw error
+  }
+}
+
+// Matches the Firebase-auth-wait timeout used elsewhere (router.ts,
+// WorkspaceAuthGate.vue) so a broken/stale session fails this bounded wait
+// on the same schedule those already fail theirs.
+const AUTH_WAIT_TIMEOUT_MS = 16_000
+const AUTH_WAIT_RETRY_DELAY_MS = 3_000
+
+/**
+ * Waits for Firebase auth initialization to complete, bounded so a stale
+ * token or a broken auth response can never hang bootstrap forever.
+ *
+ * Only isInitialized is awaited — onAuthStateChanged fires with null for
+ * signed-out users, so a signed-out load resolves this wait immediately
+ * instead of burning the timeout and firing a false Sentry report. Waiting
+ * for an actual user is a separate, unbounded wait in the caller.
+ *
+ * Retries once after a short delay; if auth is still unresolved, reports it
+ * to every observability sink and lets bootstrap continue rather than leaving
+ * the caller stuck.
+ */
+async function waitForCloudAuth(): Promise<void> {
+  const { isInitialized } = storeToRefs(useAuthStore())
+  const waitForResolution = () =>
+    until(isInitialized).toBe(true, {
+      timeout: AUTH_WAIT_TIMEOUT_MS,
+      throwOnTimeout: true
+    })
+
+  try {
+    await waitForResolution()
+  } catch (error) {
+    console.warn(
+      '[bootstrapStore] Auth did not resolve in time, retrying once',
+      error
+    )
+    await new Promise((resolve) =>
+      setTimeout(resolve, AUTH_WAIT_RETRY_DELAY_MS)
+    )
+    try {
+      await waitForResolution()
+    } catch (retryError) {
+      reportError(retryError, {
+        surface: 'platform',
+        errorType: 'bootstrap_auth_wait_timeout'
+      })
+    }
+  }
+}
+
+export const useBootstrapStore = defineStore('bootstrap', () => {
+  const settingStore = useSettingStore()
+  const workflowStore = useWorkflowStore()
+
+  const {
+    isReady: isI18nReady,
+    error: i18nError,
+    execute: loadI18n
+  } = useAsyncState(
+    async () => {
+      const { mergeCustomNodesI18n } = await import('@/i18n')
+      const i18nData = await fetchCustomNodesI18n()
+      if (i18nData) mergeCustomNodesI18n(i18nData)
+    },
+    undefined,
+    { immediate: false }
+  )
+
+  let storesLoaded = false
+  const startupFailure = shallowRef<{ cause: unknown }>()
+  let pending: Promise<void> | undefined
+
+  function loadAuthenticatedStores(): Promise<void>[] {
+    if (storesLoaded) return []
+    storesLoaded = true
+
+    return [
+      bootstrapTracer.settle('bootstrap/settings', () => settingStore.load()),
+      bootstrapTracer.settle('bootstrap/workflows', () =>
+        workflowStore.loadWorkflows()
+      )
+    ]
+  }
+
+  async function loadStoreBootstrap() {
+    void loadI18n()
+
+    if (isCloud) {
+      if (import.meta.env.VITE_RUN_BILLING_MODE !== 'prepaid')
+        await bootstrapTracer.settle('auth-gate/initialized', waitForCloudAuth)
+      await bootCloudIdentity()
+      if (import.meta.env.VITE_RUN_BILLING_MODE !== 'prepaid') {
+        const { isAuthenticated } = storeToRefs(useAuthStore())
+        await until(isAuthenticated).toBe(true)
+      }
+    }
+
+    const userStore = useUserStore()
+    await bootstrapTracer.settle('auth-gate/user-store', () =>
+      userStore.initialize()
+    )
+
+    const { needsLogin } = storeToRefs(userStore)
+    await bootstrapTracer.settle('auth-gate/needs-login', () =>
+      until(needsLogin).toBe(false)
+    )
+
+    const storeLoads = loadAuthenticatedStores()
+    void Promise.allSettled(storeLoads).then(() => {
+      bootstrapTracer.milestone('stores-ready')
+    })
+  }
+
+  function recordStartupFailure(cause: unknown): void {
+    if (startupFailure.value && startupFailure.value.cause === cause) return
+    startupFailure.value = { cause }
+    reportError(cause, {
+      surface: 'platform',
+      errorType: 'failure_initializing_editor_stores'
+    })
+  }
+
+  function startStoreBootstrap(): Promise<void> {
+    if (pending) return pending
+    startupFailure.value = undefined
+    pending = loadStoreBootstrap()
+      .catch(recordStartupFailure)
+      .finally(() => {
+        pending = undefined
+      })
+    return pending
+  }
+
+  return {
+    isI18nReady,
+    i18nError,
+    startupFailure,
+    recordStartupFailure,
+    startStoreBootstrap
+  }
+})

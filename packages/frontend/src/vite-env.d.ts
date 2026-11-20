@@ -1,0 +1,36 @@
+/// <reference types="vite/client" />
+
+declare module 'virtual:icons/*' {
+  import type { DefineComponent } from 'vue'
+  const component: DefineComponent
+  export default component
+}
+
+declare module '~icons/*' {
+  import type { DefineComponent } from 'vue'
+  const component: DefineComponent
+  export default component
+}
+
+declare global {
+  interface Window {
+    __COMFYUI_FRONTEND_VERSION__: string
+  }
+
+  interface ImportMetaEnv {
+    VITE_RUN_BILLING_MODE?: 'prepaid' | 'subscription'
+    VITE_AGENT_BACKEND_MODE?: 'disabled' | 'official'
+    VITE_APP_VERSION?: string
+    VITE_BILLING_WEB_URL?: string
+    VITE_STAGING_API_BASE_URL?: string
+    VITE_STAGING_CLOUD_BASE_URL?: string
+    VITE_STAGING_PLATFORM_BASE_URL?: string
+    VITE_STRIPE_PUBLISHABLE_KEY?: string
+  }
+
+  interface ImportMeta {
+    readonly env: ImportMetaEnv
+  }
+}
+
+export {}

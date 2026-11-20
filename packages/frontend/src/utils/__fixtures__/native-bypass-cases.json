@@ -1,0 +1,55 @@
+[
+  { "name": "one hop", "target": 3, "nodes": [
+    { "id": 1, "mode": 0, "inputs": [], "outputs": ["STRING"] },
+    { "id": 2, "mode": 4, "inputs": ["STRING"], "outputs": ["STRING"] },
+    { "id": 3, "mode": 0, "inputs": ["STRING"], "outputs": [] }
+  ], "links": [[1,0,2,0],[2,0,3,0]], "expected_input": [1,0] },
+  { "name": "same numbered input wins", "target": 4, "nodes": [
+    { "id": 1, "mode": 0, "inputs": [], "outputs": ["STRING"] },
+    { "id": 2, "mode": 0, "inputs": [], "outputs": ["STRING"] },
+    { "id": 3, "mode": 4, "inputs": ["STRING","STRING"], "outputs": ["STRING","STRING"] },
+    { "id": 4, "mode": 0, "inputs": ["STRING"], "outputs": [] }
+  ], "links": [[1,0,3,0],[2,0,3,1],[3,1,4,0]], "expected_input": [2,0] },
+  { "name": "first exact type wins after numbered mismatch", "target": 4, "nodes": [
+    { "id": 1, "mode": 0, "inputs": [], "outputs": ["STRING"] },
+    { "id": 2, "mode": 0, "inputs": [], "outputs": ["STRING"] },
+    { "id": 3, "mode": 4, "inputs": ["INT","STRING","STRING"], "outputs": ["STRING"] },
+    { "id": 4, "mode": 0, "inputs": ["STRING"], "outputs": [] }
+  ], "links": [[1,0,3,2],[2,0,3,1],[3,0,4,0]], "expected_input": [2,0] },
+  { "name": "unwired preferred input does not choose another wire", "target": 3, "nodes": [
+    { "id": 1, "mode": 0, "inputs": [], "outputs": ["STRING"] },
+    { "id": 2, "mode": 4, "inputs": ["STRING","STRING"], "outputs": ["STRING"] },
+    { "id": 3, "mode": 0, "inputs": ["STRING"], "outputs": [] }
+  ], "links": [[1,0,2,1],[2,0,3,0]], "expected_input": null },
+  { "name": "two hop chain", "target": 4, "nodes": [
+    { "id": 1, "mode": 0, "inputs": [], "outputs": ["STRING"] },
+    { "id": 2, "mode": 4, "inputs": ["STRING"], "outputs": ["STRING"] },
+    { "id": 3, "mode": 4, "inputs": ["STRING"], "outputs": ["STRING"] },
+    { "id": 4, "mode": 0, "inputs": ["STRING"], "outputs": [] }
+  ], "links": [[1,0,2,0],[2,0,3,0],[3,0,4,0]], "expected_input": [1,0] },
+  { "name": "muted upstream preserves serialized fallback", "target": 3, "nodes": [
+    { "id": 1, "mode": 2, "inputs": [], "outputs": ["STRING"] },
+    { "id": 2, "mode": 4, "inputs": ["STRING"], "outputs": ["STRING"] },
+    { "id": 3, "mode": 0, "inputs": ["STRING"], "outputs": [], "widget": { "value": "fallback", "serialize": true } }
+  ], "links": [[1,0,2,0],[2,0,3,0]], "expected_input": "fallback" },
+  { "name": "no matching input type", "target": 3, "nodes": [
+    { "id": 1, "mode": 0, "inputs": [], "outputs": ["INT"] },
+    { "id": 2, "mode": 4, "inputs": ["INT"], "outputs": ["STRING"] },
+    { "id": 3, "mode": 0, "inputs": ["STRING"], "outputs": [] }
+  ], "links": [[1,0,2,0],[2,0,3,0]], "expected_input": null },
+  { "name": "reachable bypass cycle", "target": 3, "nodes": [
+    { "id": 1, "mode": 4, "inputs": ["STRING"], "outputs": ["STRING"] },
+    { "id": 2, "mode": 4, "inputs": ["STRING"], "outputs": ["STRING"] },
+    { "id": 3, "mode": 0, "inputs": ["STRING"], "outputs": [] }
+  ], "links": [[1,0,2,0],[2,0,1,0],[2,0,3,0]], "expected_input": null, "expected_error": "execution_bypass_cycle" },
+  { "name": "unused wildcard input preserves a concrete bypass", "target": 3, "nodes": [
+    { "id": 1, "mode": 0, "inputs": [], "outputs": ["STRING"] },
+    { "id": 2, "mode": 4, "inputs": ["STRING", "*"], "outputs": ["STRING"] },
+    { "id": 3, "mode": 0, "inputs": ["STRING"], "outputs": [] }
+  ], "links": [[1,0,2,0],[2,0,3,0]], "expected_input": [1,0] },
+  { "name": "exact fallback wins over unrelated union input", "target": 3, "nodes": [
+    { "id": 1, "mode": 0, "inputs": [], "outputs": ["STRING"] },
+    { "id": 2, "mode": 4, "inputs": ["INT,FLOAT", "STRING"], "outputs": ["STRING"] },
+    { "id": 3, "mode": 0, "inputs": ["STRING"], "outputs": [] }
+  ], "links": [[1,0,2,1],[2,0,3,0]], "expected_input": [1,0] }
+]

@@ -1,0 +1,321 @@
+import { useMaskEditorDataStore } from '@/stores/maskEditorDataStore'
+import { fromAny } from '@total-typescript/shoehorn'
+import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
+import { useWidgetValueStore } from '@/stores/widgetValueStore'
+import { toNodeId } from '@/types/nodeId'
+import { widgetId } from '@/types/widgetId'
+import { api } from '@/scripts/api'
+import { t } from '@/i18n'
+import { useMaskEditorLoader } from './useMaskEditorLoader'
+
+let mockDataStore: ReturnType<typeof useMaskEditorDataStore>
+
+const distribution = vi.hoisted(() => ({ isCloud: false }))
+
+vi.mock(import('@/platform/distribution/types'), () => ({
+  get isCloud() {
+    return distribution.isCloud
+  }
+}))
+
+vi.mock(import('@/scripts/api'))
+
+vi.mock(import('@/scripts/app'))
+
+// Mock Image constructor so the loader's image fetches resolve without a
+// network. Records every requested URL; URLs matching failUrlPattern reject
+// like a 404 would (reset per test in beforeEach).
+const requestedUrls: string[] = []
+let failUrlPattern: RegExp | null = null
+
+class MockImage {
+  crossOrigin = ''
+  onload: ((ev: Event) => void) | null = null
+  onerror: ((ev: unknown) => void) | null = null
+  private _src = ''
+  get src() {
+    return this._src
+  }
+  set src(value: string) {
+    this._src = value
+    requestedUrls.push(value)
+    queueMicrotask(() => {
+      if (failUrlPattern?.test(value)) this.onerror?.(new Event('error'))
+      else this.onload?.(new Event('load'))
+    })
+  }
+}
+
+const GRAPH_ID = 'maskeditor-loader-test'
+
+function createLoadImageNode(widgetValue: string): LGraphNode {
+  const nodeId = toNodeId(7)
+  useWidgetValueStore().registerWidget(widgetId(GRAPH_ID, nodeId, 'image'), {
+    type: 'string',
+    value: widgetValue,
+    options: {}
+  })
+  return fromAny<LGraphNode, unknown>({
+    id: nodeId,
+    type: 'LoadImage',
+    imgs: [{ src: 'http://localhost:8188/api/view?filename=whatever.png' }],
+    images: undefined,
+    graph: { rootGraph: { id: GRAPH_ID } }
+  })
+}
+
+function subfolderOf(url: string): string | null {
+  return new URL(url).searchParams.get('subfolder')
+}
+
+function requestedLayerUrls(layerFilename: string): string[] {
+  return requestedUrls.filter((url) => url.includes(layerFilename))
+}
+
+describe('useMaskEditorLoader', () => {
+  beforeEach(() => {
+    vi.mocked(api.apiURL).mockImplementation(
+      (route) => `http://localhost:8188/api${route}`
+    )
+    mockDataStore = useMaskEditorDataStore()
+    requestedUrls.length = 0
+    failUrlPattern = null
+    distribution.isCloud = false
+    mockDataStore.inputData = null
+    mockDataStore.sourceNode = null
+    vi.stubGlobal('Image', MockImage)
+  })
+
+  it('loads layer files from the input root for saves without a subfolder prefix', async () => {
+    const node = createLoadImageNode('clipspace-painted-masked-123.png [input]')
+
+    await useMaskEditorLoader().loadFromNode(node)
+
+    for (const layerFilename of [
+      'clipspace-mask-123.png',
+      'clipspace-paint-123.png'
+    ]) {
+      const layerUrls = requestedLayerUrls(layerFilename)
+      expect(layerUrls.length).toBeGreaterThan(0)
+      for (const url of layerUrls) {
+        expect(subfolderOf(url)).toBeNull()
+      }
+    }
+    expect(mockDataStore.inputData).toMatchObject({
+      sourceRef: { filename: 'clipspace-mask-123.png', type: 'input' },
+      nodeId: toNodeId(7)
+    })
+  })
+
+  it('loads layer files from the clipspace subfolder for legacy saves', async () => {
+    const node = createLoadImageNode(
+      'clipspace/clipspace-painted-masked-123.png [input]'
+    )
+
+    await useMaskEditorLoader().loadFromNode(node)
+
+    for (const layerFilename of [
+      'clipspace-mask-123.png',
+      'clipspace-paint-123.png'
+    ]) {
+      const layerUrls = requestedLayerUrls(layerFilename)
+      expect(layerUrls.length).toBeGreaterThan(0)
+      for (const url of layerUrls) {
+        expect(subfolderOf(url)).toBe('clipspace')
+      }
+    }
+  })
+
+  it('keeps the clipspace subfolder for cloud-resolved layer files', async () => {
+    distribution.isCloud = true
+    vi.mocked(api.fetchApi).mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          painted_masked: 'hash-painted-masked.png',
+          painted: 'hash-painted.png',
+          paint: 'hash-paint.png',
+          mask: 'hash-mask.png'
+        })
+    } as Response)
+    const node = createLoadImageNode('clipspace-painted-masked-123.png [input]')
+
+    await useMaskEditorLoader().loadFromNode(node)
+
+    for (const layerFilename of ['hash-mask.png', 'hash-paint.png']) {
+      const layerUrls = requestedLayerUrls(layerFilename)
+      expect(layerUrls.length).toBeGreaterThan(0)
+      for (const url of layerUrls) {
+        expect(subfolderOf(url)).toBe('clipspace')
+      }
+    }
+  })
+
+  it.for(['', 'clipspace', 'nested & layers'])(
+    'uses the server layer directory %j',
+    async (subfolder) => {
+      distribution.isCloud = true
+      vi.mocked(api.fetchApi).mockResolvedValue(
+        Response.json({
+          painted_masked: 'hash-main.png',
+          paint: 'hash-paint.png',
+          subfolder
+        })
+      )
+      const node = createLoadImageNode('hash-main.png [input]')
+
+      await useMaskEditorLoader().loadFromNode(node)
+
+      const data = mockDataStore.inputData
+      assert.exists(data)
+      assert.exists(data.paintLayer)
+      expect(
+        [data.baseLayer.url, data.maskLayer.url, data.paintLayer.url].map(
+          (url) => new URL(url).searchParams.get('subfolder')
+        )
+      ).toEqual([subfolder || null, subfolder || null, subfolder || null])
+      expect(api.fetchApi).toHaveBeenCalledWith(
+        '/files/mask-layers?filename=hash-main.png%20%5Binput%5D'
+      )
+    }
+  )
+
+  it('falls back to the node image when layer files are missing', async () => {
+    failUrlPattern = /clipspace-(mask|paint)-123\.png/
+    const node = createLoadImageNode('clipspace-painted-masked-123.png [input]')
+
+    await useMaskEditorLoader().loadFromNode(node)
+
+    expect(mockDataStore.inputData).toMatchObject({
+      sourceRef: { filename: 'clipspace-painted-masked-123.png' },
+      paintLayer: undefined,
+      nodeId: toNodeId(7)
+    })
+  })
+
+  it('loads WebP mask channels in cloud mode', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    distribution.isCloud = true
+    const node = createLoadImageNode('portrait.WEBP [input]')
+
+    const result = await useMaskEditorLoader().loadFromNode(node)
+
+    expect(result).toEqual({ ok: true })
+    expect(
+      requestedUrls
+        .map((url) => new URL(url).searchParams.get('channel'))
+        .filter((channel) => channel !== null)
+    ).toEqual(['rgb', 'a'])
+    expect(api.fetchApi).toHaveBeenCalledWith(
+      '/files/mask-layers?filename=portrait.WEBP%20%5Binput%5D'
+    )
+    expect(api.fetchApi).toHaveBeenCalledTimes(1)
+    expect(mockDataStore.inputData).toMatchObject({
+      sourceRef: { filename: 'portrait.WEBP', type: 'input' }
+    })
+  })
+
+  it('falls back to the node image when a successful layer response is malformed', async () => {
+    distribution.isCloud = true
+    vi.mocked(api.fetchApi).mockResolvedValue(Response.json({ mask: 42 }))
+    const node = createLoadImageNode('portrait.png [input]')
+
+    expect(await useMaskEditorLoader().loadFromNode(node)).toEqual({ ok: true })
+    expect(
+      requestedUrls
+        .map((url) => new URL(url).searchParams.get('channel'))
+        .filter((channel) => channel !== null)
+    ).toEqual(['rgb', 'a'])
+    expect(mockDataStore.inputData).toMatchObject({
+      sourceRef: { filename: 'portrait.png', type: 'input' },
+      paintLayer: undefined
+    })
+  })
+
+  it('returns a failure when the node image itself cannot be loaded', async () => {
+    failUrlPattern = /./
+    const node = createLoadImageNode('some-regular-image.png [input]')
+
+    expect(await useMaskEditorLoader().loadFromNode(node)).toMatchObject({
+      ok: false
+    })
+    expect(mockDataStore.setLoading).toHaveBeenLastCalledWith(
+      false,
+      expect.any(String)
+    )
+    expect(api.fetchApi).not.toHaveBeenCalled()
+  })
+
+  it.for([
+    { status: 413, message: 'maskEditor.imageTooLarge', filename: 'large.png' },
+    {
+      status: 415,
+      message: 'maskEditor.imageFormatUnsupported',
+      filename: 'source.gif'
+    },
+    { status: 404, message: 'maskEditor.imageLoadFailed', filename: 'gone.png' }
+  ] as const)(
+    'explains a $status channel refusal without replacing editor data',
+    async ({ status, message, filename }) => {
+      vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+      const loader = useMaskEditorLoader()
+      await loader.loadFromNode(createLoadImageNode('previous.png [input]'))
+      const previous = mockDataStore.inputData
+      assert.exists(previous)
+      failUrlPattern = /channel=/
+      vi.mocked(api.fetchApi).mockImplementation(async () =>
+        Response.json({ message: 'internal diagnostic' }, { status })
+      )
+
+      expect(
+        await loader.loadFromNode(createLoadImageNode(`${filename} [input]`))
+      ).toEqual({
+        ok: false,
+        title: t('maskEditor.loadFailed'),
+        message: t(message)
+      })
+      expect(mockDataStore.inputData).toBe(previous)
+      expect(mockDataStore.setLoading).toHaveBeenLastCalledWith(
+        false,
+        t(message)
+      )
+    }
+  )
+
+  it.for([
+    'https://external.test/api/view?filename=external.png',
+    'http://localhost:8188/other/view?filename=external.png'
+  ])('does not turn %s into an authenticated API request', async (src) => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    const node = createLoadImageNode('$external')
+    node.imgs = [fromAny<HTMLImageElement, unknown>({ src })]
+    failUrlPattern = /channel=/
+
+    expect(await useMaskEditorLoader().loadFromNode(node)).toMatchObject({
+      ok: false,
+      message: t('maskEditor.imageLoadFailed')
+    })
+    expect(api.fetchApi).not.toHaveBeenCalled()
+  })
+
+  it('keeps failed status diagnostics bounded to the original view endpoint', async () => {
+    vi.stubEnv('VITE_RUN_BILLING_MODE', 'prepaid')
+    failUrlPattern = /channel=/
+    vi.mocked(api.fetchApi).mockRejectedValue(new TypeError('offline'))
+
+    expect(
+      await useMaskEditorLoader().loadFromNode(
+        createLoadImageNode('source.png [input]')
+      )
+    ).toMatchObject({ ok: false, message: t('maskEditor.imageLoadFailed') })
+    expect(api.fetchApi).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/view\?.*channel=(rgb|a)$/),
+      {
+        signal: expect.any(AbortSignal),
+        redirect: 'error'
+      }
+    )
+  })
+})

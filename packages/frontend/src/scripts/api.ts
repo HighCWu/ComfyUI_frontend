@@ -1,0 +1,2066 @@
+import type {
+  GetEmbeddingsResponse,
+  GetExtensionsResponse,
+  GetI18nResponse,
+  PostAssetsFromWorkflowResponse
+} from '@comfyorg/ingest-types'
+import {
+  zGetAllSettingsResponse,
+  zGetEmbeddingsResponse,
+  zGetExtensionsResponse,
+  zGetGlobalSubgraphResponse,
+  zGetGlobalSubgraphsResponse,
+  zGetI18nResponse,
+  zGetInternalLogsRawResponse,
+  zGetPromptInfoResponse,
+  zGetSystemStatsResponse,
+  zGetUsersInfoResponse,
+  zGetUserdataResponse,
+  zGetWorkflowTemplatesResponse,
+  zNodeInfo,
+  zPromptResponse,
+  zPostAssetsFromWorkflowResponse
+} from '@comfyorg/ingest-types/zod'
+import axios from 'axios'
+import { get } from 'es-toolkit/compat'
+import { trimEnd } from 'es-toolkit'
+import { ref } from 'vue'
+import { z } from 'zod'
+
+import defaultClientFeatureFlags from '@/config/clientFeatureFlags.json' with { type: 'json' }
+import { currentCatalogueReaderPorts } from '@/extensions/core/domonCatalogueReaderPorts'
+import {
+  appendEditorSession,
+  editorSessionFromNavigation,
+  updateEditorSessionNavigation
+} from '@/scripts/editorSessionUrl'
+import type { ApiAuthProvider } from '@/platform/auth/apiAuthProvider'
+import { anonymousApiAuthProvider } from '@/platform/auth/apiAuthProvider'
+import {
+  authCredentialOf,
+  notifyAuthCredential
+} from '@/platform/auth/authCredential'
+import { scopeMediaRoute } from '@/platform/auth/session/sessionMediaUrl'
+import { webSessionRequests } from '@/platform/auth/session/webSessionFetch'
+import type { WebSessionRequestScope } from '@/platform/auth/session/webSessionFetch'
+import { FETCH_RESPONSE_HEADERS_TIMEOUT_MS } from '@/scripts/apiTimeouts'
+import { selectedPrepaidRunStrategy } from '@/scripts/prepaidRunStrategy'
+import { adoptSocketSessionScope } from '@/scripts/socketSessionScope'
+import { getDevOverride } from '@/utils/devFeatureFlagOverride'
+import { getSessionOverride } from '@/utils/sessionFeatureFlagOverride'
+import type {
+  ModelFile,
+  ModelFolderInfo
+} from '@/platform/assets/schemas/assetSchema'
+import {
+  modelFolderInfosSchema,
+  modelFilesResponseSchema
+} from '@/platform/assets/schemas/assetSchema'
+import { useToast } from '@/components/ui/toast/toastStore'
+import { t } from '@/i18n'
+import { isCloud } from '@/platform/distribution/types'
+import { addBreadcrumb } from '@sentry/vue'
+import { useTelemetry } from '@/platform/telemetry'
+import { reportError } from '@/platform/telemetry/reportError'
+import type { components as ManagerComponents } from '@/workbench/extensions/manager/types/generatedManagerTypes'
+import type {
+  AgentStatusWsMessage,
+  AssetDownloadWsMessage,
+  AssetExportWsMessage,
+  ExecutedWsMessage,
+  ExecutingWsMessage,
+  ExecutionCachedWsMessage,
+  ExecutionErrorWsMessage,
+  ExecutionInterruptedWsMessage,
+  ExecutionStartWsMessage,
+  ExecutionSuccessWsMessage,
+  FeatureFlagsWsMessage,
+  LogsRawResponse,
+  LogsWsMessage,
+  NotificationWsMessage,
+  ProgressStateWsMessage,
+  ProgressTextWsMessage,
+  ProgressWsMessage,
+  StatusWsMessage,
+  StatusWsMessageStatus
+} from '@/platform/remote/comfyui/execution/types'
+import type {
+  PromptFailureResponse,
+  PromptResponse,
+  SystemStats,
+  UserConfigResponse,
+  UserDataFullInfo
+} from '@/platform/remote/comfyui/types'
+import type { PreviewMethod, Settings } from '@/platform/settings/types'
+import type {
+  TemplateIncludeOnDistributionEnum,
+  WorkflowTemplates
+} from '@/platform/workflow/templates/types/template'
+import type {
+  ComfyApiWorkflow,
+  ComfyWorkflowJSON
+} from '@/platform/workflow/validation/schemas/workflowSchema'
+import type { SerializedNodeId } from '@/types/nodeId'
+import type {
+  JobAssetsResult,
+  JobDetail,
+  JobListItem
+} from '@/platform/remote/comfyui/jobs/jobTypes'
+import type { AuthCredential, AuthScheme } from '@/types/authTypes'
+import type { NodeExecutionId } from '@/types/nodeIdentification'
+import {
+  fetchHistory,
+  fetchJobAssets,
+  fetchJobDetail,
+  fetchQueue
+} from '@/platform/remote/comfyui/jobs/fetchJobs'
+
+const SERVER_FEATURE_FLAGS_TIMEOUT_MS = 5_000
+const workflowTemplatesResponseSchema = zGetWorkflowTemplatesResponse.pipe(
+  z.record(z.string(), z.array(z.string()))
+)
+const nodeInfoResponseSchema = z.record(
+  z.string(),
+  zNodeInfo.passthrough().extend({
+    display_name: z.string().nullish(),
+    output: z.array(z.union([z.string(), z.array(z.string())])).optional(),
+    output_is_list: z.array(z.boolean().nullable()).optional(),
+    output_name: z.union([z.array(z.string()), z.string()]).optional(),
+    output_tooltips: z.array(z.string().nullable()).optional()
+  })
+)
+const coreWorkflowTemplatesResponseSchema = z.array(
+  z
+    .object({
+      moduleName: z.string(),
+      templates: z.array(
+        z
+          .object({
+            description: z.string(),
+            mediaSubtype: z.string(),
+            mediaType: z.string(),
+            name: z.string()
+          })
+          .passthrough()
+      ),
+      title: z.string()
+    })
+    .passthrough()
+)
+const logsRawResponseSchema = zGetInternalLogsRawResponse.transform(
+  ({ entries = [], size }) => ({
+    entries: entries.map(({ m = '', t }) => ({
+      m,
+      ...(t === undefined ? {} : { t })
+    })),
+    size: {
+      cols: size?.cols ?? 80,
+      rows: size?.rows ?? 24
+    }
+  })
+)
+const userDataFullInfoResponseSchema = z.array(
+  zGetUserdataResponse.element.extend({
+    modified: z.number(),
+    path: z.string(),
+    size: z.number()
+  })
+)
+const userConfigResponseSchema = zGetUsersInfoResponse
+  .extend({
+    storage: z.literal('server'),
+    users: z.record(z.string(), z.string()).optional()
+  })
+  .passthrough()
+
+interface QueuePromptRequestBody {
+  client_id: string
+  prompt: ComfyApiWorkflow
+  partial_execution_targets?: NodeExecutionId[]
+  extra_data: {
+    extra_pnginfo: {
+      workflow: ComfyWorkflowJSON
+    }
+    /**
+     * The auth token for the comfy org account if the user is logged in.
+     *
+     * Backend node can access this token by specifying following input:
+     * ```python
+      @classmethod
+      def INPUT_TYPES(s):
+        return {
+          "hidden": { "auth_token": "AUTH_TOKEN_COMFY_ORG"}
+        }
+
+      def execute(self, auth_token: str):
+        print(f"Auth token: {auth_token}")
+     * ```
+     */
+    auth_token_comfy_org?: string
+    /**
+     * The auth token for the comfy org account if the user is logged in.
+     *
+     * Backend node can access this token by specifying following input:
+     * ```python
+     * def INPUT_TYPES(s):
+     *   return {
+     *     "hidden": { "api_key": "API_KEY_COMFY_ORG" }
+     *   }
+     *
+     * def execute(self, api_key: str):
+     *   print(f"API Key: {api_key}")
+     * ```
+     */
+    api_key_comfy_org?: string
+    /**
+     * Identifies the client submitting the prompt. Forwarded by the backend
+     * to API nodes' upstream requests via the Comfy-Usage-Source header.
+     */
+    comfy_usage_source?: string
+    /**
+     * Override the preview method for this prompt execution.
+     * 'default' uses the server's CLI setting.
+     */
+    preview_method?: PreviewMethod
+  }
+  front?: boolean
+  number?: number
+}
+
+interface FetchApiOptions extends RequestInit {
+  timeoutMs?: number | null
+  onAuthHeader?: (attached: boolean) => void
+  /** Reports which auth path was taken, independent of onAuthHeader's attached/not boolean. */
+  onAuthScheme?: (scheme: AuthScheme) => void
+  /** Reports the kind of credential sent, to tell a missing token from a wrong one. */
+  onAuthCredential?: (credential: AuthCredential) => void
+}
+
+const FETCH_ROUTE_GROUPS = new Set([
+  'assets',
+  'embeddings',
+  'experiment',
+  'extensions',
+  'features',
+  'files',
+  'folder_paths',
+  'free',
+  'global_subgraphs',
+  'history',
+  'hub',
+  'internal',
+  'interrupt',
+  'jobs',
+  'logs',
+  'models',
+  'node_replacements',
+  'object_info',
+  'prompt',
+  'providers',
+  'queue',
+  'secrets',
+  'settings',
+  'system_stats',
+  'upload',
+  'user',
+  'userdata',
+  'users',
+  'video_metadata',
+  'view',
+  'view_metadata',
+  'workflow_templates',
+  'workflows',
+  'workspace'
+])
+
+function getFetchRouteTemplate(route: string): string {
+  const segments = (route.split(/[?#]/)[0] ?? '').split('/').filter(Boolean)
+  const routeSegments = segments[0] === 'api' ? segments.slice(1) : segments
+  const [routeGroup, ...resources] = routeSegments
+
+  if (!routeGroup || !FETCH_ROUTE_GROUPS.has(routeGroup)) return '/other'
+  return `/${routeGroup}${resources.length ? '/:resource' : ''}`
+}
+
+/**
+ * Options for queuePrompt method
+ */
+interface QueuePromptOptions {
+  /**
+   * Optional list of node execution IDs to execute (partial execution).
+   * Each ID represents a node's position in nested subgraphs.
+   * Format: Colon-separated path of node IDs (e.g., "123:456:789")
+   */
+  partialExecutionTargets?: NodeExecutionId[]
+  /**
+   * Override the preview method for this prompt execution.
+   * 'default' uses the server's CLI setting and is not sent to backend.
+   */
+  previewMethod?: PreviewMethod
+}
+
+/** Dictionary of Frontend-generated API calls */
+interface FrontendApiCalls {
+  graphChanged: ComfyWorkflowJSON
+  /**
+   * Signals that auto-queue should treat the active workflow as changed.
+   * Local change-tracker edits are filtered through the prompt-relevant
+   * projection and evaluated only while Run (on change) is active. For those
+   * edits, position, size, title, collapse, group, viewport, and slot-label
+   * changes do not trigger this signal.
+   * Server-pushed `graphChanged` messages are forwarded unfiltered.
+   * Third-party presentation-only nodes are treated as prompt-relevant.
+   */
+  autoQueueGraphChanged: never
+  promptQueueing: { requestId: number; batchCount: number; number?: number }
+  promptQueued: { number: number; batchCount: number; requestId?: number }
+  graphCleared: never
+  reconnecting: never
+  reconnected: never
+}
+
+export type PromptQueueingEventPayload = FrontendApiCalls['promptQueueing']
+export type PromptQueuedEventPayload = FrontendApiCalls['promptQueued']
+
+/** Dictionary of calls originating from ComfyUI core */
+interface BackendApiCalls {
+  progress: ProgressWsMessage
+  executing: ExecutingWsMessage
+  executed: ExecutedWsMessage
+  status: StatusWsMessage
+  notification: NotificationWsMessage
+  execution_start: ExecutionStartWsMessage
+  execution_success: ExecutionSuccessWsMessage
+  execution_error: ExecutionErrorWsMessage
+  execution_interrupted: ExecutionInterruptedWsMessage
+  execution_cached: ExecutionCachedWsMessage
+  logs: LogsWsMessage
+  /** Binary preview/progress data */
+  b_preview: Blob
+  /** Binary preview with metadata (node_id, job_id) */
+  b_preview_with_metadata: {
+    blob: Blob
+    nodeId: string
+    parentNodeId: string
+    displayNodeId: string
+    realNodeId: string
+    jobId: string
+  }
+  progress_text: ProgressTextWsMessage
+  progress_state: ProgressStateWsMessage
+  feature_flags: FeatureFlagsWsMessage
+  agent_status: AgentStatusWsMessage
+  asset_download: AssetDownloadWsMessage
+  asset_export: AssetExportWsMessage
+}
+
+/** Dictionary of all api calls */
+interface ApiCalls extends BackendApiCalls, FrontendApiCalls {
+  'cm-task-started': ManagerComponents['schemas']['MessageTaskStarted']
+  'cm-task-completed': ManagerComponents['schemas']['MessageTaskDone']
+}
+
+/** Used to create a discriminating union on type value. */
+interface ApiMessage<T extends keyof ApiCalls> {
+  type: T
+  data: ApiCalls[T]
+}
+
+export class UnauthorizedError extends Error {}
+
+/** Ensures workers get a fair shake. */
+type Unionize<T> = T[keyof T]
+
+/**
+ *  Discriminated union of generic, i.e.:
+ * ```ts
+ * // Convert
+ * type ApiMessageUnion = ApiMessage<'status' | 'executing' | ...>
+ * // To
+ * type ApiMessageUnion = ApiMessage<'status'> | ApiMessage<'executing'> | ...
+ * ```
+ */
+type ApiMessageUnion = Unionize<{
+  [Key in keyof ApiCalls]: ApiMessage<Key>
+}>
+
+/** Wraps all properties in {@link CustomEvent}. */
+type AsCustomEvents<T> = {
+  readonly [K in keyof T]: CustomEvent<T[K]>
+}
+
+/** Handles differing event and API signatures. */
+type ApiToEventType<T = ApiCalls> = {
+  [K in keyof T]: K extends 'status'
+    ? StatusWsMessageStatus
+    : K extends 'executing'
+      ? SerializedNodeId
+      : T[K]
+}
+
+/** Dictionary of types used in the detail for a custom event */
+type ApiEventTypes = ApiToEventType
+
+/** Dictionary of API events: `[name]: CustomEvent<Type>` */
+type ApiEvents = AsCustomEvents<ApiEventTypes>
+
+/** {@link Omit} all properties that evaluate to `never`. */
+type NeverNever<T> = {
+  [K in keyof T as T[K] extends never ? never : K]: T[K]
+}
+
+/** {@link Pick} only properties that evaluate to `never`. */
+type PickNevers<T> = {
+  [K in keyof T as T[K] extends never ? K : never]: T[K]
+}
+
+/** Keys (names) of API events that _do not_ pass a {@link CustomEvent} `detail` object. */
+type SimpleApiEvents = keyof PickNevers<ApiEventTypes>
+/** Keys (names) of API events that pass a {@link CustomEvent} `detail` object. */
+type ComplexApiEvents = keyof NeverNever<ApiEventTypes>
+
+export type GlobalSubgraphData = {
+  name: string
+  source: string
+  info: {
+    node_pack: string
+    category?: string
+    search_aliases?: string[]
+    requiresCustomNodes?: string[]
+    includeOnDistributions?: TemplateIncludeOnDistributionEnum[]
+  }
+  data: string | Promise<string>
+  essentials_category?: string
+}
+
+type WebSessionSend = (url: string, init: RequestInit) => Promise<Response>
+
+function addHeaderEntry(headers: HeadersInit, key: string, value: string) {
+  if (Array.isArray(headers)) {
+    headers.push([key, value])
+  } else if (headers instanceof Headers) {
+    headers.set(key, value)
+  } else {
+    headers[key] = value
+  }
+}
+
+/** EventTarget typing has no generic capability. */
+export interface ComfyApi extends EventTarget {
+  addEventListener<TEvent extends keyof ApiEvents>(
+    type: TEvent,
+    callback: ((event: ApiEvents[TEvent]) => void) | null,
+    options?: AddEventListenerOptions | boolean
+  ): void
+
+  removeEventListener<TEvent extends keyof ApiEvents>(
+    type: TEvent,
+    callback: ((event: ApiEvents[TEvent]) => void) | null,
+    options?: EventListenerOptions | boolean
+  ): void
+}
+
+export class PromptExecutionError extends Error {
+  response: PromptFailureResponse
+  status?: number
+
+  constructor(response: PromptFailureResponse, status?: number) {
+    super('Prompt execution failed')
+    this.response = response
+    this.status = status
+  }
+
+  override toString() {
+    let message = ''
+    const error = this.response.error
+    if (typeof error === 'string') {
+      message += error
+    } else if (typeof error === 'object' && error !== null) {
+      const errorMessage = 'message' in error ? error.message : undefined
+      const errorDetails = 'details' in error ? error.details : undefined
+      if (typeof errorMessage === 'string') {
+        message += errorMessage
+        if (typeof errorDetails === 'string') {
+          message += ': ' + errorDetails
+        }
+      }
+    }
+    if (!message && typeof this.response.message === 'string') {
+      message += this.response.message
+    }
+
+    for (const [_, nodeError] of Object.entries(
+      this.response.node_errors ?? []
+    )) {
+      message += '\n' + nodeError.class_type + ':'
+      for (const errorReason of nodeError.errors) {
+        message += '\n    - ' + errorReason.message
+        if (errorReason.details) message += ': ' + errorReason.details
+      }
+    }
+
+    return message
+  }
+}
+
+/**
+ * Returns true only for the transient workspace-pool capacity response.
+ *
+ * The backend puts the retry code in the structured error details. Keep this
+ * check deliberately narrow: authentication, billing, validation, and other
+ * conflict responses must remain terminal prompt errors.
+ */
+export const POOL_CAPACITY_PREPARING_CODE = 'pool_capacity_preparing'
+
+export const isPoolCapacityPreparingError = (
+  error: unknown
+): error is PromptExecutionError => {
+  if (!(error instanceof PromptExecutionError)) return false
+  if (error.status !== 409) return false
+
+  const responseError = error.response.error
+  if (
+    !responseError ||
+    typeof responseError !== 'object' ||
+    !('details' in responseError)
+  )
+    return false
+
+  const details: unknown = responseError.details
+  return (
+    typeof details === 'object' &&
+    details !== null &&
+    !Array.isArray(details) &&
+    'code' in details &&
+    details.code === POOL_CAPACITY_PREPARING_CODE
+  )
+}
+
+export class ComfyApi extends EventTarget {
+  private _registered = new Set()
+  /**
+   * Maps an original event listener to its error-guarded wrapper, so that
+   * {@link removeEventListener} can match the wrapper installed by
+   * {@link addEventListener}. Keyed weakly so wrappers are GC'd with listeners.
+   */
+  private _listenerWrappers = new WeakMap<
+    EventListenerOrEventListenerObject,
+    EventListener
+  >()
+  api_host: string
+  api_base: string
+  /**
+   * The client id from the initial session storage.
+   */
+  initialClientId: string | null
+  /**
+   * The current client id from websocket status updates.
+   */
+  clientId?: string
+  /**
+   * The current user id.
+   */
+  user: string
+  socket: WebSocket | null = null
+
+  /**
+   * Monotonic id bumped by every createSocket() attempt. Because createSocket()
+   * holds `this.socket === null` across its async token fetch, two attempts can
+   * overlap (an identity reset racing the close-handler's reconnect, or two
+   * resets in quick succession). Each attempt captures its generation and, once
+   * its awaits settle, only proceeds if it is still the latest — so the newest
+   * identity always wins and superseded attempts never open a leaked socket.
+   */
+  private socketGeneration = 0
+
+  private authProvider: ApiAuthProvider = anonymousApiAuthProvider
+
+  reportedUnknownMessageTypes = new Set<string>()
+
+  /**
+   * Get feature flags supported by this frontend client.
+   * Returns a copy to prevent external modification.
+   */
+  getClientFeatureFlags(): Record<string, unknown> {
+    return { ...defaultClientFeatureFlags }
+  }
+
+  /**
+   * Feature flags received from the backend server.
+   */
+  serverFeatureFlags = ref<Record<string, unknown>>({})
+
+  /**
+   * Whether feature-flag negotiation for the current socket has settled: the
+   * server delivered a map, or delivery was abandoned (5s timeout, or the
+   * socket closed first). Not monotonic: each replacement socket resets it to
+   * false, so it can flip repeatedly while a connection is reconnecting. True
+   * does not imply the map is non-empty, and after {@link resetSocket}
+   * {@link serverFeatureFlags} still holds the previous identity's map until
+   * the next `feature_flags` message replaces it.
+   */
+  serverFeatureFlagsSettled = ref(false)
+
+  /**
+   * The auth token for the comfy org account if the user is logged in.
+   * This is only used for {@link queuePrompt} now. It is not directly
+   * passed as parameter to the function because some custom nodes are hijacking
+   * {@link queuePrompt} improperly, which causes extra parameters to be lost
+   * in the function call chain.
+   *
+   * Ref: https://cs.comfy.org/search?q=context:global+%22api.queuePrompt+%3D%22&patternType=keyword&sm=0
+   *
+   * TODO: Move this field to parameter of {@link queuePrompt} once all
+   * custom nodes are patched.
+   */
+  authToken?: string
+  /**
+   * The API key for the comfy org account if the user logged in via API key.
+   */
+  apiKey?: string
+
+  constructor() {
+    super()
+    const editorSession = editorSessionFromNavigation(location.search)
+    if (isCloud && editorSession) window.name = editorSession
+    this.user = ''
+    this.api_host = location.host
+    this.api_base = isCloud
+      ? ''
+      : location.pathname.split('/').slice(0, -1).join('/')
+    this.initialClientId = sessionStorage.getItem('clientId')
+  }
+
+  internalURL(route: string): string {
+    return appendEditorSession(this.api_base + '/internal' + route, window.name)
+  }
+
+  apiURL(route: string): string {
+    const requests = webSessionRequests()
+    return this.unscopedApiURL(
+      requests ? scopeMediaRoute(route, requests.workspaceId()) : route
+    )
+  }
+
+  /** For requests whose headers already name the workspace. */
+  private unscopedApiURL(route: string): string {
+    const url = route.startsWith('/api')
+      ? this.api_base + route
+      : this.api_base + '/api' + route
+    return route ? appendEditorSession(url, window.name) : url
+  }
+
+  fileURL(route: string): string {
+    return this.api_base + route
+  }
+
+  /**
+   * Installs the credentials source for every request and socket connection.
+   * Called once by the composition root; requests made before that are
+   * anonymous.
+   */
+  setAuthProvider(provider: ApiAuthProvider): void {
+    this.authProvider = provider
+  }
+
+  private async getWebSessionSend(): Promise<WebSessionSend | undefined> {
+    const requests = webSessionRequests()
+    if (!requests) return undefined
+    const scope = await requests.scope()
+    return scope && ((url, init) => requests.send(url, init, scope))
+  }
+
+  /** Sends a same-origin request on the web session; undefined when this tab is not on it. */
+  async fetchOnWebSession(
+    url: string,
+    init: RequestInit
+  ): Promise<Response | undefined> {
+    const send = await this.getWebSessionSend()
+    return send?.(url, init)
+  }
+
+  /**
+   * Adds today's token header, reporting the scheme that was actually used and
+   * whether a 401 may be re-minted.
+   *
+   * The scheme is returned rather than assumed by the caller because this helper
+   * is the only place that knows whether a header was obtained: it reports
+   * `authHeader !== null` through `onAuthHeader` and attaches nothing when auth
+   * is unavailable. A caller that announced `cloud-auth-header` on entry to this
+   * path would misreport exactly the unauthenticated case PM-1802 is about.
+   */
+  private async addCloudAuthHeader(
+    headers: HeadersInit,
+    onAuthHeader: FetchApiOptions['onAuthHeader']
+  ): Promise<{
+    scheme: AuthScheme
+    credential: AuthCredential
+    unifiedRetryOn401: boolean
+  }> {
+    const authHeader = await this.authProvider.getAuthHeader()
+    onAuthHeader?.(authHeader !== null)
+    if (!authHeader) {
+      return { scheme: 'none', credential: 'none', unifiedRetryOn401: false }
+    }
+
+    for (const [key, value] of Object.entries(authHeader)) {
+      addHeaderEntry(headers, key, value)
+    }
+    return {
+      scheme: 'cloud-auth-header',
+      credential: authCredentialOf(authHeader),
+      unifiedRetryOn401: await this.authProvider.shouldRetryOn401()
+    }
+  }
+
+  async fetchApi(route: string, options?: FetchApiOptions) {
+    const {
+      timeoutMs = FETCH_RESPONSE_HEADERS_TIMEOUT_MS,
+      onAuthHeader,
+      onAuthScheme,
+      onAuthCredential,
+      ...requestOptions
+    } = options ?? {}
+    const headers: HeadersInit = requestOptions.headers ?? {}
+    let unifiedRetryOn401 = false
+    let sendOnWebSession: WebSessionSend | undefined
+
+    if (isCloud) {
+      await this.authProvider.waitForInitialization()
+      sendOnWebSession = await this.getWebSessionSend()
+      if (sendOnWebSession) {
+        onAuthHeader?.(true)
+        onAuthScheme?.('web-session')
+        notifyAuthCredential(onAuthCredential, 'session-cookie')
+      } else {
+        const cloudAuth = await this.addCloudAuthHeader(headers, onAuthHeader)
+        unifiedRetryOn401 = cloudAuth.unifiedRetryOn401
+        onAuthScheme?.(cloudAuth.scheme)
+        notifyAuthCredential(onAuthCredential, cloudAuth.credential)
+      }
+    } else {
+      onAuthHeader?.(false)
+      onAuthScheme?.('none')
+      notifyAuthCredential(onAuthCredential, 'none')
+    }
+
+    addHeaderEntry(headers, 'Comfy-User', this.user)
+
+    const timeout =
+      timeoutMs === null
+        ? null
+        : { controller: new AbortController(), duration: timeoutMs }
+    const timeoutId = timeout
+      ? setTimeout(() => {
+          const method = (requestOptions.method ?? 'GET').toUpperCase()
+          const routeTemplate = getFetchRouteTemplate(route)
+
+          addBreadcrumb({
+            category: 'fetch',
+            message: `Timeout on ${method} ${routeTemplate}`,
+            level: 'warning',
+            data: { timeout_ms: timeout.duration }
+          })
+
+          useTelemetry()?.trackFetchTimeout({
+            route: routeTemplate,
+            method,
+            timeout_ms: timeout.duration
+          })
+
+          timeout.controller.abort(
+            new DOMException('Fetch timeout', 'TimeoutError')
+          )
+        }, timeout.duration)
+      : undefined
+    const signal =
+      requestOptions.signal && timeout
+        ? AbortSignal.any([requestOptions.signal, timeout.controller.signal])
+        : (requestOptions.signal ?? timeout?.controller.signal)
+
+    let retryTimeoutId: ReturnType<typeof setTimeout> | undefined
+    const retrySignalLifecycle = timeout
+      ? {
+          clearInitialTimeout: () => {
+            if (timeoutId !== undefined) clearTimeout(timeoutId)
+          },
+          createSignal: () => {
+            const retryController = new AbortController()
+            retryTimeoutId = setTimeout(() => {
+              const method = (requestOptions.method ?? 'GET').toUpperCase()
+              const routeTemplate = getFetchRouteTemplate(route)
+
+              addBreadcrumb({
+                category: 'fetch',
+                message: `Timeout on ${method} ${routeTemplate}`,
+                level: 'warning',
+                data: { timeout_ms: timeout.duration }
+              })
+
+              useTelemetry()?.trackFetchTimeout({
+                route: routeTemplate,
+                method,
+                timeout_ms: timeout.duration
+              })
+
+              retryController.abort(
+                new DOMException('Fetch timeout', 'TimeoutError')
+              )
+            }, timeout.duration)
+
+            return requestOptions.signal
+              ? AbortSignal.any([requestOptions.signal, retryController.signal])
+              : retryController.signal
+          }
+        }
+      : undefined
+
+    const init: RequestInit = {
+      cache: 'no-cache',
+      ...requestOptions,
+      headers,
+      signal
+    }
+    const response = sendOnWebSession
+      ? sendOnWebSession(this.unscopedApiURL(route), init)
+      : this.authProvider.fetch(
+          this.apiURL(route),
+          init,
+          unifiedRetryOn401,
+          retrySignalLifecycle
+        )
+    return response.finally(() => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+      if (retryTimeoutId !== undefined) clearTimeout(retryTimeoutId)
+    })
+  }
+
+  /**
+   * Wraps an event listener so an exception thrown by it — most often from a
+   * third-party custom node — is caught and logged instead of surfacing as an
+   * unhandled error in global telemetry (which RUM captures as a high-volume,
+   * non-actionable error). Native EventTarget already isolates listeners from
+   * one another; this only changes where the error goes.
+   *
+   * The same original listener always maps to the same wrapper, so
+   * {@link removeEventListener} still matches. Logged at `warn` level on
+   * purpose: RUM collects `console.error` by default, which would re-introduce
+   * the noise this guard removes.
+   */
+  private wrapListener(
+    callback: EventListenerOrEventListenerObject | null
+  ): EventListenerOrEventListenerObject | null {
+    if (!callback) return callback
+    let wrapped = this._listenerWrappers.get(callback)
+    if (!wrapped) {
+      const logError = (event: Event, error: unknown) =>
+        console.warn(
+          `[ComfyApi] Uncaught error in "${event.type}" event listener:`,
+          error
+        )
+      // Regular function (not arrow) so the listener keeps the native
+      // `this === currentTarget` binding that EventTarget provides.
+      wrapped = function (this: unknown, event: Event) {
+        try {
+          const result: unknown =
+            typeof callback === 'function'
+              ? callback.call(this, event)
+              : callback.handleEvent(event)
+          // Async listeners: route a rejected promise through the same guard so
+          // it does not escape as an unhandled rejection (which RUM also logs).
+          if (
+            result != null &&
+            typeof (result as PromiseLike<unknown>).then === 'function'
+          ) {
+            void Promise.resolve(result).catch((error: unknown) =>
+              logError(event, error)
+            )
+          }
+        } catch (error) {
+          logError(event, error)
+        }
+      }
+      this._listenerWrappers.set(callback, wrapped)
+    }
+    return wrapped
+  }
+
+  /**
+   * Looks up the guarded wrapper for a listener without creating one — used on
+   * the remove path so a never-registered callback does not leave a stray
+   * WeakMap entry. Falls back to the original callback (a harmless no-op).
+   */
+  private getWrappedListener(
+    callback: EventListenerOrEventListenerObject | null
+  ): EventListenerOrEventListenerObject | null {
+    if (!callback) return callback
+    return this._listenerWrappers.get(callback) ?? callback
+  }
+
+  override addEventListener<TEvent extends keyof ApiEvents>(
+    type: TEvent,
+    callback: ((event: ApiEvents[TEvent]) => void) | null,
+    options?: AddEventListenerOptions | boolean
+  ) {
+    // Type assertion: strictFunctionTypes.  So long as we emit events in a type-safe fashion, this is safe.
+    super.addEventListener(
+      type,
+      this.wrapListener(callback as EventListener),
+      options
+    )
+    this._registered.add(type)
+  }
+
+  override removeEventListener<TEvent extends keyof ApiEvents>(
+    type: TEvent,
+    callback: ((event: ApiEvents[TEvent]) => void) | null,
+    options?: EventListenerOptions | boolean
+  ): void {
+    super.removeEventListener(
+      type,
+      this.getWrappedListener(callback as EventListener),
+      options
+    )
+  }
+
+  addCustomEventListener(
+    type: string,
+    callback: ((event: CustomEvent<unknown>) => void) | null,
+    options?: AddEventListenerOptions | boolean
+  ) {
+    super.addEventListener(
+      type,
+      this.wrapListener(callback as EventListener),
+      options
+    )
+    this._registered.add(type)
+  }
+
+  removeCustomEventListener(
+    type: string,
+    callback: ((event: CustomEvent<unknown>) => void) | null,
+    options?: EventListenerOptions | boolean
+  ) {
+    super.removeEventListener(
+      type,
+      this.getWrappedListener(callback as EventListener),
+      options
+    )
+  }
+
+  /**
+   * Dispatches a custom event.
+   * Provides type safety for the contravariance issue with EventTarget (last checked TS 5.6).
+   * @param type The type of event to emit
+   * @param detail The detail property used for a custom event ({@link CustomEventInit.detail})
+   */
+  dispatchCustomEvent(type: SimpleApiEvents): boolean
+  dispatchCustomEvent<T extends ComplexApiEvents>(
+    type: T,
+    detail: ApiEventTypes[T] | null
+  ): boolean
+  dispatchCustomEvent<T extends keyof ApiEventTypes>(
+    type: T,
+    detail?: ApiEventTypes[T]
+  ): boolean {
+    const event =
+      detail === undefined
+        ? new CustomEvent(type)
+        : new CustomEvent(type, { detail })
+    return super.dispatchEvent(event)
+  }
+
+  /** @deprecated Use {@link dispatchCustomEvent}. */
+  override dispatchEvent(event: never): boolean {
+    return super.dispatchEvent(event)
+  }
+
+  private _pollQueue() {
+    const poller = setInterval(async () => {
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        clearInterval(poller)
+        return
+      }
+      try {
+        const resp = await this.fetchApi('/prompt')
+        const status = zGetPromptInfoResponse.parse(await resp.json())
+        this.dispatchCustomEvent('status', status)
+      } catch {
+        this.dispatchCustomEvent('status', null)
+      }
+    }, 1000)
+  }
+
+  private async addSocketAuth(params: URLSearchParams): Promise<{
+    allowed: boolean
+    socketScope?: string
+    refreshScope?: () => Promise<WebSessionRequestScope | undefined>
+  }> {
+    const requests = webSessionRequests()
+    const sessionScope = requests && (await requests.scope())
+    const refreshScope = requests?.refreshScope
+    if (sessionScope?.workspaceId) {
+      params.set('workspace_id', sessionScope.workspaceId)
+    }
+    if (sessionScope)
+      return {
+        allowed: true,
+        socketScope: sessionScope.session.socketScope,
+        ...(refreshScope && { refreshScope: () => refreshScope(sessionScope) })
+      }
+
+    const authToken = await this.authProvider.getAuthToken()
+    if (authToken) {
+      params.set('token', authToken)
+    }
+    return { allowed: !requests || params.has('token') }
+  }
+
+  private async createSocket(isReconnect?: boolean) {
+    if (this.socket) {
+      return
+    }
+    const generation = ++this.socketGeneration
+
+    let opened = false
+    let policyRefreshStarted = false
+    const params = new URLSearchParams()
+    const auth = isCloud ? await this.addSocketAuth(params) : { allowed: true }
+    if (!auth.allowed || generation !== this.socketGeneration) return
+    if (adoptSocketSessionScope(auth.socketScope, sessionStorage)) {
+      this.clearSocketIdentity()
+    }
+    if (window.name) params.set('clientId', window.name)
+
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const baseUrl = `${protocol}://${this.api_host}${this.api_base}/ws`
+    const query = params.toString()
+    const wsUrl = query ? `${baseUrl}?${query}` : baseUrl
+
+    const socket = new WebSocket(wsUrl)
+    this.socket = socket
+    this.serverFeatureFlagsSettled.value = false
+    socket.binaryType = 'arraybuffer'
+
+    const settleTimer = setTimeout(() => {
+      if (this.socket === socket && !this.serverFeatureFlagsSettled.value) {
+        this.serverFeatureFlagsSettled.value = true
+      }
+    }, SERVER_FEATURE_FLAGS_TIMEOUT_MS)
+
+    socket.addEventListener('open', () => {
+      opened = true
+
+      socket.send(
+        JSON.stringify({
+          type: 'feature_flags',
+          data: this.getClientFeatureFlags()
+        })
+      )
+
+      if (isReconnect) {
+        this.dispatchCustomEvent('reconnected')
+      }
+    })
+
+    socket.addEventListener('error', () => {
+      if (this.socket !== socket) return
+      socket.close()
+      if (!isReconnect && !opened) {
+        this._pollQueue()
+      }
+    })
+
+    socket.addEventListener('close', (event) => {
+      if (this.socket !== socket) return
+      this.serverFeatureFlagsSettled.value = true
+      clearTimeout(settleTimer)
+      if (opened) {
+        this.dispatchCustomEvent('status', null)
+        this.dispatchCustomEvent('reconnecting')
+      }
+      if (event.code === 1008 && auth.socketScope && auth.refreshScope) {
+        if (policyRefreshStarted) return
+        policyRefreshStarted = true
+        void auth
+          .refreshScope()
+          .then((next) => {
+            if (
+              this.socket !== socket ||
+              generation !== this.socketGeneration ||
+              !next?.session.socketScope ||
+              next.session.socketScope === auth.socketScope
+            )
+              return
+            this.socket = null
+            return this.createSocket(true)
+          })
+          .catch(() => {})
+        return
+      }
+      setTimeout(async () => {
+        if (this.socket !== socket) return
+        this.socket = null
+        await this.createSocket(true)
+      }, 300)
+    })
+
+    socket.addEventListener('message', (event) => {
+      if (this.socket !== socket) return
+      try {
+        if (event.data instanceof ArrayBuffer) {
+          const view = new DataView(event.data)
+          const eventType = view.getUint32(0)
+
+          switch (eventType) {
+            case 3: {
+              try {
+                const decoder3 = new TextDecoder()
+                const rawData = event.data.slice(4)
+                const rawView = new DataView(rawData)
+
+                let offset = 0
+                let promptId: string | undefined
+
+                if (
+                  this.serverSupportsFeature('supports_progress_text_metadata')
+                ) {
+                  const promptIdLength = rawView.getUint32(offset)
+                  offset += 4
+                  promptId = decoder3.decode(
+                    rawData.slice(offset, offset + promptIdLength)
+                  )
+                  offset += promptIdLength
+                }
+
+                const nodeIdLength = rawView.getUint32(offset)
+                offset += 4
+                const nodeId = decoder3.decode(
+                  rawData.slice(offset, offset + nodeIdLength)
+                )
+                offset += nodeIdLength
+                const text = decoder3.decode(rawData.slice(offset))
+
+                this.dispatchCustomEvent('progress_text', {
+                  nodeId,
+                  text,
+                  ...(promptId !== undefined && { prompt_id: promptId })
+                })
+              } catch (e) {
+                console.warn('Failed to parse progress_text binary message', e)
+              }
+              break
+            }
+            case 1: {
+              const imageType = view.getUint32(4)
+              const imageData = event.data.slice(8)
+              const imageMime = imageType === 2 ? 'image/png' : 'image/jpeg'
+              const imageBlob = new Blob([imageData], {
+                type: imageMime
+              })
+              this.dispatchCustomEvent('b_preview', imageBlob)
+              break
+            }
+            case 4: {
+              const decoder4 = new TextDecoder()
+              const metadataLength = view.getUint32(4)
+              const metadataBytes = event.data.slice(8, 8 + metadataLength)
+              const metadata = JSON.parse(decoder4.decode(metadataBytes))
+              const imageData4 = event.data.slice(8 + metadataLength)
+
+              const imageMime4 = metadata.image_type
+
+              const imageBlob4 = new Blob([imageData4], {
+                type: imageMime4
+              })
+
+              this.dispatchCustomEvent('b_preview_with_metadata', {
+                blob: imageBlob4,
+                nodeId: metadata.node_id,
+                displayNodeId: metadata.display_node_id,
+                parentNodeId: metadata.parent_node_id,
+                realNodeId: metadata.real_node_id,
+                jobId: metadata.prompt_id
+              })
+
+              this.dispatchCustomEvent('b_preview', imageBlob4)
+              break
+            }
+            default:
+              console.error(
+                `Unknown binary websocket message of type ${eventType}`
+              )
+              break
+          }
+        } else {
+          const msg = JSON.parse(event.data) as ApiMessageUnion
+          switch (msg.type) {
+            case 'status':
+              if (msg.data.sid) {
+                const clientId = msg.data.sid
+                this.clientId = clientId
+                window.name = clientId
+                sessionStorage.setItem('clientId', clientId)
+              }
+              this.dispatchCustomEvent('status', msg.data.status ?? null)
+              break
+            case 'executing':
+              this.dispatchCustomEvent(
+                'executing',
+                msg.data.display_node || msg.data.node
+              )
+              break
+            case 'execution_start':
+            case 'execution_error':
+            case 'execution_interrupted':
+            case 'execution_cached':
+            case 'execution_success':
+            case 'progress':
+            case 'progress_state':
+            case 'executed':
+            case 'promptQueued':
+            case 'logs':
+            case 'b_preview':
+            case 'notification':
+              this.dispatchCustomEvent(msg.type, msg.data)
+              break
+            case 'graphChanged':
+              this.dispatchCustomEvent('graphChanged', msg.data)
+              this.dispatchCustomEvent('autoQueueGraphChanged')
+              break
+            case 'autoQueueGraphChanged':
+              this.dispatchCustomEvent('autoQueueGraphChanged')
+              break
+            case 'feature_flags':
+              this.serverFeatureFlags.value = msg.data
+              this.serverFeatureFlagsSettled.value = true
+              this.dispatchCustomEvent('feature_flags', msg.data)
+              break
+            case 'agent_status':
+              this.serverFeatureFlags.value = {
+                ...this.serverFeatureFlags.value,
+                agent: msg.data
+              }
+              this.dispatchCustomEvent('agent_status', msg.data)
+              break
+            default:
+              if (this._registered.has(msg.type)) {
+                super.dispatchEvent(
+                  new CustomEvent(msg.type, { detail: msg.data })
+                )
+              } else if (!this.reportedUnknownMessageTypes.has(msg.type)) {
+                this.reportedUnknownMessageTypes.add(msg.type)
+                console.error(`Unknown message type ${msg.type}`)
+              }
+          }
+        }
+      } catch (error) {
+        console.warn('Unhandled message:', event.data, error)
+      }
+    })
+  }
+
+  /**
+   * Initialises sockets and realtime updates
+   */
+  async init() {
+    await this.createSocket()
+  }
+
+  /**
+   * Tears down the active realtime socket and reconnects, re-authenticating
+   * with the currently active account's token. Invoked on a direct identity
+   * change so a tab cannot keep receiving the previous account's realtime
+   * events over a handshake that was authenticated as that account.
+   */
+  async resetSocket(): Promise<void> {
+    this.clearSocketIdentity()
+    const { agent: _previousAgent, ...features } = this.serverFeatureFlags.value
+    this.serverFeatureFlags.value = features
+    await this.replaceSocket()
+  }
+
+  private clearSocketIdentity(): void {
+    this.clientId = undefined
+    this.initialClientId = null
+    window.name = ''
+    updateEditorSessionNavigation('')
+    sessionStorage.removeItem('clientId')
+  }
+
+  /**
+   * Re-handshakes the socket for the same account, keeping its client id, so
+   * a new web session workspace takes effect. Does nothing before init().
+   */
+  async reconnectSocket(): Promise<void> {
+    if (this.socketGeneration === 0) return
+    await this.replaceSocket(true)
+  }
+
+  private async replaceSocket(isReconnect = false): Promise<void> {
+    const previous = this.socket
+    this.serverFeatureFlagsSettled.value = false
+    this.socket = null
+    if (previous && previous.readyState !== WebSocket.CLOSED) {
+      try {
+        previous.close()
+      } catch {
+        return this.createSocket(isReconnect)
+      }
+    }
+    await this.createSocket(isReconnect)
+  }
+
+  /**
+   * Gets a list of extension urls
+   */
+  async getExtensions(): Promise<GetExtensionsResponse> {
+    const resp = await this.fetchApi('/extensions', { cache: 'no-store' })
+    return zGetExtensionsResponse.parse(await resp.json())
+  }
+
+  /**
+   * Gets the available workflow templates from custom nodes.
+   * @returns A map of custom_node names and associated template workflow names.
+   */
+  async getWorkflowTemplates(): Promise<{
+    [customNodesName: string]: string[]
+  }> {
+    const res = await this.fetchApi('/workflow_templates')
+    return workflowTemplatesResponseSchema.parse(await res.json())
+  }
+
+  /**
+   * Gets the index of core workflow templates.
+   * @param locale Optional locale code (e.g., 'en', 'fr', 'zh') to load localized templates
+   */
+  async getCoreWorkflowTemplates(
+    locale?: string
+  ): Promise<WorkflowTemplates[]> {
+    const reader = currentCatalogueReaderPorts()
+    if (reader !== null) {
+      return coreWorkflowTemplatesResponseSchema.parse(
+        await reader.readCoreWorkflowTemplates?.(locale)
+      )
+    }
+    const fileName =
+      locale && locale !== 'en' ? `index.${locale}.json` : 'index.json'
+    try {
+      const res = await axios.get(this.fileURL(`/templates/${fileName}`))
+      const contentType = String(res.headers['content-type'] ?? '')
+      return contentType.includes('application/json')
+        ? coreWorkflowTemplatesResponseSchema.parse(res.data)
+        : []
+    } catch (error) {
+      // Fallback to default English version if localized version doesn't exist
+      if (locale && locale !== 'en') {
+        console.warn(
+          `Localized templates for '${locale}' not found, falling back to English`
+        )
+        return this.getCoreWorkflowTemplates()
+      }
+      console.error('Error loading core workflow templates:', error)
+      return []
+    }
+  }
+
+  /**
+   * Gets a list of embedding names
+   * @throws When the request fails or the response does not match the schema
+   */
+  async getEmbeddings(): Promise<GetEmbeddingsResponse> {
+    const resp = await this.fetchApi('/embeddings', { cache: 'no-store' })
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch /embeddings: ${resp.status}`)
+    }
+    return zGetEmbeddingsResponse.parse(await resp.json())
+  }
+
+  /**
+   * Loads node object definitions for the graph
+   * @returns The node definitions
+   */
+  async getNodeDefs(): Promise<z.infer<typeof nodeInfoResponseSchema>> {
+    const resp = await this.fetchApi('/object_info', { cache: 'no-store' })
+    return nodeInfoResponseSchema.parse(await resp.json())
+  }
+
+  /**
+   * Queues a prompt to be executed
+   * @param {number} number The index at which to queue the prompt, passing -1 will insert the prompt at the front of the queue
+   * @param {object} data The prompt data to queue
+   * @param {QueuePromptOptions} options Optional execution options
+   * @throws {PromptExecutionError} If the prompt fails to execute
+   */
+  async queuePrompt(
+    number: number,
+    data: { output: ComfyApiWorkflow; workflow: ComfyWorkflowJSON },
+    options?: QueuePromptOptions
+  ): Promise<PromptResponse> {
+    const { output: prompt, workflow } = data
+
+    const body: QueuePromptRequestBody = {
+      client_id: this.clientId ?? '', // TODO: Unify clientId access
+      prompt,
+      ...(options?.partialExecutionTargets && {
+        partial_execution_targets: options.partialExecutionTargets
+      }),
+      extra_data: {
+        auth_token_comfy_org: this.authToken,
+        api_key_comfy_org: this.apiKey,
+        comfy_usage_source: 'comfyui-frontend',
+        extra_pnginfo: { workflow },
+        ...(options?.previewMethod &&
+          options.previewMethod !== 'default' && {
+            preview_method: options.previewMethod
+          })
+      }
+    }
+
+    if (number === -1) {
+      body.front = true
+    } else if (number != 0) {
+      body.number = number
+    }
+
+    const res = await this.fetchApi('/prompt', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(import.meta.env.VITE_RUN_BILLING_MODE === 'prepaid' && {
+          'X-Laimon-Run-Strategy': selectedPrepaidRunStrategy.value
+        })
+      },
+      body: JSON.stringify(body)
+    })
+
+    if (res.status !== 200) {
+      const text = await res.text()
+      let errorResponse
+      try {
+        errorResponse = JSON.parse(text)
+      } catch {
+        errorResponse = {
+          error: {
+            type: 'server_error',
+            message: `${res.status} ${res.statusText}`,
+            details: text
+          }
+        }
+      }
+      throw new PromptExecutionError(errorResponse, res.status)
+    }
+
+    const response: unknown = await res.json()
+    zPromptResponse.parse(response)
+    return response as PromptResponse
+  }
+
+  /**
+   * Gets the list of assets and models referenced by a prompt that would
+   * need user consent before sharing.
+   */
+  async getShareableAssets(
+    prompt: ComfyApiWorkflow,
+    options?: { owned?: boolean }
+  ): Promise<PostAssetsFromWorkflowResponse> {
+    const body: Record<string, unknown> = { workflow_api_json: prompt }
+    if (options?.owned !== undefined) {
+      body.owned = options.owned
+    }
+    const res = await this.fetchApi('/assets/from-workflow', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    if (res.status !== 200) {
+      throw new Error(`Failed to fetch shareable assets: ${res.status}`)
+    }
+    const data = await res.json()
+    return zPostAssetsFromWorkflowResponse.parse(data)
+  }
+
+  async getModelFolders(): Promise<ModelFolderInfo[]> {
+    const reader = currentCatalogueReaderPorts()
+    let data: unknown
+    if (reader !== null) {
+      data = await reader.readModelFolders?.()
+    } else {
+      const res = await this.fetchApi(`/experiment/models`)
+      if (res.status === 404) return []
+      data = await res.json()
+    }
+    const folderBlacklist = ['configs', 'custom_nodes']
+    return modelFolderInfosSchema
+      .parse(data)
+      .filter((folder) => !folderBlacklist.includes(folder.name))
+  }
+
+  /**
+   * Gets a list of models in the specified folder
+   * @param {string} folder The folder to list models from, such as 'checkpoints'
+   * @returns The list of model filenames within the specified folder
+   */
+  async getModels(folder: string): Promise<ModelFile[]> {
+    const res = await this.fetchApi(
+      `/experiment/models/${encodeURIComponent(folder)}`
+    )
+    if (res.status === 404) {
+      return []
+    }
+    return modelFilesResponseSchema.parse(await res.json())
+  }
+
+  /**
+   * Gets the metadata for a model
+   * @param {string} folder The folder containing the model
+   * @param {string} model The model to get metadata for
+   * @returns The metadata for the model
+   */
+  async viewMetadata(folder: string, model: string) {
+    const res = await this.fetchApi(
+      `/view_metadata/${encodeURIComponent(folder)}?filename=${encodeURIComponent(model)}`
+    )
+    if (!res.ok) {
+      reportError(new Error('Model metadata request failed'), {
+        errorType: 'error_loading_model_metadata',
+        surface: 'assets',
+        tags: { status: res.status }
+      })
+      return null
+    }
+    try {
+      const raw: unknown = await res.json()
+      const parsed = z.record(z.string(), z.string().nullable()).safeParse(raw)
+      if (parsed.success) return parsed.data
+    } catch {
+      reportError(new Error('Model metadata response could not be read'), {
+        errorType: 'error_loading_model_metadata',
+        surface: 'assets'
+      })
+      return null
+    }
+    reportError(new Error('Model metadata response has an invalid shape'), {
+      errorType: 'error_loading_model_metadata',
+      surface: 'assets'
+    })
+    return null
+  }
+
+  /**
+   * Loads a list of items (queue or history)
+   * @param {string} type The type of items to load, queue or history
+   * @returns The items of the specified type grouped by their status
+   */
+  async getItems(type: 'queue' | 'history') {
+    if (type === 'queue') {
+      return this.getQueue()
+    }
+    return this.getHistory()
+  }
+
+  /**
+   * Gets the current state of the queue
+   * @returns The currently running and queued items
+   */
+  async getQueue(options?: { throwOnError?: boolean }): Promise<{
+    Running: JobListItem[]
+    Pending: JobListItem[]
+  }> {
+    try {
+      return await fetchQueue(this.fetchApi.bind(this), options)
+    } catch (error) {
+      if (options?.throwOnError) throw error
+      console.error('Failed to fetch queue:', error)
+      return { Running: [], Pending: [] }
+    }
+  }
+
+  /**
+   * Gets the prompt execution history
+   * @returns Prompt history including node outputs
+   */
+  async getHistory(
+    max_items: number = 200,
+    options?: { offset?: number }
+  ): Promise<JobListItem[]> {
+    try {
+      return await fetchHistory(
+        this.fetchApi.bind(this),
+        max_items,
+        options?.offset
+      )
+    } catch (error) {
+      console.error(error)
+      return []
+    }
+  }
+
+  /**
+   * Gets detailed job info including outputs and workflow
+   * @param jobId The job ID
+   * @returns Full job details or undefined if not found
+   */
+  async getJobDetail(jobId: string): Promise<JobDetail | undefined> {
+    return fetchJobDetail(this.fetchApi.bind(this), jobId)
+  }
+
+  /**
+   * Gets a job's output assets, each resolved to a real asset entity with
+   * per-output node context. Returns an empty list when the endpoint is
+   * unavailable (e.g. non-cloud distributions).
+   * @param jobId The job ID
+   * @returns The job's output assets and whether the list is exhaustive
+   */
+  async getJobAssets(jobId: string): Promise<JobAssetsResult> {
+    return fetchJobAssets(this.fetchApi.bind(this), jobId)
+  }
+
+  /**
+   * Gets system & device stats
+   * @returns System stats such as python version, OS, per device info
+   */
+  async getSystemStats(): Promise<SystemStats> {
+    const res = await this.fetchApi('/system_stats')
+    const response: unknown = await res.json()
+    zGetSystemStatsResponse.parse(response)
+    return response as SystemStats
+  }
+
+  /**
+   * Sends a POST request to the API
+   * @param {*} type The endpoint to post to
+   * @param {*} body Optional POST data
+   */
+  private async _postItem(type: string, body?: Record<string, unknown>) {
+    try {
+      await this.fetchApi('/' + type, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: body ? JSON.stringify(body) : undefined
+      })
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  /**
+   * Deletes an item from the specified list
+   * @param {string} type The type of item to delete, queue or history
+   * @param {number} id The id of the item to delete
+   */
+  async deleteItem(type: string, id: string) {
+    await this._postItem(type, { delete: [id] })
+  }
+
+  /**
+   * Clears the specified list
+   * @param {string} type The type of list to clear, queue or history
+   */
+  async clearItems(type: string) {
+    await this._postItem(type, { clear: true })
+  }
+
+  /**
+   * Interrupts the execution of the running job. If runningJobId is provided,
+   * it is included in the payload as a helpful hint to the backend.
+   * @param {string | null} [runningJobId] Optional Running Job ID to interrupt
+   */
+  async interrupt(runningJobId: string | null) {
+    await this._postItem(
+      'interrupt',
+      runningJobId ? { prompt_id: runningJobId } : undefined
+    )
+  }
+
+  /**
+   * Cancels a single job by id via `POST /api/jobs/{job_id}/cancel` (idempotent:
+   * already-terminal jobs are a no-op). Requires runtime parity — not every
+   * runtime exposes this endpoint yet; do not merge callers before parity lands.
+   *
+   * @param {string} jobId The id of the job to cancel
+   */
+  async cancelJob(jobId: string) {
+    const res = await this.fetchApi(
+      `/jobs/${encodeURIComponent(jobId)}/cancel`,
+      {
+        method: 'POST'
+      }
+    )
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(
+        `Failed to cancel job ${jobId}: ${res.status}${body ? ` — ${body}` : ''}`
+      )
+    }
+  }
+
+  /**
+   * Cancels multiple jobs in a single request via `POST /api/jobs/cancel` with
+   * body `{ job_ids: [...] }`. Already-terminal jobs are no-ops. Same runtime
+   * parity requirement as {@link cancelJob}.
+   *
+   * @param {string[]} jobIds The ids of the jobs to cancel
+   */
+  async cancelJobs(jobIds: string[]) {
+    if (!jobIds.length) return
+    const res = await this.fetchApi('/jobs/cancel', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ job_ids: jobIds })
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(
+        `Failed to cancel jobs: ${res.status}${body ? ` — ${body}` : ''}`
+      )
+    }
+  }
+
+  /**
+   * Gets user configuration data and where data should be stored
+   */
+  async getUserConfig(): Promise<UserConfigResponse> {
+    const controller = new AbortController()
+    const timeout = setTimeout(
+      () =>
+        controller.abort(
+          new DOMException('User configuration read timeout', 'TimeoutError')
+        ),
+      FETCH_RESPONSE_HEADERS_TIMEOUT_MS
+    )
+    try {
+      const response = await this.fetchApi('/users', {
+        signal: controller.signal
+      })
+      return userConfigResponseSchema.parse(await response.json())
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  /**
+   * Creates a new user
+   * @param { string } username
+   * @returns The fetch response
+   */
+  createUser(username: string) {
+    return this.fetchApi('/users', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ username })
+    })
+  }
+
+  /**
+   * Gets all setting values for the current user
+   * @returns { Promise<string, unknown> } A dictionary of id -> value
+   */
+  async getSettings(): Promise<Settings> {
+    const resp = await this.fetchApi('/settings')
+
+    if (resp.status == 401) {
+      // `statusText` is ALWAYS empty over HTTP/2 — the protocol carries no
+      // reason phrase — and cloud.comfy.org is HTTP/2. Passing it straight
+      // through produced `new UnauthorizedError('')`, which the global
+      // onerror handler reported to Sentry as the untitled group
+      // "Error: No error message": 165,890 events in 14 days across 25,417
+      // users, all of them unactionable because nothing in the event said
+      // which request had failed.
+      throw new UnauthorizedError(
+        `Failed to load settings: 401 ${resp.statusText || 'Unauthorized'}`
+      )
+    }
+    return zGetAllSettingsResponse.parse(await resp.json()) as Settings
+  }
+
+  /**
+   * Gets a setting for the current user
+   * @param { string } id The id of the setting to fetch
+   * @returns { Promise<unknown> } The setting value
+   */
+  async getSetting(id: keyof Settings): Promise<Settings[keyof Settings]> {
+    return (await this.fetchApi(`/settings/${encodeURIComponent(id)}`)).json()
+  }
+
+  /**
+   * Stores a dictionary of settings for the current user
+   */
+  async storeSettings(settings: Partial<Settings>) {
+    return this.fetchApi(`/settings`, {
+      method: 'POST',
+      body: JSON.stringify(settings)
+    })
+  }
+
+  /**
+   * Stores a setting for the current user
+   */
+  async storeSetting(id: keyof Settings, value: Settings[keyof Settings]) {
+    return this.fetchApi(`/settings/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      body: JSON.stringify(value)
+    })
+  }
+
+  /**
+   * Gets a user data file for the current user
+   */
+  async getUserData(file: string, options?: RequestInit) {
+    return this.fetchApi(`/userdata/${encodeURIComponent(file)}`, options)
+  }
+
+  /**
+   * Stores a user data file for the current user
+   * @param { string } file The name of the userdata file to save
+   * @param { unknown } data The data to save to the file
+   * @param { RequestInit & { stringify?: boolean, throwOnError?: boolean } } [options]
+   * @returns { Promise<Response> }
+   */
+  async storeUserData(
+    file: string,
+    data: unknown,
+    options: RequestInit & {
+      overwrite?: boolean
+      stringify?: boolean
+      throwOnError?: boolean
+      full_info?: boolean
+    } = {
+      overwrite: true,
+      stringify: true,
+      throwOnError: true,
+      full_info: false
+    }
+  ): Promise<Response> {
+    const overwrite = options.overwrite ?? true
+    const fullInfo = options.full_info ?? false
+    const route = `/userdata/${encodeURIComponent(file)}?overwrite=${overwrite}&full_info=${fullInfo}`
+    const resp = await this.fetchApi(route, {
+      method: 'POST',
+      body: options.stringify ? JSON.stringify(data) : (data as BodyInit),
+      ...options
+    })
+    if (resp.status !== 200) {
+      const message = `Error storing user data file '${file}': ${resp.status} ${resp.statusText}`
+      // The reported message and route are file-independent: the literal file
+      // name (and `route`, which embeds it) is unbounded cardinality and
+      // would fragment Sentry grouping into one bucket per file instead of
+      // one for this failure mode — exactly what buried PM-1906's alerts.
+      reportError(
+        new Error(
+          `Error storing user data file: ${resp.status} ${resp.statusText}`
+        ),
+        {
+          errorType: 'userdata_store_failure',
+          surface: 'platform',
+          tags: {
+            status: resp.status,
+            overwrite,
+            full_info: fullInfo
+          },
+          context: {
+            file,
+            route: `/userdata/{file}?overwrite=${overwrite}&full_info=${fullInfo}`
+          }
+        }
+      )
+      if (options.throwOnError !== false) {
+        throw new Error(message)
+      }
+    }
+
+    return resp
+  }
+
+  /** Deletes a user data file for the current user. */
+  async deleteUserData(file: string, options?: Pick<RequestInit, 'headers'>) {
+    const resp = await this.fetchApi(`/userdata/${encodeURIComponent(file)}`, {
+      ...options,
+      method: 'DELETE'
+    })
+    return resp
+  }
+
+  /**
+   * Move a user data file for the current user
+   * @param { string } source The userdata file to move
+   * @param { string } dest The destination for the file
+   */
+  async moveUserData(
+    source: string,
+    dest: string,
+    options = { overwrite: false }
+  ) {
+    const resp = await this.fetchApi(
+      `/userdata/${encodeURIComponent(source)}/move/${encodeURIComponent(dest)}?overwrite=${options.overwrite}&full_info=true`,
+      {
+        method: 'POST'
+      }
+    )
+    return resp
+  }
+
+  async listUserDataFullInfo(dir: string): Promise<UserDataFullInfo[]> {
+    const trimmedDir = trimEnd(dir, '/')
+    const resp = await this.fetchApi(
+      `/userdata?dir=${encodeURIComponent(trimmedDir)}&recurse=true&split=false&full_info=true`
+    )
+    if (resp.status === 404) return []
+    if (resp.status !== 200) {
+      throw new Error(
+        `Error getting user data list '${trimmedDir}': ${resp.status} ${resp.statusText}`
+      )
+    }
+    return userDataFullInfoResponseSchema.parse(await resp.json())
+  }
+
+  async getGlobalSubgraphData(id: string): Promise<string> {
+    const resp = await api.fetchApi('/global_subgraphs/' + id)
+    if (resp.status !== 200) {
+      throw new Error(
+        `Failed to fetch global subgraph '${id}': ${resp.status} ${resp.statusText}`
+      )
+    }
+    const subgraph = zGetGlobalSubgraphResponse.safeParse(await resp.json())
+    if (!subgraph.success || !subgraph.data.data) {
+      throw new Error(`Global subgraph '${id}' returned empty data`)
+    }
+    return subgraph.data.data
+  }
+  async getGlobalSubgraphs(): Promise<Record<string, GlobalSubgraphData>> {
+    const resp = await api.fetchApi('/global_subgraphs')
+    if (resp.status !== 200) return {}
+    const raw: unknown = await resp.json()
+    zGetGlobalSubgraphsResponse.parse(raw)
+    const subgraphs = raw as Record<string, GlobalSubgraphData>
+    for (const [k, v] of Object.entries(subgraphs)) {
+      if (!v.data) v.data = this.getGlobalSubgraphData(k)
+    }
+    return subgraphs
+  }
+
+  async getLogs(): Promise<string> {
+    const url = isCloud ? this.apiURL('/logs') : this.internalURL('/logs')
+    const { data } = await axios.get<unknown>(url)
+    if (typeof data === 'string') return data
+    return data === undefined ? '' : JSON.stringify(data, null, 2)
+  }
+
+  async getRawLogs(): Promise<LogsRawResponse> {
+    const url = isCloud
+      ? this.apiURL('/logs/raw')
+      : this.internalURL('/logs/raw')
+    return logsRawResponseSchema.parse((await axios.get(url)).data)
+  }
+
+  async subscribeLogs(enabled: boolean): Promise<void> {
+    const url = isCloud
+      ? this.apiURL('/logs/subscribe')
+      : this.internalURL('/logs/subscribe')
+    return await axios.patch(url, {
+      enabled,
+      clientId: this.clientId
+    })
+  }
+
+  async getFolderPaths(): Promise<Record<string, string[]>> {
+    const response = await axios
+      .get(this.internalURL('/folder_paths'))
+      .catch(() => null)
+    if (!response) {
+      return {} // Fallback: no filesystem paths known when API unavailable
+    }
+    return response.data
+  }
+
+  /* Frees memory by unloading models and optionally freeing execution cache
+   * @param {Object} options - The options object
+   * @param {boolean} options.freeExecutionCache - If true, also frees execution cache
+   */
+  async freeMemory(options: { freeExecutionCache: boolean }) {
+    const toast = useToast()
+    try {
+      let mode = ''
+      if (options.freeExecutionCache) {
+        mode = '{"unload_models": true, "free_memory": true}'
+      } else {
+        mode = '{"unload_models": true}'
+      }
+
+      const res = await this.fetchApi(`/free`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: mode
+      })
+
+      if (res.status === 200) {
+        toast.success(
+          t(
+            options.freeExecutionCache
+              ? 'toastMessages.modelsAndCacheCleared'
+              : 'toastMessages.modelsUnloaded'
+          ),
+          { duration: 3000 }
+        )
+      } else {
+        toast.error(t('toastMessages.unloadModelsFailed'))
+      }
+    } catch {
+      toast.error(t('toastMessages.unloadModelsError'))
+    }
+  }
+
+  /**
+   * Gets the custom nodes i18n data from the server.
+   *
+   * @returns The custom nodes i18n data
+   */
+  async getCustomNodesI18n(): Promise<GetI18nResponse> {
+    return zGetI18nResponse.parse((await axios.get(this.apiURL('/i18n'))).data)
+  }
+
+  /**
+   * Checks if the server supports a specific feature.
+   * @param featureName The name of the feature to check (supports dot notation for nested values)
+   * @returns true if the feature is supported, false otherwise
+   */
+  serverSupportsFeature(featureName: string): boolean {
+    const sessionOverride = getSessionOverride(featureName)
+    if (sessionOverride !== undefined) return sessionOverride === true
+
+    const override = getDevOverride<boolean>(featureName)
+    if (override !== undefined) return override
+    return get(this.serverFeatureFlags.value, featureName) === true
+  }
+
+  /**
+   * Gets a server feature flag value.
+   * @param featureName The name of the feature to get (supports dot notation for nested values)
+   * @param defaultValue The default value if the feature is not found
+   * @returns The feature value or default
+   */
+  getServerFeature<T = unknown>(featureName: string, defaultValue?: T): T {
+    const sessionOverride = getSessionOverride<T>(featureName)
+    if (sessionOverride !== undefined) return sessionOverride
+
+    const override = getDevOverride<T>(featureName)
+    if (override !== undefined) return override
+    return get(this.serverFeatureFlags.value, featureName, defaultValue) as T
+  }
+
+  /**
+   * Gets all server feature flags.
+   * @returns Copy of all server feature flags
+   */
+  getServerFeatures(): Record<string, unknown> {
+    return { ...this.serverFeatureFlags.value }
+  }
+}
+
+export const api = new ComfyApi()
