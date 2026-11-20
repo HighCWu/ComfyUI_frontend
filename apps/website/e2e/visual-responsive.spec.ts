@@ -4,7 +4,6 @@ import { expect } from '@playwright/test'
 
 import { test } from './fixtures/workshopVisibility'
 import { waitForIsland } from './fixtures/islands'
-import { waitForPpFormulaLight } from './fixtures/visualFonts'
 import { VIEWPORTS } from './viewports'
 
 test.describe.configure({ timeout: 60_000 })
@@ -35,7 +34,12 @@ async function navigateAndSettle(page: Page, url: string) {
       .getByTestId('desktop-nav-links')
       .getByRole('button', { name: 'Products', includeHidden: true })
   ).toBeAttached()
-  await waitForPpFormulaLight(page)
+  // Settle the display face (Inter) before screenshots so a slow font swap
+  // cannot race a visual baseline. Fonts may still be loading after `load`.
+  await page.evaluate(async () => {
+    await document.fonts.load('400 1em "Inter"')
+    await document.fonts.ready
+  })
 }
 
 test.describe('Home', { tag: '@visual' }, () => {

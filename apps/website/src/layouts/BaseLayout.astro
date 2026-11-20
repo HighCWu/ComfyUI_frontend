@@ -40,9 +40,6 @@ import {
 import type { Crumb, JsonLdNode, WebPageType } from '@/utils/jsonLd'
 import JsonLdGraph from '@/components/common/JsonLdGraph.astro'
 
-type PPFormulaFace =
-  'Light' | 'Regular' | 'Medium' | 'Semibold' | 'Bold' | 'NarrowSemibold'
-
 interface Props {
   title: string
   pageName?: string
@@ -60,8 +57,6 @@ interface Props {
   minimal?: boolean
   hideAnnouncementBanner?: boolean
   banner?: BannerConfig
-  /** PP Formula faces this page renders above the fold beyond the site-wide set. */
-  preloadFonts?: readonly PPFormulaFace[]
 }
 
 const {
@@ -79,8 +74,7 @@ const {
   extraJsonLd,
   minimal = false,
   hideAnnouncementBanner = false,
-  banner,
-  preloadFonts = []
+  banner
 } = Astro.props
 
 const keywordsContent =
@@ -166,55 +160,6 @@ const hubApps: HubApp[] = appModels.map(({ appId, flag }) => ({
     <meta name="theme-color" content="#211927" />
     {head.emitCanonical && <link rel="canonical" href={canonicalURL.href} />}
 
-    <!-- Every PP Formula face that renders above the fold. `font-display:
-         optional` drops a face that misses its short block period for the
-         whole page load, so an unpreloaded face silently renders as the
-         fallback — which is what put a fallback headline into a committed
-         visual baseline. -->
-    <link
-      rel="preload"
-      as="font"
-      type="font/woff2"
-      href="/fonts/PPFormula-Regular.woff2"
-      crossorigin
-    />
-    <link
-      rel="preload"
-      as="font"
-      type="font/woff2"
-      href="/fonts/PPFormula-Light.woff2"
-      crossorigin
-    />
-    <link
-      rel="preload"
-      as="font"
-      type="font/woff2"
-      href="/fonts/PPFormula-Bold.woff2"
-      crossorigin
-    />
-    <link
-      rel="preload"
-      as="font"
-      type="font/woff2"
-      href="/fonts/PPFormula-Semibold.woff2"
-      crossorigin
-    />
-    <link
-      rel="preload"
-      as="font"
-      type="font/woff2"
-      href="/fonts/PPFormula-NarrowSemibold.woff2"
-      crossorigin
-    />
-    {preloadFonts.map((face) => (
-      <link
-        rel="preload"
-        as="font"
-        type="font/woff2"
-        href={`/fonts/PPFormula-${face}.woff2`}
-        crossorigin
-      />
-    ))}
     {head.emitMarkdownTwinLink && (
       <link
         rel="alternate"

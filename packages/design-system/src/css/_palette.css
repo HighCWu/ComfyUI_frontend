@@ -1,7 +1,7 @@
 @theme {
   /* Font Families */
   --font-inter: 'Inter', sans-serif;
-  --font-formula: 'PP Formula', 'Inter', sans-serif;
+  --font-formula: 'Inter', sans-serif;
 
   /* Palette Colors */
   --color-transparency-white-t8: rgb(255 255 255 / 0.08);

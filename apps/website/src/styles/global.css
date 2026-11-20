@@ -2,61 +2,8 @@
 @import '@comfyorg/design-system/css/base.css';
 @import 'tw-animate-css';
 
-@font-face {
-  font-family: 'PP Formula';
-  src: url('/fonts/PPFormula-Light.woff2') format('woff2');
-  font-weight: 300;
-  font-style: normal;
-  font-display: optional;
-}
-
-@font-face {
-  font-family: 'PP Formula';
-  src: url('/fonts/PPFormula-Regular.woff2') format('woff2');
-  font-weight: 400;
-  font-style: normal;
-  font-display: optional;
-}
-
-@font-face {
-  font-family: 'PP Formula';
-  src: url('/fonts/PPFormula-Medium.woff2') format('woff2');
-  font-weight: 500;
-  font-style: normal;
-  font-display: optional;
-}
-
-@font-face {
-  font-family: 'PP Formula';
-  src: url('/fonts/PPFormula-Semibold.woff2') format('woff2');
-  font-weight: 600;
-  font-style: normal;
-  font-display: optional;
-}
-
-@font-face {
-  font-family: 'PP Formula';
-  src: url('/fonts/PPFormula-Bold.woff2') format('woff2');
-  font-weight: 700;
-  font-style: normal;
-  font-display: optional;
-}
-
-@font-face {
-  font-family: 'PP Formula';
-  src: url('/fonts/PPFormula-Bold.woff2') format('woff2');
-  font-weight: 800;
-  font-style: normal;
-  font-display: optional;
-}
-
-@font-face {
-  font-family: 'PP Formula Narrow';
-  src: url('/fonts/PPFormula-NarrowSemibold.woff2') format('woff2');
-  font-weight: 600;
-  font-style: normal;
-  font-display: optional;
-}
+/* Display/UI faces come from the design system's Inter @font-face declarations
+   (base.css chain); the woff2 files live in public/fonts/. */
 
 @custom-variant short (@media (max-height: 1100px));
 @custom-variant can-hover (@media (hover: hover));
@@ -90,8 +37,7 @@
   --color-transparency-white-t8: rgb(255 255 255 / 0.08);
   --color-transparency-white-t20: rgb(255 255 255 / 0.2);
   --color-transparency-ink-t80: rgb(33 25 39 / 0.8);
-  --font-formula: 'PP Formula', sans-serif;
-  --font-formula-narrow: 'PP Formula Narrow', sans-serif;
+  --font-formula: 'Inter', sans-serif;
   --text-3xs: 0.625rem;
   --text-2xs: 0.6875rem;
   --text-3\.5xl: 2rem;

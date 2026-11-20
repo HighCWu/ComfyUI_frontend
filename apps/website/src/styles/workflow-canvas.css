@@ -249,7 +249,8 @@ video.wf-node-image {
   align-items: center;
   height: 1.831cqw;
   color: var(--color-primary-warm-white);
-  font-family: var(--font-formula-narrow);
+  /* Inter has no narrow companion face; the regular family takes over. */
+  font-family: var(--font-formula);
   font-size: 1.098cqw;
   font-weight: 600;
   line-height: 1;
